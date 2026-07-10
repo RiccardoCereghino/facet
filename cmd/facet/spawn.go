@@ -227,7 +227,8 @@ func runSpawn(o spawnOpts) error {
 		open = true
 	}
 	if open {
-		return openSession(ws, wsName, homeDir, o.Number, o.Mux, asTab)
+		// spawn opens beside whatever you are doing; it must not move you.
+		return openSession(ws, wsName, homeDir, o.Number, o.Mux, asTab, o.Attach)
 	}
 	if l != nil {
 		fmt.Printf("\nopen it:    facet attach --path %s\n", ws)

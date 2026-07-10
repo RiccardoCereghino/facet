@@ -147,7 +147,8 @@ func newAttachCmd() *cobra.Command {
 				return err
 			}
 			_, asTab := mux.AutoOpen(muxFor(""), ownSession)
-			return openSession(ws, st.Name, st.Issue.Home, st.Issue.Number, "", asTab)
+			// `facet attach` means "take me there".
+			return openSession(ws, st.Name, st.Issue.Home, st.Issue.Number, "", asTab, true)
 		},
 	}
 	cmd.Flags().StringVar(&path, "path", "", "issue workspace (default: working directory)")

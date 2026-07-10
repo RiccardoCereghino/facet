@@ -156,9 +156,9 @@ func TestPlan(t *testing.T) {
 		{"outside, session missing: create from layout",
 			false, false, false, []string{"--session", name, "--new-session-with-layout", layout}, false},
 
-		// `--session <this one> --layout <file>` adds the tabs and returns at once.
-		{"inside, as tabs: add them to THIS session, named explicitly",
-			true, false, true, []string{"--session", "quadratic-cymbal", "--layout", layout}, false},
+		// `action new-tab` adds a tab to the running session and starts no client.
+		{"inside, as tabs: new-tab on the current session, no client",
+			true, false, true, []string{"action", "new-tab", "--layout", layout}, false},
 
 		// A live session for the workspace wins over adding tabs: rejoin it rather
 		// than duplicating its tabs into whichever session we happen to be sitting in.
@@ -588,5 +588,72 @@ func TestLayoutPanesUseBothDirectories(t *testing.T) {
 	}
 	if !strings.Contains(src, `cwd="`+kdlPath(ws)+`"`) {
 		t.Errorf("shell pane is not at the workspace root:\n%s", src)
+	}
+}
+
+// `zellij --session <name> --layout <file>` ATTACHES a client when that session
+// exists -- to the person in that terminal it looks like their session being
+// replaced. facet must never issue it against a session it is already inside.
+func TestPlanNeverAttachesAClientToTheCurrentSession(t *testing.T) {
+	t.Setenv("ZELLIJ_SESSION_NAME", "gregarious-yak")
+	argv, _ := plan("iss-x-67", "/tmp/l.kdl", true, false, true)
+	joined := strings.Join(argv, " ")
+	if strings.Contains(joined, "--session") {
+		t.Errorf("argv = %v; --session against a live session attaches a client", argv)
+	}
+	if len(argv) < 2 || argv[0] != "action" || argv[1] != "new-tab" {
+		t.Errorf("argv = %v; adding a tab must go through `action new-tab`", argv)
+	}
+}
+
+// `zellij action new-tab` always focuses the tab it creates and offers no flag
+// to stop it, so facet notes where you were and puts you back. This parses the
+// index out of `action dump-layout`.
+func TestTabLineMatchesDumpLayout(t *testing.T) {
+	dump := `layout {
+    tab name="Tab #1" {
+        pane
+    }
+    tab name="workspace" hide_floating_panes=true {
+        pane
+    }
+    tab name="#67" focus=true hide_floating_panes=true {
+        pane command="pwsh.exe"
+    }
+}
+`
+	idx, focused := 0, 0
+	for _, line := range strings.Split(dump, "\n") {
+		if !tabLine.MatchString(line) {
+			continue
+		}
+		idx++
+		if strings.Contains(line, "focus=true") {
+			focused = idx
+		}
+	}
+	if idx != 3 {
+		t.Errorf("counted %d tabs, want 3", idx)
+	}
+	if focused != 3 {
+		t.Errorf("focused tab = %d, want 3", focused)
+	}
+}
+
+// A pane line must never be mistaken for a tab line.
+func TestTabLineIgnoresPanes(t *testing.T) {
+	for _, line := range []string{
+		`        pane command="x"`,
+		`    pane split_direction="vertical" {`,
+		`  tabstop`, // not a tab node
+	} {
+		if tabLine.MatchString(line) {
+			t.Errorf("tabLine matched %q", line)
+		}
+	}
+	for _, line := range []string{`    tab name="x" {`, `tab {`} {
+		if !tabLine.MatchString(line) {
+			t.Errorf("tabLine did not match %q", line)
+		}
 	}
 }

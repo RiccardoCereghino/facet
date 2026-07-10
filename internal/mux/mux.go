@@ -35,6 +35,11 @@ type Session struct {
 	// AsTab opens the workspace as tabs in the multiplexer session we are already
 	// inside, rather than in a session of its own.
 	AsTab bool
+	// Focus leaves the new tab focused. `zellij action new-tab` always focuses
+	// what it creates and offers no flag to stop it, so when Focus is false the
+	// previously focused tab is restored afterwards. Opening a tab beside someone
+	// who is mid-sentence must not move them.
+	Focus bool
 }
 
 // InSession reports whether this process is already inside a zellij session.
@@ -235,14 +240,18 @@ func plan(name, layout string, inSession, live, asTab bool) (argv []string, guid
 		return []string{"action", "switch-session", name}, ""
 
 	case inSession && asTab:
-		// `--session <existing> --layout <file>` adds the layout's tabs to that
-		// session and returns immediately. Naming the session explicitly beats
-		// relying on a bare --layout picking up ZELLIJ from the environment.
+		// `action new-tab` speaks to the running server and starts no client. It
+		// adds the tab and returns.
 		//
-		// The layout is applied IN FULL each time, so it must declare exactly one
-		// tab and must not set focus: a second tab is duplicated on every attach,
-		// and focus=true drags the user out of the pane they are typing in.
-		return []string{"--session", SessionName(), "--layout", layout}, ""
+		// NOT `zellij --session <name> --layout <file>`: when that session already
+		// exists, the top-level command ATTACHES a client to it -- which looks, to
+		// the person sitting in that terminal, like their session being replaced.
+		// (Against a session that does not exist it answers "Session not found",
+		// which is attach's error, not create's. That was the clue.)
+		//
+		// The layout is applied in full, so it must declare exactly one tab and
+		// must not set focus.
+		return []string{"action", "new-tab", "--layout", layout}, ""
 
 	default: // inSession && !live, and --session was asked for
 		return nil, "you are inside zellij session " + SessionName() + ", and " + name +
@@ -263,11 +272,48 @@ func (z Zellij) Start(s Session) error {
 	if err != nil {
 		return err
 	}
-	argv, guidance := plan(s.Name, layout, InSession(), z.Live(s.Name), s.AsTab)
+	inSession := InSession()
+	argv, guidance := plan(s.Name, layout, inSession, z.Live(s.Name), s.AsTab)
 	if guidance != "" {
 		return &ErrGuidance{Msg: guidance}
 	}
-	return passthrough("zellij", argv...)
+
+	// `action new-tab` always focuses the tab it creates. Note where we were, so
+	// the caller who did not ask to be moved can be put back.
+	restore := 0
+	if inSession && s.AsTab && !s.Focus {
+		restore = focusedTabIndex()
+	}
+	if err := passthrough("zellij", argv...); err != nil {
+		return err
+	}
+	if restore > 0 {
+		_ = exec.Command("zellij", "action", "go-to-tab", fmt.Sprint(restore)).Run()
+	}
+	return nil
+}
+
+// tabLine matches a tab declaration in `zellij action dump-layout` output.
+var tabLine = regexp.MustCompile(`^\s*tab\b`)
+
+// focusedTabIndex returns the 1-based index of the focused tab in the current
+// session, or 0 when it cannot be determined.
+func focusedTabIndex() int {
+	out, err := exec.Command("zellij", "action", "dump-layout").Output()
+	if err != nil {
+		return 0
+	}
+	idx := 0
+	for _, line := range strings.Split(string(out), "\n") {
+		if !tabLine.MatchString(line) {
+			continue
+		}
+		idx++
+		if strings.Contains(line, "focus=true") {
+			return idx
+		}
+	}
+	return 0
 }
 
 func (Zellij) Attach(name string) error {

@@ -23,7 +23,7 @@ func agentCommand() string {
 // It is always the last thing spawn does, and its failure is never fatal: the
 // workspace, its clones, its branch and its CLAUDE.md all exist by now. The worst
 // case is that you are told what to type.
-func openSession(ws, name, homeDir string, number int, launcherName string, asTab bool) error {
+func openSession(ws, name, homeDir string, number int, launcherName string, asTab, focus bool) error {
 	var l mux.Launcher
 	if launcherName != "" {
 		l = mux.ByName(launcherName)
@@ -42,6 +42,7 @@ func openSession(ws, name, homeDir string, number int, launcherName string, asTa
 		Agent:     agentCommand(),
 		Override:  mux.LayoutOverride(roots.Workspaces),
 		AsTab:     asTab,
+		Focus:     focus,
 	}
 	if _, err := os.Stat(s.Override); err != nil {
 		s.Override = ""
