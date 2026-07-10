@@ -1,0 +1,9 @@
+{
+  "number": 57,
+  "title": "Cut dev Postgres connection pressure",
+  "url": "https://github.com/acme/platform/issues/57",
+  "state": "OPEN",
+  "labels": [{"name": "enhancement"}, {"name": "P1-high"}],
+  "assignees": [],
+  "body": "The shared dev database is at its connection ceiling. Pool the noisy\nworkloads; leave the rest direct.\n"
+}

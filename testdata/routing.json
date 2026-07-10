@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "repos": {
+    "platform":       { "dir": "platform",       "url": "git@github.com:acme/platform.git" },
+    "infra":          { "dir": "infra",          "url": "git@github.com:acme/infra-core.git" },
+    "gateway":        { "dir": "gateway",        "url": "https://github.com/acme/Gateway.git" },
+    "widgetapi":      { "dir": "widgetapi",      "url": "https://github.com/acme/WidgetApi.git" },
+    "widget-backend": { "dir": "widget-backend", "url": "https://github.com/acme/widget-backend.git",
+                        "remotes": { "upstream": "https://git.example.org/wg/widget/widget-backend.git" } },
+    "k8s-stack":      { "dir": "k8s-stack",      "url": "git@github.com:acme/k8s-stack.git" },
+    "legacyapp":      { "dir": "legacyapp",      "url": "https://github.com/acme/LegacyApp.git" },
+    "legacy":         { "dir": "legacy",         "url": "https://github.com/acme/legacy_app_docker.git", "lfs": false }
+  },
+  "ownerRepoToKey": {
+    "acme/platform": "platform",
+    "acme/infra-core": "infra",
+    "acme/Gateway": "gateway",
+    "acme/WidgetApi": "widgetapi",
+    "acme/widget-backend": "widget-backend",
+    "acme/k8s-stack": "k8s-stack",
+    "acme/LegacyApp": "legacyapp",
+    "acme/legacy_app_docker": "legacy"
+  },
+  "aliases": {
+    "infra-core": "infra",
+    "legacy_app_docker": "legacy"
+  },
+  "areaMap": {
+    "area/backups": ["platform", "infra"],
+    "area/security": ["platform", "infra"],
+    "area/identity": ["infra", "platform"],
+    "area/terraform": ["infra"],
+    "area/environments": ["infra"],
+    "area/argocd": ["platform"],
+    "area/monitoring": ["platform"],
+    "area/ci-cd": [],
+    "widget": ["widgetapi", "widget-backend", "k8s-stack"]
+  },
+  "knowledgeByArea": {
+    "area/backups": ["area-backups", "area-monitoring"],
+    "area/security": ["area-security"],
+    "area/terraform": ["area-terraform"],
+    "widget": ["area-widget", "area-identity"]
+  },
+  "pathHints": {
+    "modules/": "infra",
+    "platform/": "platform",
+    "legacyapp": "legacyapp"
+  }
+}

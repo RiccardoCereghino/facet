@@ -1,0 +1,9 @@
+{
+  "number": 95,
+  "title": "widget: remaining work (tracker)",
+  "url": "https://github.com/acme/platform/issues/95",
+  "state": "OPEN",
+  "labels": [{"name": "widget"}],
+  "assignees": [],
+  "body": "Umbrella issue for the widget stack.\n"
+}

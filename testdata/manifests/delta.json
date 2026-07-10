@@ -1,0 +1,11 @@
+{
+  "name": "delta",
+  "description": "Deploy a GitOps-managed monitoring stack onto the platform cluster.",
+  "links": {},
+  "clones": {
+    "infra": "git@github.com:acme/infra-core.git",
+    "platform": "git@github.com:acme/platform.git"
+  },
+  "origins": {},
+  "transient": []
+}

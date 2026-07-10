@@ -1,0 +1,9 @@
+{
+  "number": 76,
+  "title": "EPIC: the four-environment estate across cluster and legacyapp",
+  "url": "https://github.com/acme/platform/issues/76",
+  "state": "OPEN",
+  "labels": [{"name": "P1-high"}, {"name": "area/environments"}, {"name": "needs-decision"}],
+  "assignees": [],
+  "body": "Only dev exists. See acme/infra-core#43 for the Terraform half.\n\nThe legacyapp side is hosted outside the cluster and has its own root stacks.\n"
+}

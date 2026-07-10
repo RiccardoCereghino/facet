@@ -1,0 +1,15 @@
+{
+  "name": "gamma",
+  "description": "Audit the legacy production stack (one container, database on a bind-mounted disk).",
+  "links": {},
+  "clones": {
+    "infra": "git@github.com:acme/infra-core.git",
+    "legacy": "https://github.com/acme/legacy_app_docker.git"
+  },
+  "remotes": {},
+  "lfs": {
+    "legacy": false
+  },
+  "origins": {},
+  "transient": []
+}

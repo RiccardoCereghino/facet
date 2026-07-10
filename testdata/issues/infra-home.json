@@ -1,0 +1,9 @@
+{
+  "number": 40,
+  "title": "The cluster has no diagnostic settings at all",
+  "url": "https://github.com/acme/infra-core/issues/40",
+  "state": "OPEN",
+  "labels": [{"name": "P0-critical"}, {"name": "area/security"}, {"name": "area/terraform"}],
+  "assignees": [],
+  "body": "Control-plane audit logs are not exported anywhere. See modules/cluster.\n"
+}

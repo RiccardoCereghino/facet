@@ -1,0 +1,15 @@
+{
+  "name": "epsilon",
+  "description": "CI/CD for the legacy app: junction-based, so uncommitted work is visible here.",
+  "links": {
+    "infra": "infra-core",
+    "legacyapp": "LegacyApp",
+    "migrations": "migrations"
+  },
+  "origins": {
+    "LegacyApp": "https://github.com/acme/LegacyApp.git",
+    "infra-core": "git@github.com:acme/infra-core.git",
+    "migrations": "git@github.com:acme/migrations.git"
+  },
+  "transient": []
+}

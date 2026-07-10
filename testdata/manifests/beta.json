@@ -1,0 +1,19 @@
+{
+  "name": "beta",
+  "description": "Deploy the widget API stack (WidgetApi + our fork of the upstream backend) & reuse in-cluster Postgres <no new instances>.",
+  "links": {},
+  "clones": {
+    "infra": "git@github.com:acme/infra-core.git",
+    "k8s-stack": "git@github.com:acme/k8s-stack.git",
+    "platform": "git@github.com:acme/platform.git",
+    "widget-backend": "https://github.com/acme/widget-backend.git",
+    "widgetapi": "https://github.com/acme/WidgetApi.git"
+  },
+  "remotes": {
+    "widget-backend": {
+      "upstream": "https://git.example.org/wg-transport/widget/widget-backend.git"
+    }
+  },
+  "origins": {},
+  "transient": []
+}

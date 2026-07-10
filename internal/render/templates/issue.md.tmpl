@@ -1,0 +1,91 @@
+# {{ .Workspace }} — {{ .Issue.Title }}
+
+> **Ephemeral, issue-scoped workspace.** Not versioned, not restored on a fresh
+> machine. It exists to close **one** issue with **one** pull request, then be
+> reaped with `facet reap`.
+>
+> Every top-level folder is this workspace's own git clone. Its objects are
+> hardlinked from a local mirror, but the `.git` is independent and `origin`
+> points at the forge. **The clones drift behind `origin` while you work — pull
+> before you push. Never `push --force`.**
+>
+> This workspace is the only copy of any branch you have not pushed.
+
+## The issue
+
+- **#{{ .Issue.Number }}** · `{{ .Repo }}` · {{ .Issue.State }}
+- {{ .Issue.URL }}
+{{- if .Labels }}
+- Labels: {{ range $i, $l := .Labels }}{{ if $i }}, {{ end }}`{{ $l }}`{{ end }}
+{{- end }}
+{{- if .Assignees }}
+- Assigned: {{ range $i, $a := .Assignees }}{{ if $i }}, {{ end }}{{ $a }}{{ end }}
+{{- end }}
+{{- if .Branch }}
+- Branch **`{{ .Branch }}`**, checked out in `{{ .HomeDir }}/`. The PR body must say `Closes #{{ .Issue.Number }}`.
+{{- else }}
+- No branch was created. Make one before you commit.
+{{- end }}
+
+## Task
+
+{{ .Body }}
+
+## Repos in scope
+
+| Clone | Role | Why it is here |
+| --- | --- | --- |
+{{- range .Selections }}
+| `{{ .Dir }}/` | {{ if .Home }}**home** — carries the branch{{ else }}reference / cross-repo change{{ end }} | {{ .Why }} |
+{{- end }}
+
+{{ if gt (len .Selections) 1 -}}
+> Only `{{ .HomeDir }}/` has the issue branch. `gh issue develop` links exactly one
+> repository to an issue, so a change in any other clone here needs **its own
+> branch and its own pull request**.
+{{- end }}
+{{- if .Hints }}
+
+Also mentioned in the issue body, but **not** cloned. Add with `facet spawn … --add <key>`:
+{{ range .Hints }}
+- `{{ .Key }}` — {{ .Reason }}
+{{- end }}
+{{- end }}
+
+{{- if .Fragments }}
+
+## Durable hazards for this issue's areas
+
+These are invariants, extracted from the long-lived workspaces that own each
+subject. They are not status. Where one names a live document, read that document
+before acting on anything time-sensitive.
+{{ range .Fragments }}
+### {{ .Meta.Area }}{{ if .Meta.SourceWorkspace }} — from `{{ .Meta.SourceWorkspace }}`{{ end }}{{ if .Meta.LastReviewed }}, reviewed {{ .Meta.LastReviewed }}{{ end }}{{ if .Stale }} ⚠️ **stale**{{ end }}
+
+{{ .Body }}
+{{ end }}
+{{- end }}
+{{- if .FragmentErrors }}
+
+> Some knowledge fragments could not be loaded and are missing from this file:
+{{- range .FragmentErrors }}
+> - {{ . }}
+{{- end }}
+{{- end }}
+
+## Working rules
+
+- One issue, one pull request. The PR body must say `Closes #{{ .Issue.Number }}`.
+- `git pull` before every push. Never `push --force`: CI and other workspaces read these branches.
+- Smallest diff that closes the issue. Do not refactor anything unrelated.
+- If a decision comes up that the issue does not cover, **ask — do not invent**.
+- Push before reaping. `facet reap` refuses while work is unpushed, but do not rely on that.
+
+## Teardown
+
+```
+facet reap            # from this directory
+```
+
+It refuses while there are uncommitted changes, unpushed commits, or an open
+pull request. The shared mirror is never touched.

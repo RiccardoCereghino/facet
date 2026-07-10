@@ -1,0 +1,9 @@
+{
+  "number": 67,
+  "title": "Rehearse a restore: nothing has ever been restored",
+  "url": "https://github.com/acme/platform/issues/67",
+  "state": "OPEN",
+  "labels": [{"name": "P0-critical"}, {"name": "area/backups"}, {"name": "blocked"}],
+  "assignees": [{"login": "someone"}],
+  "body": "Backups run nightly. No restore has ever been attempted, so we do not\nknow whether they work.\n\nThe restore identity does not exist yet; it is Terraform, tracked as\nacme/infra-core#41.\n\n**Blocked by:** acme/infra-core#41\n"
+}

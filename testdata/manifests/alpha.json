@@ -1,0 +1,12 @@
+{
+  "name": "alpha",
+  "description": "Continuous delivery: GitOps controllers, promotion, the app-of-apps.",
+  "links": {},
+  "clones": {
+    "infra": "git@github.com:acme/infra-core.git",
+    "platform": "git@github.com:acme/platform.git"
+  },
+  "remotes": {},
+  "origins": {},
+  "transient": []
+}

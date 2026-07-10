@@ -1,0 +1,14 @@
+{
+  "name": "zeta",
+  "description": "Escaping probe: a & b, <angle>, 'quoted', \"double\", 100% > 50%.",
+  "links": {},
+  "clones": {
+    "gateway": "https://github.com/acme/Gateway.git",
+    "platform": "git@github.com:acme/platform.git"
+  },
+  "remotes": {},
+  "origins": {},
+  "transient": [
+    "gateway"
+  ]
+}

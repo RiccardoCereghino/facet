@@ -1,0 +1,9 @@
+{
+  "number": 100,
+  "title": "Rotate the gateway signing key",
+  "url": "https://github.com/acme/platform/issues/100",
+  "state": "OPEN",
+  "labels": [{"name": "area/backups"}],
+  "assignees": [],
+  "body": "### Summary\n\nThe signing key is baked into the image.\n\n### Repos in scope\n\ngateway\ninfra-core\n\n### Blocked by\n\n_No response_\n\n### Acceptance\n\nKey is mounted from a secret.\n"
+}

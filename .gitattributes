@@ -1,0 +1,6 @@
+# LF everywhere, so the tree is identical on every platform.
+* text=auto eol=lf
+
+# The golden manifests are byte-exact fixtures: TestGolden compares them to what
+# facet writes. Never let git rewrite their line endings on checkout.
+testdata/manifests/*.json -text

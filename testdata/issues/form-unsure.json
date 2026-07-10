@@ -1,0 +1,9 @@
+{
+  "number": 101,
+  "title": "Something is wrong somewhere",
+  "url": "https://github.com/acme/platform/issues/101",
+  "state": "CLOSED",
+  "labels": [{"name": "area/terraform"}],
+  "assignees": [],
+  "body": "### Summary\n\nUnclear.\n\n### Repos in scope\n\nunsure\n\n### Acceptance\n\n_No response_\n"
+}
