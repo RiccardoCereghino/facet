@@ -22,19 +22,20 @@ import (
 
 func newSpawnCmd() *cobra.Command {
 	var (
-		repo       string
-		clones     []string
-		addClones  []string
-		rmClones   []string
-		slug       string
-		base       string
-		yes        bool
-		noBranch   bool
-		dryRun     bool
-		attach     bool
-		noAttach   bool
-		ownSession bool
-		muxName    string
+		repo        string
+		clones      []string
+		addClones   []string
+		rmClones    []string
+		slug        string
+		base        string
+		yes         bool
+		noBranch    bool
+		dryRun      bool
+		attach      bool
+		noAttach    bool
+		ownSession  bool
+		muxName     string
+		noWriteback bool
 	)
 	cmd := &cobra.Command{
 		Use:   "spawn <issue-number>",
@@ -59,6 +60,7 @@ func newSpawnCmd() *cobra.Command {
 				Number: number, Repo: repo, Clones: clones, Add: addClones, Remove: rmClones,
 				Slug: slug, Base: base, Yes: yes, NoBranch: noBranch, DryRun: dryRun,
 				Attach: attach, NoAttach: noAttach, OwnSession: ownSession, Mux: muxName,
+				NoWriteback: noWriteback,
 			})
 		},
 	}
@@ -76,6 +78,7 @@ func newSpawnCmd() *cobra.Command {
 	f.BoolVar(&noAttach, "no-attach", false, "no-op; not opening is now the default")
 	f.BoolVar(&ownSession, "session", false, "with --attach, open in a session of its own rather than as tabs")
 	f.StringVar(&muxName, "mux", "", "multiplexer to use: zellij, wt, or none")
+	f.BoolVar(&noWriteback, "no-writeback", false, "do not record the confirmed repo set in the issue body")
 	return cmd
 }
 
@@ -95,6 +98,9 @@ type spawnOpts struct {
 	Yes, NoBranch, DryRun        bool
 	Attach, NoAttach, OwnSession bool
 	Mux                          string
+	// NoWriteback leaves the issue body alone. The confirmed repo set is then
+	// re-inferred on every spawn.
+	NoWriteback bool
 }
 
 func runSpawn(o spawnOpts) error {
@@ -221,6 +227,16 @@ func runSpawn(o spawnOpts) error {
 			rep.Warn("project %s/%d: %v", target.Owner, target.Number, err)
 		} else {
 			rep.Created("project %s/%d: %s = %s", target.Owner, target.Number, target.Field, target.Option)
+		}
+	}
+
+	// Record the repo set the human just confirmed, so the next spawn reads it
+	// rather than inferring it again -- and so an issue never filed through the
+	// form still declares its scope. Same placement and the same rule as the
+	// board: after the workspace is real, and never fatal.
+	if !o.NoWriteback {
+		if err := writeBackScope(gh, o.Repo, iss.Number, routing.Keys(sel), rep); err != nil {
+			rep.Warn("issue body: %v", err)
 		}
 	}
 
@@ -383,4 +399,28 @@ func confirm(prompt string) bool {
 	}
 	line = strings.ToLower(strings.TrimSpace(line))
 	return line == "y" || line == "yes"
+}
+
+// writeBackScope records the confirmed repo set in the issue's "Repos in scope"
+// section, so the next spawn reads a decision instead of repeating a guess.
+//
+// The body is re-read first. Several agents work these issues at once, and the
+// copy fetched at the top of spawn may be minutes old by the time the clones
+// finish -- writing that stale copy back would silently revert whatever someone
+// else wrote in between. A body that already names exactly these repos is left
+// untouched, so spawning the same issue twice does not churn its history.
+func writeBackScope(gh ghx.Client, repo string, number int, keys []string, rep workspace.Reporter) error {
+	fresh, err := gh.ViewIssue(repo, number)
+	if err != nil {
+		return err
+	}
+	body, changed := routing.UpsertScope(fresh.Body, keys)
+	if !changed {
+		return nil
+	}
+	if err := gh.SetIssueBody(repo, number, body); err != nil {
+		return err
+	}
+	rep.Created("issue body: Repos in scope = %s", strings.Join(keys, ", "))
+	return nil
 }

@@ -88,6 +88,8 @@ type Client interface {
 	// there, and sets target's field to target's option. issueURL is the issue's
 	// html_url, which is what `gh project item-add` takes.
 	SetIssueStatus(target ProjectTarget, issueURL string) error
+	// SetIssueBody replaces the issue's body.
+	SetIssueBody(repo string, number int, body string) error
 }
 
 // CLI is the real client, backed by the gh binary.
@@ -95,8 +97,16 @@ type CLI struct{}
 
 var _ Client = CLI{}
 
-func run(args ...string) ([]byte, error) {
+func run(args ...string) ([]byte, error) { return runStdin(nil, args...) }
+
+// runStdin runs gh with stdin wired to in, which is how anything long or
+// arbitrary -- an issue body -- reaches gh. Passing it as an argument would hit
+// the command-line length limit and force us to quote someone's markdown.
+func runStdin(in []byte, args ...string) ([]byte, error) {
 	cmd := exec.Command("gh", args...)
+	if in != nil {
+		cmd.Stdin = bytes.NewReader(in)
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -153,6 +163,17 @@ func (CLI) BranchesFor(repo string, number int) ([]string, error) {
 		}
 	}
 	return branches, nil
+}
+
+// SetIssueBody replaces the issue's body, reading it from stdin so that neither
+// its length nor its markdown has to survive a command line.
+//
+// This edits someone's issue. Call it only with a body you produced by rewriting
+// the one you just read, and only when it actually differs.
+func (CLI) SetIssueBody(repo string, number int, body string) error {
+	_, err := runStdin([]byte(body), "issue", "edit", fmt.Sprint(number),
+		"--repo", repo, "--body-file", "-")
+	return err
 }
 
 // SetIssueStatus adds the issue to the board and sets one single-select field.
