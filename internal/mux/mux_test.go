@@ -439,7 +439,7 @@ func TestStaleOverrideIsRejectedAndFallsBack(t *testing.T) {
 	if strings.Contains(src, "__AGENT__") {
 		t.Fatalf("stale override was written to disk:\n%s", src)
 	}
-	if !strings.Contains(src, `name="workspace"`) {
+	if !strings.Contains(src, `name="agent"`) {
 		t.Errorf("did not fall back to the built-in layout:\n%s", src)
 	}
 	if p := layoutProblem(src); p != "" {
@@ -530,4 +530,63 @@ func missingAbs(t *testing.T) string {
 		t.Fatalf("%q is not absolute", p)
 	}
 	return p
+}
+
+// Adding tabs must never steal focus. The layout is applied to a session the user
+// is already working in; `focus=true` yanks them out of the pane they are typing
+// in and drops them into a freshly started agent. It did.
+func TestLayoutNeverStealsFocus(t *testing.T) {
+	ws := t.TempDir()
+	path, _, err := writeLayout(Session{
+		Name: "iss-x-67", Workspace: ws, HomeDir: filepath.Join(ws, "repo"),
+		Number: 67, Agent: "claude",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	if strings.Contains(string(b), "focus=true") {
+		t.Errorf("layout steals focus:\n%s", b)
+	}
+}
+
+// The layout is applied in full on every attach, so a second tab is duplicated
+// each time. Exactly one.
+func TestLayoutHasExactlyOneTab(t *testing.T) {
+	ws := t.TempDir()
+	path, _, err := writeLayout(Session{
+		Name: "iss-x-67", Workspace: ws, HomeDir: filepath.Join(ws, "repo"), Number: 67,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	var tabs int
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "tab ") {
+			tabs++
+		}
+	}
+	if tabs != 1 {
+		t.Errorf("layout declares %d tabs; every attach would add them all:\n%s", tabs, b)
+	}
+}
+
+// The two panes must land in different places: the agent in the home clone, the
+// shell at the workspace root, so both are reachable without cd.
+func TestLayoutPanesUseBothDirectories(t *testing.T) {
+	ws := t.TempDir()
+	home := filepath.Join(ws, "repo")
+	path, _, err := writeLayout(Session{Name: "n", Workspace: ws, HomeDir: home, Number: 1, Agent: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	src := string(b)
+	if !strings.Contains(src, kdlPath(home)) {
+		t.Error("agent pane is not in the home clone")
+	}
+	if !strings.Contains(src, `cwd="`+kdlPath(ws)+`"`) {
+		t.Errorf("shell pane is not at the workspace root:\n%s", src)
+	}
 }

@@ -5,6 +5,13 @@
 // number, __AGENT_CMD__ the shell that starts the agent, __AGENT_ARGS__ its args.
 // Backslashes are escaped for KDL.
 //
+// ONE tab. This layout is usually added to a session you are already working in,
+// and it is applied in full each time -- a second tab would be duplicated on
+// every `facet attach`.
+//
+// The tab carries no focus flag. Adding tabs must never yank you out of the pane
+// you are typing in. Switch to it yourself: Ctrl+t then the tab number.
+//
 // cwd is set on every pane, not once at the top: a top-level cwd is ignored when
 // a layout is added as tabs to an existing session.
 //
@@ -12,17 +19,13 @@
 // directly, so it cannot start a shell script or a .cmd shim -- and when the
 // spawn fails it panics, taking the whole session down with it.
 layout {
-    tab name="#__NUM__" focus=true {
+    tab name="#__NUM__" {
         pane split_direction="vertical" {
             pane size="60%" name="agent" cwd="__CWD__" {
                 command "__AGENT_CMD__"
                 __AGENT_ARGS__
             }
-            pane size="40%" name="shell" cwd="__CWD__"
+            pane size="40%" name="shell" cwd="__WS__"
         }
-    }
-
-    tab name="workspace" {
-        pane cwd="__WS__" name="workspace"
     }
 }

@@ -237,8 +237,11 @@ func plan(name, layout string, inSession, live, asTab bool) (argv []string, guid
 	case inSession && asTab:
 		// `--session <existing> --layout <file>` adds the layout's tabs to that
 		// session and returns immediately. Naming the session explicitly beats
-		// relying on a bare --layout picking up ZELLIJ from the environment, and
-		// it is the form that was actually exercised against a live session.
+		// relying on a bare --layout picking up ZELLIJ from the environment.
+		//
+		// The layout is applied IN FULL each time, so it must declare exactly one
+		// tab and must not set focus: a second tab is duplicated on every attach,
+		// and focus=true drags the user out of the pane they are typing in.
 		return []string{"--session", SessionName(), "--layout", layout}, ""
 
 	default: // inSession && !live, and --session was asked for
