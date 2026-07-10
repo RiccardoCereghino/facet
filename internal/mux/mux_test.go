@@ -135,3 +135,157 @@ func TestZellijAcceptsGeneratedLayout(t *testing.T) {
 		t.Errorf("unsubstituted placeholder in generated layout:\n%s", src)
 	}
 }
+
+// zellij sessions do not nest. Attaching from inside one takes over the client,
+// and against a dead session it resurrects it -- which is how a colleague's
+// long-exited session came back to life while this was being written.
+func TestPlan(t *testing.T) {
+	const name, layout = "iss-repo-67-x", "/tmp/layout.kdl"
+	tests := []struct {
+		name                   string
+		inSession, live, asTab bool
+		wantArgv               []string
+		wantGuidance           bool
+	}{
+		{"outside, session exists: attach",
+			false, true, false, []string{"attach", name}, false},
+
+		// --new-session-with-layout, NOT --layout: with --session, --layout means
+		// "add tabs to the named session" and dies with "Session not found".
+		{"outside, session missing: create from layout",
+			false, false, false, []string{"--session", name, "--new-session-with-layout", layout}, false},
+
+		// `--session <this one> --layout <file>` adds the tabs and returns at once.
+		{"inside, as tabs: add them to THIS session, named explicitly",
+			true, false, true, []string{"--session", "quadratic-cymbal", "--layout", layout}, false},
+
+		// A live session for the workspace wins over adding tabs: rejoin it rather
+		// than duplicating its tabs into whichever session we happen to be sitting in.
+		{"inside, workspace session exists: rejoin it, do not duplicate its tabs",
+			true, true, true, []string{"action", "switch-session", name}, false},
+		{"inside, --session, workspace session exists: switch to it",
+			true, true, false, []string{"action", "switch-session", name}, false},
+
+		// The one case with nothing safe to run.
+		{"inside, session missing: guide, do not nest",
+			true, false, false, nil, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("ZELLIJ_SESSION_NAME", "quadratic-cymbal")
+			argv, guidance := plan(name, layout, tt.inSession, tt.live, tt.asTab)
+			if tt.wantGuidance {
+				if guidance == "" {
+					t.Fatalf("expected guidance, got argv %v", argv)
+				}
+				if argv != nil {
+					t.Errorf("guidance case must run nothing, got %v", argv)
+				}
+				for _, want := range []string{"do not nest", "detach", "--tab"} {
+					if !strings.Contains(guidance, want) {
+						t.Errorf("guidance omits %q:\n%s", want, guidance)
+					}
+				}
+				return
+			}
+			if guidance != "" {
+				t.Fatalf("unexpected guidance: %s", guidance)
+			}
+			if len(argv) != len(tt.wantArgv) {
+				t.Fatalf("argv = %v, want %v", argv, tt.wantArgv)
+			}
+			for i := range argv {
+				if argv[i] != tt.wantArgv[i] {
+					t.Fatalf("argv = %v, want %v", argv, tt.wantArgv)
+				}
+			}
+		})
+	}
+}
+
+// `zellij attach` must never be reached from inside a session: that is the call
+// that resurrects a dead session and steals the client.
+func TestPlanNeverAttachesFromInsideASession(t *testing.T) {
+	for _, live := range []bool{true, false} {
+		for _, asTab := range []bool{true, false} {
+			argv, _ := plan("n", "l", true, live, asTab)
+			if len(argv) > 0 && argv[0] == "attach" {
+				t.Errorf("plan(inSession=true, live=%v, asTab=%v) = %v; must not attach", live, asTab, argv)
+			}
+		}
+	}
+}
+
+func TestInSessionReadsZellijEnv(t *testing.T) {
+	t.Setenv("ZELLIJ", "")
+	if InSession() {
+		t.Error("empty ZELLIJ must not count as being in a session")
+	}
+	t.Setenv("ZELLIJ", "0")
+	t.Setenv("ZELLIJ_SESSION_NAME", "quadratic-cymbal")
+	if !InSession() {
+		t.Error(`ZELLIJ="0" still means we are inside a session -- zellij sets it to 0`)
+	}
+	if SessionName() != "quadratic-cymbal" {
+		t.Errorf("SessionName = %q", SessionName())
+	}
+}
+
+// fakeLauncher lets AutoOpen be tested without a multiplexer installed.
+type fakeLauncher struct{ name string }
+
+func (f fakeLauncher) Name() string                { return f.name }
+func (fakeLauncher) Available() bool               { return true }
+func (fakeLauncher) Live(string) bool              { return false }
+func (fakeLauncher) Start(Session) error           { return nil }
+func (fakeLauncher) Attach(string) error           { return nil }
+func (fakeLauncher) Kill(string) error             { return nil }
+func (fakeLauncher) AttachCommand(s string) string { return s }
+
+// The rule that decides whether facet seizes your terminal: open automatically
+// only when the workspace can arrive as tabs beside what you are already doing.
+func TestAutoOpen(t *testing.T) {
+	zj := fakeLauncher{"zellij"}
+	wt := fakeLauncher{"windows-terminal"}
+
+	tests := []struct {
+		name       string
+		l          Launcher
+		inSession  bool
+		ownSession bool
+		wantOpen   bool
+		wantAsTab  bool
+	}{
+		{"inside zellij: open as tabs, unprompted", zj, true, false, true, true},
+		{"inside zellij, --session: nothing safe to do automatically", zj, true, true, true, false},
+
+		// Outside a session, opening would seize the terminal. Stay opt-in.
+		{"outside zellij: do not open", zj, false, false, false, false},
+
+		// Windows Terminal spawns a window; never do that unasked.
+		{"windows-terminal, even inside zellij: do not open", wt, true, false, false, false},
+
+		{"no launcher: do not open", nil, true, false, false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.inSession {
+				t.Setenv("ZELLIJ", "0")
+			} else {
+				t.Setenv("ZELLIJ", "")
+			}
+			open, asTab := AutoOpen(tt.l, tt.ownSession)
+			if open != tt.wantOpen || asTab != tt.wantAsTab {
+				t.Errorf("AutoOpen = (open=%v, asTab=%v), want (open=%v, asTab=%v)", open, asTab, tt.wantOpen, tt.wantAsTab)
+			}
+		})
+	}
+}
+
+// The combination that must never silently seize the terminal.
+func TestAutoOpenNeverStealsTheTerminal(t *testing.T) {
+	t.Setenv("ZELLIJ", "")
+	if open, _ := AutoOpen(fakeLauncher{"zellij"}, false); open {
+		t.Error("outside a session, opening seizes the terminal; it must stay opt-in")
+	}
+}

@@ -31,6 +31,40 @@ type Session struct {
 	// Override is a layout file to use instead of the built-in one. Ignored when
 	// empty or unreadable.
 	Override string
+	// AsTab opens the workspace as tabs in the multiplexer session we are already
+	// inside, rather than in a session of its own.
+	AsTab bool
+}
+
+// InSession reports whether this process is already inside a zellij session.
+// zellij exports ZELLIJ into everything it spawns.
+func InSession() bool { return os.Getenv("ZELLIJ") != "" }
+
+// SessionName is the zellij session we are inside, if any.
+func SessionName() string { return os.Getenv("ZELLIJ_SESSION_NAME") }
+
+// ErrGuidance is returned when there is nothing safe to run and the human has to
+// act first. Its message says what to do.
+type ErrGuidance struct{ Msg string }
+
+func (e *ErrGuidance) Error() string { return e.Msg }
+
+// AutoOpen decides whether to open a freshly spawned workspace straight away,
+// and whether to open it as tabs.
+//
+// The rule: open automatically only when doing so cannot steal the terminal.
+// Inside a zellij session new tabs appear alongside what you are already doing,
+// so that is safe and is what you almost always want. Starting a *session*, by
+// contrast, seizes the terminal until you detach -- so outside zellij, opening
+// stays opt-in via --attach.
+//
+// ownSession forces a separate session even from inside one, which cannot be
+// done without detaching first; plan() then returns guidance rather than acting.
+func AutoOpen(l Launcher, ownSession bool) (open, asTab bool) {
+	if l == nil || l.Name() != "zellij" || !InSession() {
+		return false, false
+	}
+	return true, !ownSession
 }
 
 // defaultShell is what a pane runs when no agent command is configured.
@@ -119,24 +153,58 @@ func (Zellij) Live(session string) bool {
 	return false
 }
 
-// Start attaches to the session, creating it from a layout if it does not exist.
-// It blocks: zellij takes over the terminal until you detach.
-func (z Zellij) Start(s Session) error {
-	if z.Live(s.Name) {
-		return z.Attach(s.Name)
+// plan works out how to open a workspace, given where we are standing. It is
+// pure so the decision can be tested without a multiplexer; argv is what to run,
+// and a non-empty guidance means run nothing and tell the human instead.
+//
+// zellij sessions do not nest. Attaching from inside one is not a no-op: it
+// takes over the client, and if the target is a dead session it resurrects it.
+// So from inside a session the only safe moves are to switch to a live one, or
+// to pull the workspace in as tabs.
+func plan(name, layout string, inSession, live, asTab bool) (argv []string, guidance string) {
+	switch {
+	case !inSession && live:
+		return []string{"attach", name}, ""
+
+	case !inSession && !live:
+		// --new-session-with-layout, not --layout. With --session, `--layout`
+		// means "add these tabs to the named session", so it tries to attach and
+		// dies with "Session not found" when the session is new.
+		return []string{"--session", name, "--new-session-with-layout", layout}, ""
+
+	case inSession && live:
+		// The workspace already has a session of its own. Rejoin it rather than
+		// duplicating its tabs here -- this wins over asTab deliberately.
+		return []string{"action", "switch-session", name}, ""
+
+	case inSession && asTab:
+		// `--session <existing> --layout <file>` adds the layout's tabs to that
+		// session and returns immediately. Naming the session explicitly beats
+		// relying on a bare --layout picking up ZELLIJ from the environment, and
+		// it is the form that was actually exercised against a live session.
+		return []string{"--session", SessionName(), "--layout", layout}, ""
+
+	default: // inSession && !live
+		return nil, "you are inside zellij session " + SessionName() + ", and " + name +
+			" does not exist yet.\n" +
+			"  zellij sessions do not nest. Either:\n" +
+			"    detach first  -- Ctrl+o then d, then re-run this command\n" +
+			"    or open it here as tabs -- re-run with --tab"
 	}
+}
+
+// Start opens the workspace: attaching, switching, or adding tabs as the
+// situation allows. It blocks while zellij holds the terminal.
+func (z Zellij) Start(s Session) error {
 	layout, err := writeLayout(s)
 	if err != nil {
 		return err
 	}
-	// --new-session-with-layout, not --layout. With --session, `--layout` means
-	// "add these tabs to the named session", so it tries to ATTACH and fails with
-	// "Session not found" when the session is new. Verified against 0.43.1-win32.
-	//
-	// There is also no way to create a *background* session from a layout --
-	// `attach --create-background` takes no layout -- so this runs in the
-	// foreground and holds the terminal until you detach.
-	return passthrough("zellij", "--session", s.Name, "--new-session-with-layout", layout)
+	argv, guidance := plan(s.Name, layout, InSession(), z.Live(s.Name), s.AsTab)
+	if guidance != "" {
+		return &ErrGuidance{Msg: guidance}
+	}
+	return passthrough("zellij", argv...)
 }
 
 func (Zellij) Attach(name string) error {

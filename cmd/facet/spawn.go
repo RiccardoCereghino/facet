@@ -22,17 +22,19 @@ import (
 
 func newSpawnCmd() *cobra.Command {
 	var (
-		repo      string
-		clones    []string
-		addClones []string
-		rmClones  []string
-		slug      string
-		base      string
-		yes       bool
-		noBranch  bool
-		dryRun    bool
-		attach    bool
-		muxName   string
+		repo       string
+		clones     []string
+		addClones  []string
+		rmClones   []string
+		slug       string
+		base       string
+		yes        bool
+		noBranch   bool
+		dryRun     bool
+		attach     bool
+		noAttach   bool
+		ownSession bool
+		muxName    string
 	)
 	cmd := &cobra.Command{
 		Use:   "spawn <issue-number>",
@@ -53,7 +55,7 @@ func newSpawnCmd() *cobra.Command {
 			return runSpawn(spawnOpts{
 				Number: number, Repo: repo, Clones: clones, Add: addClones, Remove: rmClones,
 				Slug: slug, Base: base, Yes: yes, NoBranch: noBranch, DryRun: dryRun,
-				Attach: attach, Mux: muxName,
+				Attach: attach, NoAttach: noAttach, OwnSession: ownSession, Mux: muxName,
 			})
 		},
 	}
@@ -67,7 +69,9 @@ func newSpawnCmd() *cobra.Command {
 	f.BoolVarP(&yes, "yes", "y", false, "skip the confirmation prompt")
 	f.BoolVar(&noBranch, "no-branch", false, "do not create or check out an issue branch")
 	f.BoolVar(&dryRun, "dry-run", false, "show the inference and exit, creating nothing")
-	f.BoolVar(&attach, "attach", false, "open the multiplexer session immediately (takes over the terminal)")
+	f.BoolVar(&attach, "attach", false, "open immediately, even when that seizes the terminal")
+	f.BoolVar(&noAttach, "no-attach", false, "never open; just print how to")
+	f.BoolVar(&ownSession, "session", false, "open in a session of its own rather than as tabs")
 	f.StringVar(&muxName, "mux", "", "multiplexer to use: zellij, wt, or none")
 	return cmd
 }
@@ -81,13 +85,13 @@ func muxFor(name string) mux.Launcher {
 }
 
 type spawnOpts struct {
-	Number                int
-	Repo                  string
-	Clones, Add, Remove   []string
-	Slug, Base            string
-	Yes, NoBranch, DryRun bool
-	Attach                bool
-	Mux                   string
+	Number                       int
+	Repo                         string
+	Clones, Add, Remove          []string
+	Slug, Base                   string
+	Yes, NoBranch, DryRun        bool
+	Attach, NoAttach, OwnSession bool
+	Mux                          string
 }
 
 func runSpawn(o spawnOpts) error {
@@ -209,10 +213,23 @@ func runSpawn(o spawnOpts) error {
 	if o.Mux == "none" {
 		return nil
 	}
-	if o.Attach {
-		return openSession(ws, wsName, homeDir, o.Number, o.Mux)
+	l := muxFor(o.Mux)
+
+	// Open straight away when it cannot steal the terminal -- that is, when we are
+	// already inside zellij and the workspace can arrive as tabs beside whatever
+	// you are doing. Starting a session seizes the terminal, so outside zellij it
+	// stays behind --attach.
+	open, asTab := mux.AutoOpen(l, o.OwnSession)
+	if o.NoAttach {
+		open = false
 	}
-	if l := muxFor(o.Mux); l != nil {
+	if o.Attach {
+		open = true
+	}
+	if open {
+		return openSession(ws, wsName, homeDir, o.Number, o.Mux, asTab)
+	}
+	if l != nil {
 		fmt.Printf("\nopen it:    facet attach --path %s\n", ws)
 		fmt.Printf("rejoin it:  %s\n", l.AttachCommand(wsName))
 	}

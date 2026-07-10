@@ -125,11 +125,18 @@ func newReapCmd() *cobra.Command {
 }
 
 func newAttachCmd() *cobra.Command {
-	var path string
+	var (
+		path       string
+		ownSession bool
+	)
 	cmd := &cobra.Command{
 		Use:   "attach",
-		Short: "Open, or rejoin, an issue workspace's multiplexer session",
-		Args:  cobra.NoArgs,
+		Short: "Open, or rejoin, an issue workspace in the multiplexer",
+		Long: "Inside a zellij session this adds the workspace as tabs, because sessions do\n" +
+			"not nest and attaching from within one would seize this client.\n\n" +
+			"Outside zellij it attaches to the workspace's own session, creating it from\n" +
+			"the layout if needed.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ws, err := config.ResolveWorkspace(path)
 			if err != nil {
@@ -139,10 +146,12 @@ func newAttachCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return openSession(ws, st.Name, st.Issue.Home, st.Issue.Number, "")
+			_, asTab := mux.AutoOpen(muxFor(""), ownSession)
+			return openSession(ws, st.Name, st.Issue.Home, st.Issue.Number, "", asTab)
 		},
 	}
 	cmd.Flags().StringVar(&path, "path", "", "issue workspace (default: working directory)")
+	cmd.Flags().BoolVar(&ownSession, "session", false, "open in a session of its own instead of tabs (must not already be inside zellij)")
 	return cmd
 }
 
