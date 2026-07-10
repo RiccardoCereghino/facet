@@ -29,7 +29,7 @@ func TestWriteLayoutSubstitutes(t *testing.T) {
 		Name: "iss-x-1", Workspace: ws, HomeDir: filepath.Join(ws, "repo"),
 		Number: 42, Agent: "claude",
 	}
-	path, err := writeLayout(s)
+	path, _, err := writeLayout(s)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestWriteLayoutHonoursOverride(t *testing.T) {
 	if err := os.WriteFile(override, []byte("layout { cwd \"__CWD__\" }\n"), 0o666); err != nil {
 		t.Fatal(err)
 	}
-	path, err := writeLayout(Session{Workspace: ws, HomeDir: ws, Override: override})
+	path, _, err := writeLayout(Session{Workspace: ws, HomeDir: ws, Override: override})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestWriteLayoutHonoursOverride(t *testing.T) {
 // An unreadable override must fall back to the built-in layout, not fail a spawn.
 func TestWriteLayoutIgnoresMissingOverride(t *testing.T) {
 	ws := t.TempDir()
-	path, err := writeLayout(Session{Workspace: ws, HomeDir: ws, Override: filepath.Join(ws, "nope.kdl")})
+	path, _, err := writeLayout(Session{Workspace: ws, HomeDir: ws, Override: filepath.Join(ws, "nope.kdl")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestWriteLayoutIgnoresMissingOverride(t *testing.T) {
 
 func TestWriteLayoutDefaultsToAShell(t *testing.T) {
 	ws := t.TempDir()
-	path, _ := writeLayout(Session{Workspace: ws, HomeDir: ws})
+	path, _, _ := writeLayout(Session{Workspace: ws, HomeDir: ws})
 	b, _ := os.ReadFile(path)
 	if strings.Contains(string(b), "__AGENT__") || !strings.Contains(string(b), "command \"") {
 		t.Errorf("no shell substituted:\n%s", b)
@@ -116,7 +116,7 @@ func TestZellijAcceptsGeneratedLayout(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(ws, "repo"), 0o777); err != nil {
 		t.Fatal(err)
 	}
-	path, err := writeLayout(Session{
+	path, _, err := writeLayout(Session{
 		Name: "facet-layout-probe", Workspace: ws,
 		HomeDir: filepath.Join(ws, "repo"), Number: 1, Agent: "pwsh",
 	})
@@ -299,7 +299,7 @@ func TestAutoOpenNeverStealsTheTerminal(t *testing.T) {
 // and passes the agent as an argument.
 func TestLayoutNeverExecsTheAgentDirectly(t *testing.T) {
 	ws := t.TempDir()
-	path, err := writeLayout(Session{
+	path, _, err := writeLayout(Session{
 		Name: "iss-x-67", Workspace: ws, HomeDir: filepath.Join(ws, "repo"),
 		Number: 67, Agent: "claude",
 	})
@@ -338,7 +338,7 @@ func TestLayoutNeverExecsTheAgentDirectly(t *testing.T) {
 func TestLayoutSetsCwdOnEveryPane(t *testing.T) {
 	ws := t.TempDir()
 	home := filepath.Join(ws, "repo")
-	path, err := writeLayout(Session{Name: "n", Workspace: ws, HomeDir: home, Number: 1, Agent: "claude"})
+	path, _, err := writeLayout(Session{Name: "n", Workspace: ws, HomeDir: home, Number: 1, Agent: "claude"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -407,4 +407,127 @@ func TestFindExecutableRejectsNonPEOnWindows(t *testing.T) {
 	if p := findExecutable("pwsh"); p == "" || !strings.EqualFold(filepath.Ext(p), ".exe") {
 		t.Errorf("findExecutable(pwsh) = %q; want a .exe", p)
 	}
+}
+
+// A layout override is copied once and then goes stale, silently, defeating every
+// fix shipped after the copy. That is precisely what happened: an override seeded
+// from an older template still said `command "__AGENT__"`, so zellij was handed a
+// command that does not exist.
+func TestStaleOverrideIsRejectedAndFallsBack(t *testing.T) {
+	ws := t.TempDir()
+	override := filepath.Join(ws, "stale.kdl")
+	stale := "layout {\n    cwd \"__CWD__\"\n    tab name=\"#__NUM__\" {\n" +
+		"        pane { command \"__AGENT__\" }\n    }\n}\n"
+	if err := os.WriteFile(override, []byte(stale), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	path, warn, err := writeLayout(Session{
+		Name: "n", Workspace: ws, HomeDir: filepath.Join(ws, "repo"),
+		Number: 67, Agent: "claude", Override: override,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if warn == "" {
+		t.Error("a stale override must be reported, not used silently")
+	}
+	if !strings.Contains(warn, "__AGENT__") {
+		t.Errorf("warning should name the leftover placeholder: %q", warn)
+	}
+	b, _ := os.ReadFile(path)
+	src := string(b)
+	if strings.Contains(src, "__AGENT__") {
+		t.Fatalf("stale override was written to disk:\n%s", src)
+	}
+	if !strings.Contains(src, `name="workspace"`) {
+		t.Errorf("did not fall back to the built-in layout:\n%s", src)
+	}
+	if p := layoutProblem(src); p != "" {
+		t.Errorf("fallback layout is itself unsafe: %s", p)
+	}
+}
+
+// An override naming a command that cannot be spawned is the other way to panic
+// zellij. Reject that too.
+func TestOverrideWithUnrunnableCommandIsRejected(t *testing.T) {
+	ws := t.TempDir()
+	override := filepath.Join(ws, "bad.kdl")
+	if err := os.WriteFile(override,
+		[]byte("layout {\n    pane { command \"definitely-not-a-real-binary-xyz\" }\n}\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	_, warn, err := writeLayout(Session{Name: "n", Workspace: ws, HomeDir: ws, Override: override})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if warn == "" || !strings.Contains(warn, "not on PATH") {
+		t.Errorf("warn = %q; an unrunnable command must be rejected", warn)
+	}
+}
+
+func TestLayoutProblem(t *testing.T) {
+	shell := findExecutable(shellCandidates()...)
+	if shell == "" {
+		t.Skip("no shell")
+	}
+	esc := kdlPath(shell)
+
+	tests := map[string]struct {
+		src  string
+		want string // substring, "" = safe
+	}{
+		"safe, absolute command": {"layout { pane { command \"" + esc + "\" } }", ""},
+		// KDL also spells it as a property. Both must be checked.
+		"safe, property form":  {"layout { pane command=\"" + esc + "\" }", ""},
+		"safe, no command":     {"layout { pane }", ""},
+		"leftover placeholder": {"layout { cwd \"__CWD__\" }", "unsubstituted"},
+		"missing absolute file": {
+			"layout {\n    pane { command \"" + kdlPath(missingAbs(t)) + "\" }\n}",
+			"does not exist"},
+		"not on PATH":   {"layout { pane { command \"definitely-not-a-real-binary-xyz\" } }", "not on PATH"},
+		"empty command": {"layout {\n    pane { command \"\" }\n}", "empty command"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := layoutProblem(tt.src)
+			if tt.want == "" {
+				if got != "" {
+					t.Errorf("layoutProblem = %q; want safe", got)
+				}
+				return
+			}
+			if !strings.Contains(got, tt.want) {
+				t.Errorf("layoutProblem = %q; want it to mention %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// The built-in layout must always be safe. If it is not, that is a facet bug and
+// writeLayout returns an error rather than handing it to zellij.
+func TestBuiltInLayoutIsAlwaysSafe(t *testing.T) {
+	ws := t.TempDir()
+	path, warn, err := writeLayout(Session{Name: "n", Workspace: ws, HomeDir: ws, Number: 1, Agent: "claude"})
+	if err != nil {
+		t.Fatalf("built-in layout is unsafe: %v", err)
+	}
+	if warn != "" {
+		t.Errorf("unexpected warning: %s", warn)
+	}
+	b, _ := os.ReadFile(path)
+	if p := layoutProblem(string(b)); p != "" {
+		t.Errorf("built-in layout %s", p)
+	}
+}
+
+// missingAbs returns an absolute path that does not exist. On Windows a leading
+// separator is not absolute -- it needs a drive letter -- so derive it from a
+// real temp dir.
+func missingAbs(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "no-such-binary.exe")
+	if !filepath.IsAbs(p) {
+		t.Fatalf("%q is not absolute", p)
+	}
+	return p
 }

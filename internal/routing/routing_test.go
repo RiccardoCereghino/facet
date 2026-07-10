@@ -290,8 +290,8 @@ func TestScopeFieldRenderings(t *testing.T) {
 
 // A `checkboxes` field renders EVERY option into the body, checked or not:
 //
-//	- [x] gateway
-//	- [ ] infra-core
+//   - [x] gateway
+//   - [ ] infra-core
 //
 // Splitting that on whitespace leaves the bare token `infra-core`, which resolves --
 // so a naive parser selects every option and `facet spawn` clones the world. The

@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 )
@@ -252,7 +253,10 @@ func plan(name, layout string, inSession, live, asTab bool) (argv []string, guid
 // Start opens the workspace: attaching, switching, or adding tabs as the
 // situation allows. It blocks while zellij holds the terminal.
 func (z Zellij) Start(s Session) error {
-	layout, err := writeLayout(s)
+	layout, warn, err := writeLayout(s)
+	if warn != "" {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", warn)
+	}
 	if err != nil {
 		return err
 	}
@@ -327,13 +331,58 @@ func LayoutOverride(workspacesRoot string) string {
 	return filepath.Join(workspacesRoot, ".tools", "issue-layout.kdl")
 }
 
-// writeLayout renders the KDL layout into the workspace and returns its path.
+// placeholderLeft finds an unsubstituted __PLACEHOLDER__.
+var placeholderLeft = regexp.MustCompile(`__[A-Z_]+__`)
+
+// commandLine matches a command wherever KDL allows it: as a child node
+// (`command "x"`) or as a property (`pane command="x"`), on its own line or
+// inline. The capture tolerates KDL escapes, since Windows paths are full of them.
+var commandLine = regexp.MustCompile(`\bcommand(?:\s+|\s*=\s*)"((?:\\.|[^"\\])*)"`)
+
+// layoutProblem reports why a rendered layout must not be handed to zellij, or
+// "" when it is safe.
+//
+// zellij's Windows backend panics when it cannot spawn a pane's command, taking
+// the session with it. So a layout is only safe if every command it names is an
+// executable that exists, and nothing was left unsubstituted -- which is exactly
+// what a stale hand-edited override produces, silently, forever.
+func layoutProblem(src string) string {
+	if m := placeholderLeft.FindString(src); m != "" {
+		return "leaves " + m + " unsubstituted"
+	}
+	for _, m := range commandLine.FindAllStringSubmatch(src, -1) {
+		// Undo the KDL escaping applied when the path was written.
+		p := strings.ReplaceAll(strings.ReplaceAll(m[1], `\"`, `"`), `\\`, `\`)
+		if p == "" {
+			return "has an empty command"
+		}
+		if !filepath.IsAbs(p) {
+			if _, err := exec.LookPath(p); err != nil {
+				return "names command " + p + ", which is not on PATH"
+			}
+			continue
+		}
+		if _, err := os.Stat(p); err != nil {
+			return "names command " + p + ", which does not exist"
+		}
+		if runtime.GOOS == "windows" && !strings.EqualFold(filepath.Ext(p), ".exe") {
+			return "names command " + p + ", which is not a PE executable"
+		}
+	}
+	return ""
+}
+
+// writeLayout renders the KDL layout into the workspace and returns its path,
+// plus a warning when an override had to be rejected.
+//
 // It lands under .facet/ so `facet reap` removes it with everything else.
-func writeLayout(s Session) (string, error) {
+func writeLayout(s Session) (path, warn string, err error) {
 	tmpl := defaultLayout
+	usingOverride := false
 	if s.Override != "" {
 		if b, err := os.ReadFile(s.Override); err == nil {
 			tmpl = string(b)
+			usingOverride = true
 		}
 	}
 	exe, args := agentInvocation(s.Agent)
@@ -358,15 +407,32 @@ func writeLayout(s Session) (string, error) {
 		"__AGENT_ARGS__", argsLine,
 		"__NUM__", fmt.Sprint(s.Number),
 	)
+	rendered := r.Replace(tmpl)
+
+	// A hand-edited override goes stale silently, and a stale layout defeats every
+	// fix shipped after it was copied. Check the rendered result before zellij
+	// sees it; on any problem fall back to the built-in layout and say so.
+	if problem := layoutProblem(rendered); problem != "" {
+		if !usingOverride {
+			return "", "", fmt.Errorf("built-in layout %s -- this is a bug in facet", problem)
+		}
+		warn = fmt.Sprintf("layout override %s %s; using the built-in layout instead.\n"+
+			"  Refresh it from `facet`'s template, or delete it.", s.Override, problem)
+		rendered = r.Replace(defaultLayout)
+		if problem := layoutProblem(rendered); problem != "" {
+			return "", warn, fmt.Errorf("built-in layout %s -- this is a bug in facet", problem)
+		}
+	}
+
 	dir := filepath.Join(s.Workspace, ".facet")
 	if err := os.MkdirAll(dir, 0o777); err != nil {
-		return "", err
+		return "", warn, err
 	}
-	path := filepath.Join(dir, "layout.kdl")
-	if err := os.WriteFile(path, []byte(r.Replace(tmpl)), 0o666); err != nil {
-		return "", err
+	path = filepath.Join(dir, "layout.kdl")
+	if err := os.WriteFile(path, []byte(rendered), 0o666); err != nil {
+		return "", warn, err
 	}
-	return path, nil
+	return path, warn, nil
 }
 
 // kdlPath escapes a filesystem path for a KDL string. Windows separators are
