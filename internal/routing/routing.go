@@ -205,13 +205,43 @@ func blockedRefs(body string) map[string]bool {
 // please -- the real ones use `## Blocked by`.
 var sectionHeading = regexp.MustCompile(`(?m)^#{2,6}\s+(.*?)\s*$`)
 
+// taskListItem matches a Markdown task-list line, capturing the mark and the label:
+// "- [x] gateway" or "* [ ] infra-core". A plain bullet ("- gateway") does not match.
+var taskListItem = regexp.MustCompile(`^\s*[-*+]\s*\[([ xX])\]\s*(.*)$`)
+
+// dropUnchecked removes the options a task list did NOT select.
+//
+// A GitHub `checkboxes` form field renders EVERY option into the issue body, ticked
+// or not. Tokenising that blindly leaves the bare repo name of each unticked option,
+// which resolves -- so every option would count as in scope and `facet spawn` would
+// clone the world. The forms use `dropdown` for this reason, but a body can still
+// arrive with task-list syntax, so parse it honestly rather than trusting the form.
+func dropUnchecked(section string) string {
+	lines := strings.Split(section, "\n")
+	out := lines[:0:0]
+	for _, line := range lines {
+		m := taskListItem.FindStringSubmatch(line)
+		if m == nil {
+			out = append(out, line) // not a task list item; leave it be
+			continue
+		}
+		if m[1] == " " {
+			continue // unticked: the option was not selected
+		}
+		out = append(out, m[2]) // ticked: keep the label, drop the marker
+	}
+	return strings.Join(out, "\n")
+}
+
 // scopeField reads the "Repos in scope" field an issue form produces. It returns
-// nil when the field is absent, empty, or answered "unsure".
+// nil when the field is absent, empty, answered "unsure", or -- when rendered as a
+// task list -- has nothing ticked.
 func (r *Routing) scopeField(body string) []string {
 	section := findSection(body, "Repos in scope")
 	if section == "" {
 		return nil
 	}
+	section = dropUnchecked(section)
 	var keys []string
 	seen := map[string]bool{}
 	for _, tok := range strings.FieldsFunc(section, func(c rune) bool {
