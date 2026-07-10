@@ -29,11 +29,39 @@ type Repo struct {
 	LFS *bool `json:"lfs,omitempty"`
 }
 
+// Project points at a Projects v2 board and says what to do to an issue when a
+// workspace is spawned for it. Optional: without it, facet touches no board.
+type Project struct {
+	Owner  string `json:"owner"`
+	Number int    `json:"number"`
+	// StatusField is the single-select field to drive. Defaults to "Status".
+	StatusField string `json:"statusField,omitempty"`
+	// OnSpawn is the option to select when `facet spawn` creates the workspace,
+	// e.g. "In progress". Empty means do nothing.
+	OnSpawn string `json:"onSpawn,omitempty"`
+}
+
+// Target renders p as the board coordinates ghx needs. Ok is false when there is
+// nothing to do, which is the case for a routing file with no project block.
+func (r *Routing) Target() (t ghx.ProjectTarget, ok bool) {
+	p := r.Project
+	if p == nil || p.OnSpawn == "" {
+		return ghx.ProjectTarget{}, false
+	}
+	field := p.StatusField
+	if field == "" {
+		field = "Status"
+	}
+	return ghx.ProjectTarget{Owner: p.Owner, Number: p.Number, Field: field, Option: p.OnSpawn}, true
+}
+
 // Routing is the project-specific data facet reads. It lives outside the binary
 // on purpose: facet itself knows nothing about any particular organisation.
 type Routing struct {
 	Version int             `json:"version"`
 	Repos   map[string]Repo `json:"repos"`
+	// Project is the board `facet spawn` moves an issue on. Optional.
+	Project *Project `json:"project,omitempty"`
 	// OwnerRepoToKey maps "owner/name" as GitHub spells it to a repo key.
 	OwnerRepoToKey map[string]string `json:"ownerRepoToKey"`
 	// Aliases maps loose spellings in an issue body to a repo key.
@@ -85,6 +113,19 @@ func (r *Routing) Validate() error {
 	for _, key := range r.PathHints {
 		if !known(key) {
 			return fmt.Errorf("pathHints names %q, which is not in repos", key)
+		}
+	}
+	// A half-written project block is worse than none: spawn would warn on every
+	// issue and the board would drift without anyone noticing why.
+	if p := r.Project; p != nil {
+		if p.Owner == "" {
+			return fmt.Errorf("project.owner is required")
+		}
+		if p.Number <= 0 {
+			return fmt.Errorf("project.number must be the board's number, got %d", p.Number)
+		}
+		if p.StatusField != "" && p.OnSpawn == "" {
+			return fmt.Errorf("project.statusField = %q but project.onSpawn is empty: nothing would be set", p.StatusField)
 		}
 	}
 	return nil

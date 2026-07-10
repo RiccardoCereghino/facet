@@ -209,6 +209,21 @@ func runSpawn(o spawnOpts) error {
 		return err
 	}
 
+	// The board is moved only once the workspace is real. "In progress" should
+	// mean there is somewhere to do the work, so this comes after the clones, the
+	// branch and the CLAUDE.md -- and never before the confirmation prompt.
+	//
+	// It is never fatal. A renamed board or a `gh` without the `project` scope
+	// must not strand a workspace that is otherwise complete, exactly as a failed
+	// mirror fetch does not.
+	if target, ok := route.Target(); ok {
+		if err := gh.SetIssueStatus(target, iss.URL); err != nil {
+			rep.Warn("project %s/%d: %v", target.Owner, target.Number, err)
+		} else {
+			rep.Created("project %s/%d: %s = %s", target.Owner, target.Number, target.Field, target.Option)
+		}
+	}
+
 	fmt.Printf("\nWorkspace ready: %s\n", ws)
 
 	// The multiplexer comes last and is never fatal: the clones, the branch and
@@ -325,6 +340,9 @@ func printPlan(ws, repo string, iss *ghx.Issue, sel []routing.Selection, hints [
 		fmt.Printf("branch:    %s (linked to the issue)\n", branch)
 	} else {
 		fmt.Printf("branch:    none (--no-branch)\n")
+	}
+	if t, ok := route.Target(); ok {
+		fmt.Printf("board:     %s/%d, %s = %s\n", t.Owner, t.Number, t.Field, t.Option)
 	}
 
 	fmt.Printf("\nrepos to clone, and why:\n")

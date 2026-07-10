@@ -56,6 +56,22 @@ type PR struct {
 	URL      string `json:"url"`
 }
 
+// ProjectTarget names a Projects v2 board and the single-select field value to
+// put an issue in. Everything is named, never an opaque node ID: the IDs GitHub
+// wants (PVT_…, PVTSSF_…, and an eight-hex-digit option) are stable but
+// unreadable, and would rot silently in a config file. They are resolved from
+// these names on each call.
+//
+// A GitHub issue has no "in progress" state -- it is open or closed. Status is a
+// field on the board item, so setting it means finding, and if need be creating,
+// that item.
+type ProjectTarget struct {
+	Owner  string // the org or user that owns the board
+	Number int    // the board's number, as in /orgs/<owner>/projects/<number>
+	Field  string // a single-select field's name, e.g. "Status"
+	Option string // one of that field's option names, e.g. "In progress"
+}
+
 // Client is the GitHub surface facet uses. It is an interface so the spawn and
 // reap logic can be tested without touching the network.
 type Client interface {
@@ -68,6 +84,10 @@ type Client interface {
 	BranchesFor(repo string, number int) ([]string, error)
 	// ViewPR finds the pull request for a head branch, if any.
 	ViewPR(repo, branch string) (*PR, error)
+	// SetIssueStatus puts the issue on target's board, if it is not already
+	// there, and sets target's field to target's option. issueURL is the issue's
+	// html_url, which is what `gh project item-add` takes.
+	SetIssueStatus(target ProjectTarget, issueURL string) error
 }
 
 // CLI is the real client, backed by the gh binary.
@@ -133,6 +153,92 @@ func (CLI) BranchesFor(repo string, number int) ([]string, error) {
 		}
 	}
 	return branches, nil
+}
+
+// SetIssueStatus adds the issue to the board and sets one single-select field.
+//
+// `gh project item-add` is idempotent: an issue already on the board comes back
+// with the item ID it already had, and nothing is duplicated. So there is no
+// need to list the board first, and no race between checking and adding.
+func (CLI) SetIssueStatus(t ProjectTarget, issueURL string) error {
+	num := fmt.Sprint(t.Number)
+
+	var proj struct {
+		ID string `json:"id"`
+	}
+	out, err := run("project", "view", num, "--owner", t.Owner, "--format", "json")
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(out, &proj); err != nil {
+		return fmt.Errorf("parse project %s/%s: %w", t.Owner, num, err)
+	}
+
+	fieldID, optionID, err := resolveOption(t)
+	if err != nil {
+		return err
+	}
+
+	var item struct {
+		ID string `json:"id"`
+	}
+	out, err = run("project", "item-add", num, "--owner", t.Owner, "--url", issueURL, "--format", "json")
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(out, &item); err != nil {
+		return fmt.Errorf("parse project item for %s: %w", issueURL, err)
+	}
+
+	_, err = run("project", "item-edit", "--id", item.ID, "--project-id", proj.ID,
+		"--field-id", fieldID, "--single-select-option-id", optionID)
+	return err
+}
+
+// resolveOption turns the field and option *names* in t into the node IDs the
+// API wants. Names are matched case-insensitively: "in progress" is what a human
+// types, "In progress" is what the board calls it.
+func resolveOption(t ProjectTarget) (fieldID, optionID string, err error) {
+	out, err := run("project", "field-list", fmt.Sprint(t.Number), "--owner", t.Owner,
+		"--limit", "100", "--format", "json")
+	if err != nil {
+		return "", "", err
+	}
+	var fields struct {
+		Fields []struct {
+			ID      string `json:"id"`
+			Name    string `json:"name"`
+			Type    string `json:"type"`
+			Options []struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"options"`
+		} `json:"fields"`
+	}
+	if err := json.Unmarshal(out, &fields); err != nil {
+		return "", "", fmt.Errorf("parse fields of project %s/%d: %w", t.Owner, t.Number, err)
+	}
+	for _, f := range fields.Fields {
+		if !strings.EqualFold(f.Name, t.Field) {
+			continue
+		}
+		if f.Type != "ProjectV2SingleSelectField" {
+			return "", "", fmt.Errorf("project %s/%d: field %q is a %s, not a single-select",
+				t.Owner, t.Number, f.Name, f.Type)
+		}
+		for _, o := range f.Options {
+			if strings.EqualFold(o.Name, t.Option) {
+				return f.ID, o.ID, nil
+			}
+		}
+		names := make([]string, 0, len(f.Options))
+		for _, o := range f.Options {
+			names = append(names, o.Name)
+		}
+		return "", "", fmt.Errorf("project %s/%d: field %q has no option %q; it has: %s",
+			t.Owner, t.Number, f.Name, t.Option, strings.Join(names, ", "))
+	}
+	return "", "", fmt.Errorf("project %s/%d has no field %q", t.Owner, t.Number, t.Field)
 }
 
 // ViewPR finds the PR whose head is branch. A missing PR is (nil, nil).

@@ -350,3 +350,66 @@ func TestScopeFieldNoResponse(t *testing.T) {
 		t.Errorf("keys = %v; an empty scope field must fall back to labels", keys)
 	}
 }
+
+// A routing file with no project block must leave every board alone, and a
+// half-written one must be rejected at load rather than warned about on every
+// single spawn.
+func TestProjectTarget(t *testing.T) {
+	tests := []struct {
+		name    string
+		project *Project
+		want    ghx.ProjectTarget
+		ok      bool
+	}{
+		{name: "absent", project: nil},
+		{
+			name:    "onSpawn empty is opt-out",
+			project: &Project{Owner: "acme", Number: 4},
+		},
+		{
+			name:    "statusField defaults to Status",
+			project: &Project{Owner: "acme", Number: 4, OnSpawn: "In progress"},
+			want:    ghx.ProjectTarget{Owner: "acme", Number: 4, Field: "Status", Option: "In progress"},
+			ok:      true,
+		},
+		{
+			name:    "statusField honoured",
+			project: &Project{Owner: "acme", Number: 4, StatusField: "Phase", OnSpawn: "Doing"},
+			want:    ghx.ProjectTarget{Owner: "acme", Number: 4, Field: "Phase", Option: "Doing"},
+			ok:      true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &Routing{Project: tt.project}
+			got, ok := r.Target()
+			if ok != tt.ok {
+				t.Fatalf("ok = %v, want %v", ok, tt.ok)
+			}
+			if ok && got != tt.want {
+				t.Errorf("Target() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateProject(t *testing.T) {
+	bad := map[string]*Project{
+		"no owner":              {Number: 4, OnSpawn: "In progress"},
+		"no number":             {Owner: "acme", OnSpawn: "In progress"},
+		"negative number":       {Owner: "acme", Number: -1, OnSpawn: "In progress"},
+		"field without onSpawn": {Owner: "acme", Number: 4, StatusField: "Status"},
+	}
+	for name, p := range bad {
+		t.Run(name, func(t *testing.T) {
+			r := &Routing{Repos: map[string]Repo{}, Project: p}
+			if err := r.Validate(); err == nil {
+				t.Errorf("Validate accepted project %+v", p)
+			}
+		})
+	}
+	r := &Routing{Repos: map[string]Repo{}, Project: &Project{Owner: "acme", Number: 4, OnSpawn: "In progress"}}
+	if err := r.Validate(); err != nil {
+		t.Errorf("Validate rejected a good project: %v", err)
+	}
+}

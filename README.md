@@ -75,6 +75,31 @@ closed without a change in another repository. So the inference is always shown,
 never silently trusted, and correctable with `--clone` / `--add` / `--rm`.
 `--dry-run` prints it and creates nothing.
 
+### Moving the issue on a project board
+
+A GitHub issue has no "in progress" state — it is open or closed. "In progress" is
+an option on the **Status** field of a Projects v2 board, and it belongs to the
+board *item*, not to the issue. So give `.tools/routing.json` a board to drive, and
+`facet spawn` puts the issue on it and sets the field once the workspace is real:
+
+```json
+"project": { "owner": "acme", "number": 4, "statusField": "Status", "onSpawn": "In progress" }
+```
+
+The board is named, never by node ID: `PVTSSF_lADOD…` is stable but unreadable, and
+would rot in a config file without anyone noticing. `facet` resolves the names on
+each spawn, matching case-insensitively, and reports the transition:
+
+```
++ project acme/4: Status = In progress
+```
+
+Both fields are optional and both are shown by `--dry-run` before anything happens.
+Omit `project` and no board is touched. A board that has been renamed, or a `gh`
+missing the `project` scope, **warns and does not fail the spawn** — the clones,
+the branch and the `CLAUDE.md` are the point, and a complete workspace must never
+be stranded by a bad day at GitHub Projects.
+
 `facet attach` opens a zellij session for the workspace: an agent pane in the home
 clone beside a shell. One session per issue, so `zellij list-sessions` becomes the
 dashboard of what is running.
@@ -105,7 +130,7 @@ read from your workspaces root:
 
 | File | What it holds |
 | --- | --- |
-| `.tools/routing.json` | the repo table, and the label → repos prior |
+| `.tools/routing.json` | the repo table, the label → repos prior, and the project board |
 | `.knowledge/area-*.md` | durable hazards, inlined into a spawned workspace |
 | `.tools/issue-layout.kdl` | the zellij layout |
 
