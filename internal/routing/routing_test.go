@@ -288,6 +288,55 @@ func TestScopeFieldRenderings(t *testing.T) {
 	}
 }
 
+// A `checkboxes` field renders EVERY option into the body, checked or not:
+//
+//	- [x] gateway
+//	- [ ] infra-core
+//
+// Splitting that on whitespace leaves the bare token `infra-core`, which resolves --
+// so a naive parser selects every option and `facet spawn` clones the world. The
+// issue forms use `dropdown` for exactly this reason, but a body may still arrive
+// with task-list syntax (a hand-written issue, or a form someone "improved"), so an
+// unchecked box must never count as a selection.
+func TestScopeFieldCheckboxes(t *testing.T) {
+	r := load(t)
+	base := "### Summary\n\nx\n\n### Repos in scope\n\n%s\n\n### Acceptance\n\ny\n"
+	tests := map[string]struct {
+		section string
+		want    []string
+	}{
+		"one checked, rest unchecked": {
+			"- [x] gateway\n- [ ] infra-core\n- [ ] widgetapi",
+			[]string{"platform", "gateway"},
+		},
+		"two checked": {
+			"- [x] gateway\n- [x] infra-core\n- [ ] widgetapi",
+			[]string{"platform", "gateway", "infra"},
+		},
+		"uppercase X": {
+			"- [X] gateway\n- [ ] infra-core",
+			[]string{"platform", "gateway"},
+		},
+		"asterisk bullets": {
+			"* [x] gateway\n* [ ] infra-core",
+			[]string{"platform", "gateway"},
+		},
+		// Nothing ticked is the same as an unanswered field: fall back to the home repo.
+		"none checked": {
+			"- [ ] gateway\n- [ ] infra-core",
+			[]string{"platform"},
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			got, _ := r.Infer("acme/platform", &ghx.Issue{Body: fmt.Sprintf(base, tc.section)})
+			if keys := Keys(got); !reflect.DeepEqual(keys, tc.want) {
+				t.Errorf("%q\n got %v\nwant %v", tc.section, keys, tc.want)
+			}
+		})
+	}
+}
+
 // An unfilled optional field renders as "_No response_". It must not be read as a
 // repository, and it must not suppress the label fallback.
 func TestScopeFieldNoResponse(t *testing.T) {

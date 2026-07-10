@@ -78,6 +78,62 @@ func defaultShell() string {
 	return "bash"
 }
 
+// agentInvocation returns the executable and arguments that start the agent in a
+// pane.
+//
+// The agent is always launched THROUGH a shell, never directly. zellij's Windows
+// backend calls CreateProcessW with no shell, so it cannot start a `#!/bin/sh`
+// script or a `.cmd` shim -- and `claude`, installed by npm, is exactly that.
+// Worse, when the spawn fails the fork PANICS and takes the whole session down.
+// So we hand it a real executable and let that run the agent.
+//
+// An empty exe means we could not find a shell to trust; the caller should open
+// a plain pane rather than risk the spawn.
+func agentInvocation(agent string) (exe string, args []string) {
+	exe = findExecutable(shellCandidates()...)
+	if exe == "" {
+		return "", nil
+	}
+	if agent == "" {
+		return exe, nil
+	}
+	if runtime.GOOS == "windows" {
+		// -NoExit keeps the pane usable after the agent exits.
+		return exe, []string{"-NoLogo", "-NoExit", "-Command", agent}
+	}
+	return exe, []string{"-lc", agent}
+}
+
+func shellCandidates() []string {
+	if runtime.GOOS == "windows" {
+		return []string{"pwsh", "powershell", "cmd"}
+	}
+	if sh := os.Getenv("SHELL"); sh != "" {
+		return []string{sh, "bash", "sh"}
+	}
+	return []string{"bash", "sh"}
+}
+
+// findExecutable returns the absolute path of the first candidate that the OS can
+// actually execute. On Windows that means a PE image: LookPath honours PATHEXT,
+// but an extensionless npm shim can still win, so the extension is checked.
+func findExecutable(candidates ...string) string {
+	for _, c := range candidates {
+		p, err := exec.LookPath(c)
+		if err != nil {
+			continue
+		}
+		if runtime.GOOS == "windows" && !strings.EqualFold(filepath.Ext(p), ".exe") {
+			continue
+		}
+		if abs, err := filepath.Abs(p); err == nil {
+			return abs
+		}
+		return p
+	}
+	return ""
+}
+
 // Launcher is one multiplexer.
 type Launcher interface {
 	// Name is what to call it in output.
@@ -184,12 +240,12 @@ func plan(name, layout string, inSession, live, asTab bool) (argv []string, guid
 		// it is the form that was actually exercised against a live session.
 		return []string{"--session", SessionName(), "--layout", layout}, ""
 
-	default: // inSession && !live
+	default: // inSession && !live, and --session was asked for
 		return nil, "you are inside zellij session " + SessionName() + ", and " + name +
 			" does not exist yet.\n" +
 			"  zellij sessions do not nest. Either:\n" +
-			"    detach first  -- Ctrl+o then d, then re-run this command\n" +
-			"    or open it here as tabs -- re-run with --tab"
+			"    detach first -- Ctrl+o then d, then re-run this command\n" +
+			"    or drop --session, to open it here as tabs"
 	}
 }
 
@@ -280,14 +336,26 @@ func writeLayout(s Session) (string, error) {
 			tmpl = string(b)
 		}
 	}
-	agent := s.Agent
-	if agent == "" {
-		agent = defaultShell()
+	exe, args := agentInvocation(s.Agent)
+	if exe == "" {
+		// No trustworthy executable. A pane with no command is a plain shell,
+		// which is infinitely better than panicking the user's session.
+		exe = defaultShell()
+		args = nil
+	}
+	var argsLine string
+	if len(args) > 0 {
+		quoted := make([]string, len(args))
+		for i, a := range args {
+			quoted[i] = `"` + kdlPath(a) + `"`
+		}
+		argsLine = "args " + strings.Join(quoted, " ")
 	}
 	r := strings.NewReplacer(
 		"__CWD__", kdlPath(s.HomeDir),
 		"__WS__", kdlPath(s.Workspace),
-		"__AGENT__", agent,
+		"__AGENT_CMD__", kdlPath(exe),
+		"__AGENT_ARGS__", argsLine,
 		"__NUM__", fmt.Sprint(s.Number),
 	)
 	dir := filepath.Join(s.Workspace, ".facet")

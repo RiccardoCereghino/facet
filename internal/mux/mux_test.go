@@ -38,13 +38,14 @@ func TestWriteLayoutSubstitutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := string(b)
-	for _, ph := range []string{"__CWD__", "__WS__", "__AGENT__", "__NUM__"} {
+	for _, ph := range []string{"__CWD__", "__WS__", "__AGENT_CMD__", "__AGENT_ARGS__", "__NUM__"} {
 		if strings.Contains(out, ph) {
 			t.Errorf("placeholder %s survived rendering", ph)
 		}
 	}
-	if !strings.Contains(out, `command "claude"`) {
-		t.Errorf("agent command missing:\n%s", out)
+	// The agent is an argument to a shell, never the executable itself.
+	if !strings.Contains(out, "claude") || strings.Contains(out, `command "claude"`) {
+		t.Errorf("agent must be passed to a shell, not exec'd:\n%s", out)
 	}
 	if !strings.Contains(out, `name="#42"`) {
 		t.Errorf("issue number missing:\n%s", out)
@@ -181,7 +182,7 @@ func TestPlan(t *testing.T) {
 				if argv != nil {
 					t.Errorf("guidance case must run nothing, got %v", argv)
 				}
-				for _, want := range []string{"do not nest", "detach", "--tab"} {
+				for _, want := range []string{"do not nest", "detach", "--session"} {
 					if !strings.Contains(guidance, want) {
 						t.Errorf("guidance omits %q:\n%s", want, guidance)
 					}
@@ -287,5 +288,123 @@ func TestAutoOpenNeverStealsTheTerminal(t *testing.T) {
 	t.Setenv("ZELLIJ", "")
 	if open, _ := AutoOpen(fakeLauncher{"zellij"}, false); open {
 		t.Error("outside a session, opening seizes the terminal; it must stay opt-in")
+	}
+}
+
+// zellij's Windows backend calls CreateProcessW with no shell. It cannot start a
+// `#!/bin/sh` script or a .cmd shim -- and `claude`, installed by npm, is both.
+// When the spawn fails the fork PANICS and the whole session dies. It did.
+//
+// So the layout must never name the agent directly: it names a real executable
+// and passes the agent as an argument.
+func TestLayoutNeverExecsTheAgentDirectly(t *testing.T) {
+	ws := t.TempDir()
+	path, err := writeLayout(Session{
+		Name: "iss-x-67", Workspace: ws, HomeDir: filepath.Join(ws, "repo"),
+		Number: 67, Agent: "claude",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	src := string(b)
+
+	if strings.Contains(src, `command "claude"`) {
+		t.Fatalf("layout execs the agent directly; CreateProcessW cannot start it:\n%s", src)
+	}
+	if !strings.Contains(src, "args ") || !strings.Contains(src, "claude") {
+		t.Errorf("agent is not passed as an argument to a shell:\n%s", src)
+	}
+	// Every `command` in the layout must be an executable that exists.
+	for _, line := range strings.Split(src, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "command ") {
+			continue
+		}
+		raw := strings.Trim(strings.TrimPrefix(line, "command "), `"`)
+		p := strings.ReplaceAll(raw, `\`, `\`) // undo KDL escaping
+		if runtime.GOOS == "windows" && !strings.EqualFold(filepath.Ext(p), ".exe") {
+			t.Errorf("layout command %q is not a PE executable", p)
+		}
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("layout command %q does not exist: %v", p, err)
+		}
+	}
+}
+
+// A top-level cwd is ignored when a layout is added as tabs to an existing
+// session: zellij used facet's own working directory instead. Every pane carries
+// its own cwd now.
+func TestLayoutSetsCwdOnEveryPane(t *testing.T) {
+	ws := t.TempDir()
+	home := filepath.Join(ws, "repo")
+	path, err := writeLayout(Session{Name: "n", Workspace: ws, HomeDir: home, Number: 1, Agent: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	src := string(b)
+
+	var panes, panesWithCwd int
+	for _, line := range strings.Split(src, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "pane") || strings.HasPrefix(line, "pane split_direction") {
+			continue
+		}
+		panes++
+		if strings.Contains(line, "cwd=") {
+			panesWithCwd++
+		}
+	}
+	if panes == 0 {
+		t.Fatalf("no panes found:\n%s", src)
+	}
+	if panes != panesWithCwd {
+		t.Errorf("%d of %d panes carry a cwd; a top-level cwd is ignored for added tabs:\n%s",
+			panesWithCwd, panes, src)
+	}
+}
+
+func TestAgentInvocationRunsThroughAShell(t *testing.T) {
+	exe, args := agentInvocation("claude")
+	if exe == "" {
+		t.Skip("no shell found")
+	}
+	if strings.Contains(strings.ToLower(exe), "claude") {
+		t.Errorf("exe = %q; the agent must not be the executable", exe)
+	}
+	if runtime.GOOS == "windows" && !strings.EqualFold(filepath.Ext(exe), ".exe") {
+		t.Errorf("exe = %q; must be a PE image", exe)
+	}
+	if !filepath.IsAbs(exe) {
+		t.Errorf("exe = %q; must be an absolute path so zellij need not search PATH", exe)
+	}
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "claude") {
+		t.Errorf("args = %v; agent not passed through", args)
+	}
+}
+
+// With no agent, the pane is just a shell and takes no args.
+func TestAgentInvocationEmptyAgent(t *testing.T) {
+	exe, args := agentInvocation("")
+	if exe == "" {
+		t.Skip("no shell found")
+	}
+	if len(args) != 0 {
+		t.Errorf("args = %v; a bare shell needs none", args)
+	}
+}
+
+func TestFindExecutableRejectsNonPEOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows only")
+	}
+	// `claude` resolves to an extensionless sh script; it must never be chosen.
+	if p := findExecutable("claude"); p != "" {
+		t.Errorf("findExecutable(claude) = %q; an npm shim is not a PE image", p)
+	}
+	if p := findExecutable("pwsh"); p == "" || !strings.EqualFold(filepath.Ext(p), ".exe") {
+		t.Errorf("findExecutable(pwsh) = %q; want a .exe", p)
 	}
 }
