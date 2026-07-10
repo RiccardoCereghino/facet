@@ -100,6 +100,56 @@ missing the `project` scope, **warns and does not fail the spawn** — the clone
 the branch and the `CLAUDE.md` are the point, and a complete workspace must never
 be stranded by a bad day at GitHub Projects.
 
+### The confirmed repo set is written back
+
+`facet spawn` prints its inference and waits for you. That answer is worth keeping:
+on confirmation it records the confirmed repos in the issue's **Repos in scope**
+section, so the next spawn reads a decision (`scope-field`) instead of repeating a
+guess — and an issue never filed through a form finally declares what it touches.
+
+```
++ issue body: Repos in scope = platform, infra
+```
+
+Rewriting someone's issue body is unforgiving, so the rewrite is timid: the
+neighbouring sections come back byte for byte, an existing heading keeps the level
+its author chose, an empty set writes nothing, and a body that already says the
+right thing is left alone — spawning twice does not churn the issue's history. The
+body is re-read immediately before the write, because several agents work the same
+issues and the copy fetched at the top of `spawn` is minutes old by then.
+`--no-writeback` opts out.
+
+### Filing an issue that the board can see
+
+```sh
+facet file --repo acme/platform \
+  --title "gateway: last_login_at is never written" \
+  --label P1-high --label area/security --label complexity/2 --label env/dev \
+  --repos platform,gateway --body-file issue.md
+```
+
+`facet file` searches for a duplicate before it creates one — concurrent sessions
+file into the same repository, and closed issues count, because refiling something
+you decided against is the expensive kind of duplicate. Then it checks the title and
+the labels against the `conventions` block, reporting **every** violation at once:
+an agent that has to rediscover one rule per attempt gives up and files a bare issue
+instead.
+
+```json
+"conventions": {
+  "titlePattern": "^[^:\\n]{2,60}: .+",
+  "requireOneOf": {
+    "priority":   ["P0-critical", "P1-high", "P2-medium", "P3-low"],
+    "complexity": ["complexity/1", "complexity/2", "complexity/3"]
+  },
+  "requirePrefix": { "area": "area/" }
+}
+```
+
+facet knows that *some* labels are required, never which ones. Omit the block and
+nothing is enforced. `--repos` is recorded in the body, so the first spawn of that
+issue is exact.
+
 `facet attach` opens a zellij session for the workspace: an agent pane in the home
 clone beside a shell. One session per issue, so `zellij list-sessions` becomes the
 dashboard of what is running.

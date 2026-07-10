@@ -90,6 +90,11 @@ type Client interface {
 	SetIssueStatus(target ProjectTarget, issueURL string) error
 	// SetIssueBody replaces the issue's body.
 	SetIssueBody(repo string, number int, body string) error
+	// SearchIssues finds issues in repo whose title matches terms, open or
+	// closed. Used to catch a duplicate before one is filed.
+	SearchIssues(repo, terms string) ([]Issue, error)
+	// CreateIssue files one and returns its URL.
+	CreateIssue(repo, title, body string, labels []string) (string, error)
 }
 
 // CLI is the real client, backed by the gh binary.
@@ -174,6 +179,44 @@ func (CLI) SetIssueBody(repo string, number int, body string) error {
 	_, err := runStdin([]byte(body), "issue", "edit", fmt.Sprint(number),
 		"--repo", repo, "--body-file", "-")
 	return err
+}
+
+// SearchIssues finds issues in repo whose TITLE matches terms, open or closed.
+//
+// Scoped to the title on purpose: a body-wide search on a platform monorepo
+// matches half the backlog, and a duplicate check nobody trusts is a duplicate
+// check nobody runs. Closed issues count -- refiling something we decided
+// against is the expensive kind of duplicate.
+func (CLI) SearchIssues(repo, terms string) ([]Issue, error) {
+	if strings.TrimSpace(terms) == "" {
+		return nil, nil
+	}
+	out, err := run("issue", "list", "--repo", repo, "--state", "all", "--limit", "10",
+		"--search", "in:title "+terms, "--json", "number,title,url,state")
+	if err != nil {
+		return nil, err
+	}
+	var found []Issue
+	if err := json.Unmarshal(out, &found); err != nil {
+		return nil, fmt.Errorf("parse search results: %w", err)
+	}
+	return found, nil
+}
+
+// CreateIssue files an issue and returns its URL. The body goes through stdin,
+// for the same reason SetIssueBody's does.
+func (CLI) CreateIssue(repo, title, body string, labels []string) (string, error) {
+	args := []string{"issue", "create", "--repo", repo, "--title", title, "--body-file", "-"}
+	for _, l := range labels {
+		args = append(args, "--label", l)
+	}
+	out, err := runStdin([]byte(body), args...)
+	if err != nil {
+		return "", err
+	}
+	// gh prints the URL on the last non-empty line.
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	return strings.TrimSpace(lines[len(lines)-1]), nil
 }
 
 // SetIssueStatus adds the issue to the board and sets one single-select field.

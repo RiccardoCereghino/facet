@@ -62,6 +62,8 @@ type Routing struct {
 	Repos   map[string]Repo `json:"repos"`
 	// Project is the board `facet spawn` moves an issue on. Optional.
 	Project *Project `json:"project,omitempty"`
+	// Conventions are the rules `facet file` enforces. Optional.
+	Conventions *Conventions `json:"conventions,omitempty"`
 	// OwnerRepoToKey maps "owner/name" as GitHub spells it to a repo key.
 	OwnerRepoToKey map[string]string `json:"ownerRepoToKey"`
 	// Aliases maps loose spellings in an issue body to a repo key.
@@ -127,6 +129,9 @@ func (r *Routing) Validate() error {
 		if p.StatusField != "" && p.OnSpawn == "" {
 			return fmt.Errorf("project.statusField = %q but project.onSpawn is empty: nothing would be set", p.StatusField)
 		}
+	}
+	if err := r.Conventions.validate(); err != nil {
+		return err
 	}
 	return nil
 }

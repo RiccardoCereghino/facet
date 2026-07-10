@@ -35,7 +35,7 @@ func main() {
 		},
 	}
 	root.AddCommand(newLsCmd(), newSyncCmd(), newRestoreCmd(), newSpawnCmd(),
-		newIssuesCmd(), newReapCmd(), newAttachCmd(),
+		newFileCmd(), newIssuesCmd(), newReapCmd(), newAttachCmd(),
 		newNewCmd(), newAddCmd(), newRmCmd())
 
 	if err := root.Execute(); err != nil {
