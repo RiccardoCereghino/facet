@@ -143,38 +143,45 @@ func TestZellijAcceptsGeneratedLayout(t *testing.T) {
 func TestPlan(t *testing.T) {
 	const name, layout = "iss-repo-67-x", "/tmp/layout.kdl"
 	tests := []struct {
-		name                   string
-		inSession, live, asTab bool
-		wantArgv               []string
-		wantGuidance           bool
+		name                             string
+		inSession, live, asTab, switchTo bool
+		wantArgv                         []string
+		wantGuidance                     bool
 	}{
 		{"outside, session exists: attach",
-			false, true, false, []string{"attach", name}, false},
+			false, true, false, false, []string{"attach", name}, false},
 
 		// --new-session-with-layout, NOT --layout: with --session, --layout means
 		// "add tabs to the named session" and dies with "Session not found".
 		{"outside, session missing: create from layout",
-			false, false, false, []string{"--session", name, "--new-session-with-layout", layout}, false},
+			false, false, false, false, []string{"--session", name, "--new-session-with-layout", layout}, false},
 
 		// `action new-tab` adds a tab to the running session and starts no client.
 		{"inside, as tabs: new-tab on the current session, no client",
-			true, false, true, []string{"action", "new-tab", "--layout", layout}, false},
+			true, false, true, false, []string{"action", "new-tab", "--layout", layout}, false},
 
-		// A live session for the workspace wins over adding tabs: rejoin it rather
-		// than duplicating its tabs into whichever session we happen to be sitting in.
-		{"inside, workspace session exists: rejoin it, do not duplicate its tabs",
-			true, true, true, []string{"action", "switch-session", name}, false},
-		{"inside, --session, workspace session exists: switch to it",
-			true, true, false, []string{"action", "switch-session", name}, false},
+		// THE REGRESSION THIS GUARDS. facet used to switch-session here, yanking you
+		// out of the session you were typing in the moment the workspace happened to
+		// have one of its own. Duplicated tabs are cheap; a stolen client is not.
+		{"inside, workspace session exists: still add tabs, never move the client",
+			true, true, true, false, []string{"action", "new-tab", "--layout", layout}, false},
 
-		// The one case with nothing safe to run.
-		{"inside, session missing: guide, do not nest",
-			true, false, false, nil, true},
+		// Moving happens only when explicitly asked for.
+		{"inside, --switch, workspace session exists: switch to it",
+			true, true, false, true, []string{"action", "switch-session", name}, false},
+		{"inside, --switch, workspace session missing: guide, cannot create from inside",
+			true, false, false, true, nil, true},
+
+		// --session means "a session of its own", which cannot be created from inside.
+		{"inside, --session: guide, do not nest",
+			true, false, false, false, nil, true},
+		{"inside, --session, workspace session exists: still guide, do not move silently",
+			true, true, false, false, nil, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("ZELLIJ_SESSION_NAME", "quadratic-cymbal")
-			argv, guidance := plan(name, layout, tt.inSession, tt.live, tt.asTab)
+			argv, guidance := plan(name, layout, tt.inSession, tt.live, tt.asTab, tt.switchTo)
 			if tt.wantGuidance {
 				if guidance == "" {
 					t.Fatalf("expected guidance, got argv %v", argv)
@@ -209,11 +216,41 @@ func TestPlan(t *testing.T) {
 func TestPlanNeverAttachesFromInsideASession(t *testing.T) {
 	for _, live := range []bool{true, false} {
 		for _, asTab := range []bool{true, false} {
-			argv, _ := plan("n", "l", true, live, asTab)
-			if len(argv) > 0 && argv[0] == "attach" {
-				t.Errorf("plan(inSession=true, live=%v, asTab=%v) = %v; must not attach", live, asTab, argv)
+			for _, switchTo := range []bool{true, false} {
+				argv, _ := plan("n", "l", true, live, asTab, switchTo)
+				if len(argv) > 0 && argv[0] == "attach" {
+					t.Errorf("plan(inSession=true, live=%v, asTab=%v, switch=%v) = %v; must not attach",
+						live, asTab, switchTo, argv)
+				}
 			}
 		}
+	}
+}
+
+// Being moved out of the session you are working in is never a default. It has to
+// be asked for, every time. This is the whole point of the --switch flag.
+func TestPlanNeverSwitchesUnlessAsked(t *testing.T) {
+	for _, live := range []bool{true, false} {
+		for _, asTab := range []bool{true, false} {
+			argv, _ := plan("n", "l", true, live, asTab, false)
+			for _, a := range argv {
+				if a == "switch-session" {
+					t.Errorf("plan(inSession=true, live=%v, asTab=%v, switch=false) = %v; "+
+						"switched without being asked", live, asTab, argv)
+				}
+			}
+		}
+	}
+}
+
+// The inverse: --switch against a live session is the one case that moves you.
+func TestPlanSwitchesWhenAsked(t *testing.T) {
+	argv, guidance := plan("n", "l", true, true, true, true)
+	if guidance != "" {
+		t.Fatalf("unexpected guidance: %s", guidance)
+	}
+	if len(argv) != 3 || argv[0] != "action" || argv[1] != "switch-session" || argv[2] != "n" {
+		t.Errorf("argv = %v; want [action switch-session n]", argv)
 	}
 }
 
@@ -596,13 +633,16 @@ func TestLayoutPanesUseBothDirectories(t *testing.T) {
 // replaced. facet must never issue it against a session it is already inside.
 func TestPlanNeverAttachesAClientToTheCurrentSession(t *testing.T) {
 	t.Setenv("ZELLIJ_SESSION_NAME", "gregarious-yak")
-	argv, _ := plan("iss-x-67", "/tmp/l.kdl", true, false, true)
-	joined := strings.Join(argv, " ")
-	if strings.Contains(joined, "--session") {
-		t.Errorf("argv = %v; --session against a live session attaches a client", argv)
-	}
-	if len(argv) < 2 || argv[0] != "action" || argv[1] != "new-tab" {
-		t.Errorf("argv = %v; adding a tab must go through `action new-tab`", argv)
+	// Both whether the workspace already owns a session: neither may move the client.
+	for _, live := range []bool{false, true} {
+		argv, _ := plan("iss-x-67", "/tmp/l.kdl", true, live, true, false)
+		joined := strings.Join(argv, " ")
+		if strings.Contains(joined, "--session") {
+			t.Errorf("live=%v: argv = %v; --session against a live session attaches a client", live, argv)
+		}
+		if len(argv) < 2 || argv[0] != "action" || argv[1] != "new-tab" {
+			t.Errorf("live=%v: argv = %v; adding a tab must go through `action new-tab`", live, argv)
+		}
 	}
 }
 

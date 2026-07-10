@@ -45,7 +45,10 @@ func newSpawnCmd() *cobra.Command {
 			"durable hazards recorded for its areas.\n\n" +
 			"Labels alone cannot decide the repo set: the same topic label is used in\n" +
 			"several repos, and a cross-repo dependency lives in the issue body. So the\n" +
-			"inference is always shown and never silently trusted.",
+			"inference is always shown and never silently trusted.\n\n" +
+			"It sets the workspace up and stops there. Opening the multiplexer and starting\n" +
+			"the agent are yours: spawn prints the exact command, and writes the zellij\n" +
+			"layout for it to use. Pass --attach if you want facet to open it for you.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			number, err := strconv.Atoi(args[0])
@@ -69,9 +72,9 @@ func newSpawnCmd() *cobra.Command {
 	f.BoolVarP(&yes, "yes", "y", false, "skip the confirmation prompt")
 	f.BoolVar(&noBranch, "no-branch", false, "do not create or check out an issue branch")
 	f.BoolVar(&dryRun, "dry-run", false, "show the inference and exit, creating nothing")
-	f.BoolVar(&attach, "attach", false, "open immediately, even when that seizes the terminal")
-	f.BoolVar(&noAttach, "no-attach", false, "never open; just print how to")
-	f.BoolVar(&ownSession, "session", false, "open in a session of its own rather than as tabs")
+	f.BoolVar(&attach, "attach", false, "also open the workspace in the multiplexer (default: just print how to)")
+	f.BoolVar(&noAttach, "no-attach", false, "no-op; not opening is now the default")
+	f.BoolVar(&ownSession, "session", false, "with --attach, open in a session of its own rather than as tabs")
 	f.StringVar(&muxName, "mux", "", "multiplexer to use: zellij, wt, or none")
 	return cmd
 }
@@ -215,23 +218,39 @@ func runSpawn(o spawnOpts) error {
 	}
 	l := muxFor(o.Mux)
 
-	// Open straight away when it cannot steal the terminal -- that is, when we are
-	// already inside zellij and the workspace can arrive as tabs beside whatever
-	// you are doing. Starting a session seizes the terminal, so outside zellij it
-	// stays behind --attach.
-	open, asTab := mux.AutoOpen(l, o.OwnSession)
-	if o.NoAttach {
-		open = false
-	}
-	if o.Attach {
-		open = true
-	}
+	// facet SETS UP the workspace. Opening it is yours.
+	//
+	// spawn used to drive zellij by itself whenever it noticed it was already
+	// inside a session. The Windows fork does not behave predictably enough for
+	// that, and both failure modes land in the middle of somebody's work:
+	//
+	//   - `action new-tab --layout` re-applies the layout in full every time, so a
+	//     second spawn or attach DUPLICATES the workspace's tabs. Observed live:
+	//     one session holding three "#67" tabs and two "workspace" tabs.
+	//   - when the workspace already owned a session, spawn switched this client
+	//     into it -- which reads, to the person typing, as their session being
+	//     replaced.
+	//
+	// So nothing is opened unless you ask with --attach. The layout is still
+	// written, so `zellij --layout` can use it.
+	open := o.Attach && !o.NoAttach
 	if open {
-		// spawn opens beside whatever you are doing; it must not move you.
-		return openSession(ws, wsName, homeDir, o.Number, o.Mux, asTab, o.Attach)
+		// spawn opens beside whatever you are doing; it must not move you. A freshly
+		// spawned workspace has no session of its own to switch to anyway.
+		_, asTab := mux.AutoOpen(l, o.OwnSession)
+		return openSession(ws, wsName, homeDir, o.Number, o.Mux, asTab, true, false)
 	}
-	if l != nil {
-		fmt.Printf("\nopen it:    facet attach --path %s\n", ws)
+	fmt.Printf("\nwork in:    %s\n", filepath.Join(ws, homeDir))
+	if l != nil && l.Name() == "zellij" {
+		// Render the layout now: naming it is the difference between "open a
+		// terminal" and "open the workspace". A failure is cosmetic.
+		if layout, err := renderLayout(ws, wsName, homeDir, o.Number); err == nil {
+			fmt.Printf("open it:    zellij --session %s --new-session-with-layout %s\n", wsName, layout)
+		}
+		fmt.Printf("rejoin it:  %s\n", l.AttachCommand(wsName))
+		fmt.Printf("\nRun that from OUTSIDE zellij -- sessions do not nest.\n")
+	} else if l != nil {
+		fmt.Printf("open it:    facet attach --path %s\n", ws)
 		fmt.Printf("rejoin it:  %s\n", l.AttachCommand(wsName))
 	}
 	return nil

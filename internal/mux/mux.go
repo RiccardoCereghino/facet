@@ -35,6 +35,10 @@ type Session struct {
 	// AsTab opens the workspace as tabs in the multiplexer session we are already
 	// inside, rather than in a session of its own.
 	AsTab bool
+	// Switch moves this client to the workspace's own session, when it has one.
+	// It is the ONLY way facet will take you out of the session you are sitting
+	// in, and it must come from an explicit flag -- never inferred.
+	Switch bool
 	// Focus leaves the new tab focused. `zellij action new-tab` always focuses
 	// what it creates and offers no flag to stop it, so when Focus is false the
 	// previously focused tab is restored afterwards. Opening a tab beside someone
@@ -221,9 +225,14 @@ func (Zellij) Live(session string) bool {
 //
 // zellij sessions do not nest. Attaching from inside one is not a no-op: it
 // takes over the client, and if the target is a dead session it resurrects it.
-// So from inside a session the only safe moves are to switch to a live one, or
-// to pull the workspace in as tabs.
-func plan(name, layout string, inSession, live, asTab bool) (argv []string, guidance string) {
+// So from inside a session the only safe moves are to pull the workspace in as
+// tabs, or -- when explicitly asked -- to switch to a live session of its own.
+//
+// THE RULE: from inside a session, facet never moves you unless you asked. It
+// used to switch-session whenever the workspace already had a session, which
+// reads, to the person sitting in that terminal, as their session being
+// replaced. Adding tabs is now unconditional; `--switch` is the only way out.
+func plan(name, layout string, inSession, live, asTab, switchTo bool) (argv []string, guidance string) {
 	switch {
 	case !inSession && live:
 		return []string{"attach", name}, ""
@@ -234,14 +243,21 @@ func plan(name, layout string, inSession, live, asTab bool) (argv []string, guid
 		// dies with "Session not found" when the session is new.
 		return []string{"--session", name, "--new-session-with-layout", layout}, ""
 
-	case inSession && live:
-		// The workspace already has a session of its own. Rejoin it rather than
-		// duplicating its tabs here -- this wins over asTab deliberately.
+	case inSession && switchTo && live:
+		// You asked to be moved, and there is somewhere to move to.
 		return []string{"action", "switch-session", name}, ""
+
+	case inSession && switchTo && !live:
+		return nil, "you asked to switch to " + name + ", but it is not running.\n" +
+			"  zellij sessions do not nest, so it cannot be created from in here. Either:\n" +
+			"    detach first -- Ctrl+o then d, then re-run with --session\n" +
+			"    or drop --switch, to open it here as tabs"
 
 	case inSession && asTab:
 		// `action new-tab` speaks to the running server and starts no client. It
-		// adds the tab and returns.
+		// adds the tab and returns. This now wins even when the workspace has a
+		// live session of its own: duplicated tabs are cheap and undoable, being
+		// yanked out of the session you are typing in is neither.
 		//
 		// NOT `zellij --session <name> --layout <file>`: when that session already
 		// exists, the top-level command ATTACHES a client to it -- which looks, to
@@ -253,9 +269,9 @@ func plan(name, layout string, inSession, live, asTab bool) (argv []string, guid
 		// must not set focus.
 		return []string{"action", "new-tab", "--layout", layout}, ""
 
-	default: // inSession && !live, and --session was asked for
-		return nil, "you are inside zellij session " + SessionName() + ", and " + name +
-			" does not exist yet.\n" +
+	default: // inSession, and --session was asked for
+		return nil, "you are inside zellij session " + SessionName() + ", so " + name +
+			" cannot have a session of its own.\n" +
 			"  zellij sessions do not nest. Either:\n" +
 			"    detach first -- Ctrl+o then d, then re-run this command\n" +
 			"    or drop --session, to open it here as tabs"
@@ -273,7 +289,12 @@ func (z Zellij) Start(s Session) error {
 		return err
 	}
 	inSession := InSession()
-	argv, guidance := plan(s.Name, layout, inSession, z.Live(s.Name), s.AsTab)
+	// Already sitting in the workspace's own session: adding its tabs again would
+	// duplicate them into themselves, and switching to it is a no-op.
+	if inSession && SessionName() == s.Name {
+		return &ErrGuidance{Msg: "you are already inside zellij session " + s.Name + "."}
+	}
+	argv, guidance := plan(s.Name, layout, inSession, z.Live(s.Name), s.AsTab, s.Switch)
 	if guidance != "" {
 		return &ErrGuidance{Msg: guidance}
 	}
@@ -420,6 +441,13 @@ func layoutProblem(src string) string {
 	}
 	return ""
 }
+
+// WriteLayout renders the workspace's KDL layout and returns its path.
+//
+// facet no longer opens the multiplexer for you, so the layout has to be written
+// at spawn time rather than as a side effect of starting a session: it is what
+// `zellij --new-session-with-layout` is pointed at.
+func WriteLayout(s Session) (path, warn string, err error) { return writeLayout(s) }
 
 // writeLayout renders the KDL layout into the workspace and returns its path,
 // plus a warning when an override had to be rejected.

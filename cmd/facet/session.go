@@ -18,12 +18,41 @@ func agentCommand() string {
 	return "claude"
 }
 
+// sessionFor describes a workspace to the multiplexer. Both the layout renderer
+// and the session opener build it here, so the layout facet writes at spawn time
+// is byte-for-byte the one it would have opened.
+func sessionFor(ws, name, homeDir string, number int) mux.Session {
+	s := mux.Session{
+		Name:      name,
+		Workspace: ws,
+		HomeDir:   filepath.Join(ws, homeDir),
+		Number:    number,
+		Agent:     agentCommand(),
+		Override:  mux.LayoutOverride(roots.Workspaces),
+	}
+	if _, err := os.Stat(s.Override); err != nil {
+		s.Override = ""
+	}
+	return s
+}
+
+// renderLayout writes the workspace's zellij layout and returns its path. facet
+// does not open the multiplexer, so this is what makes `zellij --layout` useful.
+// A failure here is cosmetic: the workspace is already complete.
+func renderLayout(ws, name, homeDir string, number int) (string, error) {
+	path, warn, err := mux.WriteLayout(sessionFor(ws, name, homeDir, number))
+	if warn != "" {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", warn)
+	}
+	return path, err
+}
+
 // openSession starts or rejoins the multiplexer session for a workspace.
 //
-// It is always the last thing spawn does, and its failure is never fatal: the
+// Only ever reached through an explicit --attach. Its failure is never fatal: the
 // workspace, its clones, its branch and its CLAUDE.md all exist by now. The worst
 // case is that you are told what to type.
-func openSession(ws, name, homeDir string, number int, launcherName string, asTab, focus bool) error {
+func openSession(ws, name, homeDir string, number int, launcherName string, asTab, focus, switchTo bool) error {
 	var l mux.Launcher
 	if launcherName != "" {
 		l = mux.ByName(launcherName)
@@ -34,19 +63,8 @@ func openSession(ws, name, homeDir string, number int, launcherName string, asTa
 		fmt.Printf("\nNo multiplexer available. Work in %s\n", filepath.Join(ws, homeDir))
 		return nil
 	}
-	s := mux.Session{
-		Name:      name,
-		Workspace: ws,
-		HomeDir:   filepath.Join(ws, homeDir),
-		Number:    number,
-		Agent:     agentCommand(),
-		Override:  mux.LayoutOverride(roots.Workspaces),
-		AsTab:     asTab,
-		Focus:     focus,
-	}
-	if _, err := os.Stat(s.Override); err != nil {
-		s.Override = ""
-	}
+	s := sessionFor(ws, name, homeDir, number)
+	s.AsTab, s.Switch, s.Focus = asTab, switchTo, focus
 	err := l.Start(s)
 	if err == nil {
 		return nil
