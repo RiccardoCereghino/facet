@@ -36,17 +36,6 @@ func sessionFor(ws, name, homeDir string, number int) mux.Session {
 	return s
 }
 
-// renderLayout writes the workspace's zellij layout and returns its path. facet
-// does not open the multiplexer, so this is what makes `zellij --layout` useful.
-// A failure here is cosmetic: the workspace is already complete.
-func renderLayout(ws, name, homeDir string, number int) (string, error) {
-	path, warn, err := mux.WriteLayout(sessionFor(ws, name, homeDir, number))
-	if warn != "" {
-		fmt.Fprintf(os.Stderr, "warning: %s\n", warn)
-	}
-	return path, err
-}
-
 // openSession starts or rejoins the multiplexer session for a workspace.
 //
 // Only ever reached through an explicit --attach. Its failure is never fatal: the
