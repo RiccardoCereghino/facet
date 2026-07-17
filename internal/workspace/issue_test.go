@@ -15,10 +15,6 @@ type fakePR struct{ pr *ghx.PR }
 
 func (f fakePR) ViewPR(string, string) (*ghx.PR, error) { return f.pr, nil }
 
-type fakeLive bool
-
-func (f fakeLive) Live(string) bool { return bool(f) }
-
 // issueWorkspace builds a real issue workspace: an origin repo, a clone of it,
 // and a manifest carrying the issue block.
 func issueWorkspace(t *testing.T) (ws string, clone string) {
@@ -48,7 +44,7 @@ func issueWorkspace(t *testing.T) (ws string, clone string) {
 
 func TestInspectCleanWorkspaceIsReapable(t *testing.T) {
 	ws, _ := issueWorkspace(t)
-	st, err := InspectIssue(ws, gitx.Git{}, nil, nil)
+	st, err := InspectIssue(ws, gitx.Git{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +61,7 @@ func TestUncommittedChangesBlockReap(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(clone, "README"), []byte("edited\n"), 0o666); err != nil {
 		t.Fatal(err)
 	}
-	st, err := InspectIssue(ws, gitx.Git{}, nil, nil)
+	st, err := InspectIssue(ws, gitx.Git{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +75,7 @@ func TestUntrackedFileBlocksReap(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(clone, "scratch.txt"), []byte("x"), 0o666); err != nil {
 		t.Fatal(err)
 	}
-	st, _ := InspectIssue(ws, gitx.Git{}, nil, nil)
+	st, _ := InspectIssue(ws, gitx.Git{}, nil)
 	if !hasBlocker(st, "uncommitted") {
 		t.Errorf("an untracked file must block: %v", st.Blockers())
 	}
@@ -103,7 +99,7 @@ func TestUnpushedCommitsOnBranchWithNoUpstreamBlockReap(t *testing.T) {
 	if _, err := g.Run(clone, nil, "commit", "-qm", "precious"); err != nil {
 		t.Fatal(err)
 	}
-	st, err := InspectIssue(ws, g, nil, nil)
+	st, err := InspectIssue(ws, g, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,31 +115,19 @@ func TestUnpushedCommitsOnBranchWithNoUpstreamBlockReap(t *testing.T) {
 func TestOpenPRBlocksReapButMergedDoesNot(t *testing.T) {
 	ws, _ := issueWorkspace(t)
 
-	st, _ := InspectIssue(ws, gitx.Git{}, fakePR{&ghx.PR{Number: 9, State: "OPEN"}}, nil)
+	st, _ := InspectIssue(ws, gitx.Git{}, fakePR{&ghx.PR{Number: 9, State: "OPEN"}})
 	if !hasBlocker(st, "still open") {
 		t.Errorf("an open PR must block: %v", st.Blockers())
 	}
 
-	st, _ = InspectIssue(ws, gitx.Git{}, fakePR{&ghx.PR{Number: 9, State: "MERGED"}}, nil)
+	st, _ = InspectIssue(ws, gitx.Git{}, fakePR{&ghx.PR{Number: 9, State: "MERGED"}})
 	if len(st.Blockers()) != 0 {
 		t.Errorf("a merged PR must not block: %v", st.Blockers())
 	}
 
-	st, _ = InspectIssue(ws, gitx.Git{}, fakePR{nil}, nil)
+	st, _ = InspectIssue(ws, gitx.Git{}, fakePR{nil})
 	if len(st.Blockers()) != 0 {
 		t.Errorf("no PR must not block: %v", st.Blockers())
-	}
-}
-
-func TestLiveSessionBlocksReap(t *testing.T) {
-	ws, _ := issueWorkspace(t)
-	st, _ := InspectIssue(ws, gitx.Git{}, nil, fakeLive(true))
-	if !hasBlocker(st, "multiplexer") {
-		t.Errorf("a live session must block: %v", st.Blockers())
-	}
-	st, _ = InspectIssue(ws, gitx.Git{}, nil, fakeLive(false))
-	if len(st.Blockers()) != 0 {
-		t.Errorf("a dead session must not block: %v", st.Blockers())
 	}
 }
 
@@ -153,7 +137,7 @@ func TestInspectRefusesNonIssueWorkspace(t *testing.T) {
 	if err := m.Write(dir); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := InspectIssue(dir, gitx.Git{}, nil, nil); err == nil {
+	if _, err := InspectIssue(dir, gitx.Git{}, nil); err == nil {
 		t.Error("InspectIssue accepted a topical workspace")
 	}
 }
@@ -173,7 +157,7 @@ func TestReapDeletesReadOnlyGitObjects(t *testing.T) {
 	if !sawReadOnly {
 		t.Log("note: no read-only objects in this fixture; the test is weaker than intended")
 	}
-	st, err := InspectIssue(ws, gitx.Git{}, nil, nil)
+	st, err := InspectIssue(ws, gitx.Git{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +193,7 @@ func TestReapFromInsideTheWorkspace(t *testing.T) {
 	if err := os.Chdir(ws); err != nil {
 		t.Fatal(err)
 	}
-	st, err := InspectIssue(ws, gitx.Git{}, nil, nil)
+	st, err := InspectIssue(ws, gitx.Git{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +213,7 @@ func TestReapFromInsideAClone(t *testing.T) {
 	if err := os.Chdir(clone); err != nil {
 		t.Fatal(err)
 	}
-	st, err := InspectIssue(ws, gitx.Git{}, nil, nil)
+	st, err := InspectIssue(ws, gitx.Git{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
