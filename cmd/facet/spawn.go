@@ -13,7 +13,6 @@ import (
 	"github.com/RiccardoCereghino/facet/internal/ghx"
 	"github.com/RiccardoCereghino/facet/internal/knowledge"
 	"github.com/RiccardoCereghino/facet/internal/manifest"
-	"github.com/RiccardoCereghino/facet/internal/mux"
 	"github.com/RiccardoCereghino/facet/internal/render"
 	"github.com/RiccardoCereghino/facet/internal/routing"
 	"github.com/RiccardoCereghino/facet/internal/workspace"
@@ -31,10 +30,6 @@ func newSpawnCmd() *cobra.Command {
 		yes         bool
 		noBranch    bool
 		dryRun      bool
-		attach      bool
-		noAttach    bool
-		ownSession  bool
-		muxName     string
 		noWriteback bool
 	)
 	cmd := &cobra.Command{
@@ -47,9 +42,8 @@ func newSpawnCmd() *cobra.Command {
 			"Labels alone cannot decide the repo set: the same topic label is used in\n" +
 			"several repos, and a cross-repo dependency lives in the issue body. So the\n" +
 			"inference is always shown and never silently trusted.\n\n" +
-			"It sets the workspace up and stops there, spawning no shell: it just prints\n" +
-			"where to work. Opening a multiplexer and starting the agent are yours -- pass\n" +
-			"--attach to have facet open it (zellij or Windows Terminal).",
+			"It sets the workspace up and stops there: it prints where to work and leaves\n" +
+			"opening an editor or starting an agent to you.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			number, err := strconv.Atoi(args[0])
@@ -59,7 +53,6 @@ func newSpawnCmd() *cobra.Command {
 			return runSpawn(spawnOpts{
 				Number: number, Repo: repo, Clones: clones, Add: addClones, Remove: rmClones,
 				Slug: slug, Base: base, Yes: yes, NoBranch: noBranch, DryRun: dryRun,
-				Attach: attach, NoAttach: noAttach, OwnSession: ownSession, Mux: muxName,
 				NoWriteback: noWriteback,
 			})
 		},
@@ -74,30 +67,16 @@ func newSpawnCmd() *cobra.Command {
 	f.BoolVarP(&yes, "yes", "y", false, "skip the confirmation prompt")
 	f.BoolVar(&noBranch, "no-branch", false, "do not create or check out an issue branch")
 	f.BoolVar(&dryRun, "dry-run", false, "show the inference and exit, creating nothing")
-	f.BoolVar(&attach, "attach", false, "open the workspace in a multiplexer after setup (default: spawn nothing, just print where to work)")
-	f.BoolVar(&noAttach, "no-attach", false, "no-op; not opening is now the default")
-	f.BoolVar(&ownSession, "session", false, "with --attach, open in a session of its own rather than as tabs")
-	f.StringVar(&muxName, "mux", "", "multiplexer to use: zellij, wt, or none")
 	f.BoolVar(&noWriteback, "no-writeback", false, "do not record the confirmed repo set in the issue body")
 	return cmd
 }
 
-// muxFor resolves a launcher by name, or picks the best available.
-func muxFor(name string) mux.Launcher {
-	if name != "" {
-		return mux.ByName(name)
-	}
-	return mux.Pick()
-}
-
 type spawnOpts struct {
-	Number                       int
-	Repo                         string
-	Clones, Add, Remove          []string
-	Slug, Base                   string
-	Yes, NoBranch, DryRun        bool
-	Attach, NoAttach, OwnSession bool
-	Mux                          string
+	Number                int
+	Repo                  string
+	Clones, Add, Remove   []string
+	Slug, Base            string
+	Yes, NoBranch, DryRun bool
 	// NoWriteback leaves the issue body alone. The confirmed repo set is then
 	// re-inferred on every spawn.
 	NoWriteback bool
@@ -241,38 +220,7 @@ func runSpawn(o spawnOpts) error {
 	}
 
 	fmt.Printf("\nWorkspace ready: %s\n", ws)
-
-	// The multiplexer comes last and is never fatal: the clones, the branch and
-	// the CLAUDE.md all exist by now. By DEFAULT nothing is opened here and no
-	// shell is spawned -- facet sets the workspace up and prints where to work. It
-	// probes no multiplexer and writes no layout unless you ask, because reaching
-	// for the zellij Windows fork unasked is how this machinery ended up in the
-	// middle of somebody's session:
-	//
-	//   - `action new-tab --layout` re-applies the layout in full every time, so a
-	//     second spawn or attach DUPLICATES the workspace's tabs. Observed live:
-	//     one session holding three "#67" tabs and two "workspace" tabs.
-	//   - when the workspace already owned a session, spawn switched this client
-	//     into it -- which reads, to the person typing, as their session being
-	//     replaced.
-	//
-	// So opening -- and the shell it runs -- is opt-in via --attach.
-	if o.Attach && !o.NoAttach && o.Mux != "none" {
-		l := muxFor(o.Mux)
-		if l == nil {
-			fmt.Printf("\nNo multiplexer available; work in %s\n", filepath.Join(ws, homeDir))
-			return nil
-		}
-		// spawn opens beside whatever you are doing; it must not move you. A freshly
-		// spawned workspace has no session of its own to switch to anyway.
-		_, asTab := mux.AutoOpen(l, o.OwnSession)
-		return openSession(ws, wsName, homeDir, o.Number, o.Mux, asTab, true, false)
-	}
-
 	fmt.Printf("\nwork in:    %s\n", filepath.Join(ws, homeDir))
-	if o.Mux != "none" {
-		fmt.Printf("open it:    facet attach --path %s\n", ws)
-	}
 	return nil
 }
 

@@ -1,10 +1,25 @@
+```
+         /\
+        /  \
+       / /\ \
+      /_/  \_\        f a c e t
+      \ \  / /
+       \ \/ /         one task, many repositories,
+        \  /          one disposable view
+         \/
+```
+
 # facet
 
-Task-scoped workspaces over many git repositories, spawned from GitHub issues.
+**Task-scoped workspaces over many git repositories.** A workspace is a directory
+that assembles several repositories into one view for one task — and because its
+whole layout is declared in `.workspace.json`, the directory is regenerable from
+the manifest. Nothing about it is precious.
 
-A **workspace** is a directory that assembles several repositories into one view
-for one task. Its layout is declared in `.workspace.json`, so the whole thing is
-regenerable from the manifest — nothing about it is precious.
+That is the core, and it stands on its own: no GitHub, no issues, no agents — just
+a clean way to lay several repositories side by side and rebuild them anywhere. The
+issue-driven features further down grew on top of it and became mainstays, but the
+workspace is the thing.
 
 ```
 ~/Workspaces/
@@ -32,11 +47,13 @@ throwaway ones disposable without losing work.
 go install github.com/RiccardoCereghino/facet/cmd/facet@latest
 ```
 
-Requires `git`, and for issue workspaces the [`gh`](https://cli.github.com) CLI.
-`facet` shells out to both, so it inherits your existing credentials, SSH agent and
-`gh` accounts, and never handles a token itself.
+Requires `git`. The issue features additionally use the [`gh`](https://cli.github.com)
+CLI. `facet` shells out to both, so it inherits your existing credentials, SSH agent
+and `gh` accounts, and never handles a token itself.
 
-## Use
+## The core: workspaces
+
+Everything here works with plain git repositories and needs nothing else.
 
 ```sh
 facet new delivery --clone platform=git@github.com:acme/platform.git \
@@ -46,16 +63,27 @@ facet ls                   # what is here, and is it healthy
 facet restore              # a fresh machine: rebuild every workspace
 ```
 
-### Issue workspaces
+`new` scaffolds the manifest and its entries; `add` and `rm` adjust them later.
+`sync` makes the directory match the manifest and is safe to run at any time — it
+creates what is missing and leaves what already exists alone. On a fresh machine,
+`restore` walks every workspace and brings them all back from their manifests.
+
+## Working from GitHub issues
+
+The workspace core turned out to be the perfect base for a second habit: opening a
+throwaway workspace for a single issue, ready to work in seconds. Two features grew
+here and became mainstays — inferring an issue's repositories, and generating a
+`CLAUDE.md` that hands an agent everything it needs to start.
 
 ```sh
 facet spawn 67 --repo acme/platform
 ```
 
-Reads the issue, works out which repositories it needs, **prints why each one was
-chosen, and waits.** On confirmation it creates an issue-linked branch
+`spawn` reads the issue, works out which repositories it needs, **prints why each
+one was chosen, and waits.** On confirmation it creates an issue-linked branch
 (`gh issue develop`), clones each repo, and writes a `CLAUDE.md` carrying the issue
-body and the durable hazards recorded for its `area/*` labels.
+body and the durable hazards recorded for its `area/*` labels. Then it stops and
+tells you where to work — opening an editor or starting an agent is yours.
 
 ```
 acme/platform#67  Rehearse a database restore: nothing has ever been restored
@@ -97,8 +125,8 @@ each spawn, matching case-insensitively, and reports the transition:
 Both fields are optional and both are shown by `--dry-run` before anything happens.
 Omit `project` and no board is touched. A board that has been renamed, or a `gh`
 missing the `project` scope, **warns and does not fail the spawn** — the clones,
-the branch and the `CLAUDE.md` are the point, and a complete workspace must never
-be stranded by a bad day at GitHub Projects.
+the branch and the `CLAUDE.md` are the point, and a complete workspace is never
+stranded by GitHub Projects being briefly uncooperative.
 
 ### The confirmed repo set is written back
 
@@ -131,9 +159,8 @@ facet file --repo acme/platform \
 `facet file` searches for a duplicate before it creates one — concurrent sessions
 file into the same repository, and closed issues count, because refiling something
 you decided against is the expensive kind of duplicate. Then it checks the title and
-the labels against the `conventions` block, reporting **every** violation at once:
-an agent that has to rediscover one rule per attempt gives up and files a bare issue
-instead.
+the labels against the `conventions` block, reporting **every** violation at once,
+so a single filing tells you everything it needs rather than one rule at a time:
 
 ```json
 "conventions": {
@@ -150,13 +177,11 @@ facet knows that *some* labels are required, never which ones. Omit the block an
 nothing is enforced. `--repos` is recorded in the body, so the first spawn of that
 issue is exact.
 
-`facet attach` opens a zellij session for the workspace: an agent pane in the home
-clone beside a shell. One session per issue, so `zellij list-sessions` becomes the
-dashboard of what is running.
+### Tidying up
 
 `facet issues` lists the ephemeral workspaces. `facet reap` deletes one, and
-**refuses** while there are unpushed commits, uncommitted changes, an open pull
-request, or a live session.
+**refuses** while there are unpushed commits, uncommitted changes, or an open pull
+request — the states where deleting would lose work.
 
 ## Mirrors make the clones cheap
 
@@ -175,14 +200,13 @@ warning, because every clone's origin is the forge.
 ## Design
 
 **`facet` knows nothing about your organisation.** Which repositories a label
-implies, what hazards an area carries, and the multiplexer layout are all *data*,
-read from your workspaces root:
+implies, and what hazards an area carries, are all *data*, read from your
+workspaces root:
 
 | File | What it holds |
 | --- | --- |
 | `.tools/routing.json` | the repo table, the label → repos prior, and the project board |
 | `.knowledge/area-*.md` | durable hazards, inlined into a spawned workspace |
-| `.tools/issue-layout.kdl` | the zellij layout |
 
 A knowledge fragment holds **invariants only** — things true about a system
 whichever issue you happen to be working on. Status, phase and "as of" notes belong
@@ -216,8 +240,10 @@ it can be adopted by an existing, versioned set of workspaces without churn.
 
 ## Status
 
-Early, and built for one person's machine. Portable by construction — OS-specific
-code sits behind build tags — but tested only on Windows.
+Early, but held together by a real test suite. It grew on one person's machine and
+is used daily on Windows; the OS-specific parts sit behind build tags, and CI runs
+the tests on Linux, macOS and Windows on every change. Treat a first run on a new
+platform as worth watching, and please open an issue if something looks off.
 
 ## Licence
 
