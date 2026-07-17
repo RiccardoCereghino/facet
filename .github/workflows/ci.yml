@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    # The suite makes real git commits (reap-blocker tests); a fresh runner has no
+    # git identity, so supply one for all platforms.
+    env:
+      GIT_AUTHOR_NAME: facet CI
+      GIT_AUTHOR_EMAIL: ci@facet.invalid
+      GIT_COMMITTER_NAME: facet CI
+      GIT_COMMITTER_EMAIL: ci@facet.invalid
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          check-latest: true
+      - name: gofmt
+        if: matrix.os != 'windows-latest'
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "these files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test -race ./...

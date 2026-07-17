@@ -7,7 +7,6 @@ import (
 	"text/tabwriter"
 
 	"github.com/RiccardoCereghino/facet/internal/config"
-	"github.com/RiccardoCereghino/facet/internal/mux"
 	"github.com/RiccardoCereghino/facet/internal/workspace"
 	"github.com/spf13/cobra"
 )
@@ -23,7 +22,7 @@ func newIssuesCmd() *cobra.Command {
 			if !offline {
 				pr = gh
 			}
-			states, err := workspace.ListIssues(roots, git, pr, muxLive())
+			states, err := workspace.ListIssues(roots, git, pr)
 			if err != nil {
 				return err
 			}
@@ -76,8 +75,8 @@ func newReapCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "reap",
 		Short: "Delete an ephemeral issue workspace once its work has landed",
-		Long: "Refuses while there are unpushed commits, uncommitted changes, an open pull\n" +
-			"request, or a live multiplexer session.\n\n" +
+		Long: "Refuses while there are unpushed commits, uncommitted changes, or an open\n" +
+			"pull request.\n\n" +
 			"The shared mirror is never touched: a clone's objects are hardlinks, so\n" +
 			"deleting the workspace drops those names and leaves the mirror's own intact.",
 		Args: cobra.NoArgs,
@@ -86,7 +85,7 @@ func newReapCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			st, err := workspace.InspectIssue(ws, git, gh, muxLive())
+			st, err := workspace.InspectIssue(ws, git, gh)
 			if err != nil {
 				return err
 			}
@@ -107,9 +106,6 @@ func newReapCmd() *cobra.Command {
 				fmt.Println("aborted.")
 				return nil
 			}
-			if l := mux.Pick(); l != nil {
-				_ = l.Kill(st.Name)
-			}
 			if err := workspace.Reap(st); err != nil {
 				return err
 			}
@@ -122,55 +118,6 @@ func newReapCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&force, "force", false, "delete even when work would be lost")
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "skip the confirmation prompt")
 	return cmd
-}
-
-func newAttachCmd() *cobra.Command {
-	var (
-		path       string
-		ownSession bool
-		switchTo   bool
-	)
-	cmd := &cobra.Command{
-		Use:   "attach",
-		Short: "Open, or rejoin, an issue workspace in the multiplexer",
-		Long: "Inside a zellij session this adds the workspace as tabs, because sessions do\n" +
-			"not nest and attaching from within one would seize this client. It does this\n" +
-			"even when the workspace already has a session of its own: being moved out of\n" +
-			"the session you are typing in is never a default. Pass --switch to be moved.\n\n" +
-			"Outside zellij it attaches to the workspace's own session, creating it from\n" +
-			"the layout if needed.",
-		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			if ownSession && switchTo {
-				return fmt.Errorf("--session and --switch are opposites: one makes a session, the other joins one")
-			}
-			ws, err := config.ResolveWorkspace(path)
-			if err != nil {
-				return err
-			}
-			st, err := workspace.InspectIssue(ws, git, nil, nil)
-			if err != nil {
-				return err
-			}
-			_, asTab := mux.AutoOpen(muxFor(""), ownSession)
-			// `facet attach` means "show me this workspace" -- not "move me". The tab it
-			// adds is focused, because you asked to go there; --switch is what moves the
-			// whole client to the workspace's own session.
-			return openSession(ws, st.Name, st.Issue.Home, st.Issue.Number, "", asTab, true, switchTo)
-		},
-	}
-	cmd.Flags().StringVar(&path, "path", "", "issue workspace (default: working directory)")
-	cmd.Flags().BoolVar(&ownSession, "session", false, "open in a session of its own instead of tabs (must not already be inside zellij)")
-	cmd.Flags().BoolVar(&switchTo, "switch", false, "move this client to the workspace's own zellij session, when it has one")
-	return cmd
-}
-
-// muxLive returns a session checker, or nil when no multiplexer is available.
-func muxLive() workspace.LiveChecker {
-	if l := mux.Pick(); l != nil {
-		return l
-	}
-	return nil
 }
 
 func humanBytes(n int64) string {
