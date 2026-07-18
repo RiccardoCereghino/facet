@@ -136,6 +136,24 @@ func (r *Routing) Validate() error {
 	return nil
 }
 
+// KeyForRepo resolves a GitHub "owner/name" to a repo key, case-insensitively.
+// GitHub treats owner and repo names without regard to case and links them
+// whatever the case, so an issue body may write acme/gateway where the routing
+// file says acme/Gateway. Resolving exactly would silently drop that reference --
+// exactly the cross-repo evidence this package exists to catch. Returns "" when
+// no repository matches.
+func (r *Routing) KeyForRepo(ownerRepo string) string {
+	if k, ok := r.OwnerRepoToKey[ownerRepo]; ok {
+		return k // exact match: cheap, and honours an unusual exact spelling
+	}
+	for k, v := range r.OwnerRepoToKey {
+		if strings.EqualFold(k, ownerRepo) {
+			return v
+		}
+	}
+	return ""
+}
+
 // Selection is one repository, and the evidence that put it in the workspace.
 type Selection struct {
 	Key     string
@@ -179,7 +197,7 @@ func (r *Routing) Infer(homeRepo string, iss *ghx.Issue) ([]Selection, []Hint) {
 		reasons[key] = append(reasons[key], reason)
 	}
 
-	homeKey := r.OwnerRepoToKey[homeRepo]
+	homeKey := r.KeyForRepo(homeRepo)
 	if homeKey != "" {
 		add(homeKey, "home")
 	}
@@ -202,7 +220,7 @@ func (r *Routing) Infer(homeRepo string, iss *ghx.Issue) ([]Selection, []Hint) {
 	blocked := blockedRefs(iss.Body)
 	for _, m := range crossRef.FindAllStringSubmatch(iss.Body, -1) {
 		ownerRepo, num := m[1], m[2]
-		key := r.OwnerRepoToKey[ownerRepo]
+		key := r.KeyForRepo(ownerRepo)
 		if key == "" || key == homeKey {
 			continue
 		}

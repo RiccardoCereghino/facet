@@ -90,7 +90,7 @@ func runSpawn(o spawnOpts) error {
 	if err != nil {
 		return err
 	}
-	homeKey := route.OwnerRepoToKey[o.Repo]
+	homeKey := route.KeyForRepo(o.Repo)
 	if homeKey == "" {
 		return fmt.Errorf("%s is not in %s's ownerRepoToKey", o.Repo, roots.Routing)
 	}
