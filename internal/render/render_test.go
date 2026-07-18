@@ -37,6 +37,24 @@ func TestDemoteHeadings(t *testing.T) {
 			want: "  ```\n# inside\n  ```\n#### after\n",
 			by:   2,
 		},
+		{
+			// A ~~~ inside a ``` block is content, not a close. A crafted body once
+			// used this to desync the fence state and slip a heading out of code so
+			// it posed as one of the document's own sections; the heading here must
+			// stay untouched inside the block, and only "## after" is demoted.
+			name: "mismatched inner marker does not close the fence",
+			in:   "```\n~~~\n## inside code\n~~~\n```\n## after\n",
+			want: "```\n~~~\n## inside code\n~~~\n```\n#### after\n",
+			by:   2,
+		},
+		{
+			// A closing fence must be at least as long as the opener: the inner ```
+			// (3) does not close a block opened with ```` (4).
+			name: "closing fence must be at least as long",
+			in:   "````\n```\n## x\n````\n## y\n",
+			want: "````\n```\n## x\n````\n#### y\n",
+			by:   2,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
