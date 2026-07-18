@@ -168,17 +168,23 @@ func TestGuardSkipsTheDenylistFile(t *testing.T) {
 }
 
 // FACET_DENYLIST must win over the file, so a one-off check needs no edits.
+//
+// Failure messages here never echo the resolved list: in CI the env var holds the
+// real (secret) denylist, and printing it would leak the very names the guard
+// exists to keep out of the open.
 func TestEnvOverridesFile(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, ".denylist"), []byte("fromfile\n"), 0o666); err != nil {
 		t.Fatal(err)
 	}
+	// Clear any ambient FACET_DENYLIST (CI sets it) so the file path is exercised.
+	t.Setenv("FACET_DENYLIST", "")
 	if got := denyList(t, dir); len(got) != 1 || got[0] != "fromfile" {
-		t.Fatalf("file list = %v", got)
+		t.Fatalf("the .denylist file was not read (got %d entries)", len(got))
 	}
 	t.Setenv("FACET_DENYLIST", "fromenv, other")
 	got := denyList(t, dir)
 	if len(got) != 2 || got[0] != "fromenv" || got[1] != "other" {
-		t.Errorf("env list = %v", got)
+		t.Errorf("the env var did not override the file (got %d entries)", len(got))
 	}
 }
