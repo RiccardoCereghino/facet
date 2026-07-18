@@ -223,6 +223,97 @@ func TestUpdateIsIdempotentAndLocked(t *testing.T) {
 	_ = origin
 }
 
+// A lock whose holder crashed (an ancient mtime, no heartbeat) must be broken so
+// a later process is not blocked forever.
+func TestStaleLockIsBroken(t *testing.T) {
+	root := t.TempDir()
+	var warnings []string
+	store := &Store{Root: root, Git: gitx.Git{}, Warn: func(f string, a ...any) { warnings = append(warnings, f) }}
+	target := filepath.Join(root, "probe.git")
+	lock := target + ".lock"
+	if err := os.WriteFile(lock, []byte("pid 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-2 * staleLockAge)
+	if err := os.Chtimes(lock, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	ran := false
+	if err := store.withLock(target, func() error { ran = true; return nil }); err != nil {
+		t.Fatalf("withLock over a stale lock: %v", err)
+	}
+	if !ran {
+		t.Error("fn did not run: the stale lock was not broken")
+	}
+	if len(warnings) == 0 || !strings.Contains(warnings[0], "stale mirror lock") {
+		t.Errorf("expected a stale-lock warning, got %v", warnings)
+	}
+	if _, err := os.Stat(lock); !os.IsNotExist(err) {
+		t.Error("lockfile survived withLock")
+	}
+}
+
+// A freshly-stamped lock is a live holder and must block a second acquirer until
+// it is released -- the guarantee a long clone now keeps via its heartbeat.
+func TestHeldLockBlocksUntilReleased(t *testing.T) {
+	root := t.TempDir()
+	store := &Store{Root: root, Git: gitx.Git{}}
+	target := filepath.Join(root, "probe.git")
+	lock := target + ".lock"
+	if err := os.WriteFile(lock, []byte("pid 999999\n"), 0o644); err != nil {
+		t.Fatal(err) // a fresh lock: mtime is now, so it looks live
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- store.withLock(target, func() error { return nil }) }()
+
+	select {
+	case <-done:
+		t.Fatal("withLock took a freshly-held lock instead of waiting")
+	case <-time.After(2 * lockPoll):
+	}
+
+	os.Remove(lock) // the holder releases
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("withLock after release: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("withLock did not proceed after the lock was released")
+	}
+}
+
+// The heartbeat keeps a held lock's mtime current, so a clone that outlives
+// staleLockAge is not judged abandoned by a peer.
+func TestHeartbeatKeepsLockFresh(t *testing.T) {
+	root := t.TempDir()
+	store := &Store{Root: root, Git: gitx.Git{}, LockHeartbeat: 10 * time.Millisecond}
+	target := filepath.Join(root, "probe.git")
+	lock := target + ".lock"
+
+	err := store.withLock(target, func() error {
+		// Backdate the lock as if it had aged; the heartbeat must bring it forward.
+		old := time.Now().Add(-time.Hour)
+		if err := os.Chtimes(lock, old, old); err != nil {
+			return err
+		}
+		time.Sleep(120 * time.Millisecond) // several heartbeats
+		fi, err := os.Stat(lock)
+		if err != nil {
+			return err
+		}
+		if age := time.Since(fi.ModTime()); age > staleLockAge {
+			t.Errorf("heartbeat did not refresh the lock; mtime age = %s", age)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 // fakeGit records the argv of every git invocation and pretends to succeed,
 // creating whatever HEAD/stamp files the code under test looks for.
 type fakeGit struct {

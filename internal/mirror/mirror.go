@@ -34,9 +34,21 @@ var ErrNotRemote = errors.New("not a remote URL")
 // DefaultMaxAge is how long a mirror may go unfetched before Update refreshes it.
 const DefaultMaxAge = 10 * time.Minute
 
-// staleLockAge is how long a lockfile must sit untouched before it is presumed
-// abandoned by a crashed process.
-const staleLockAge = 30 * time.Minute
+const (
+	// staleLockAge is how long a lockfile may go untouched before a waiter
+	// presumes the holder crashed. The holder re-stamps its lock every
+	// lockHeartbeat while it works, so "untouched this long" means dead, not
+	// slow -- a clone that legitimately runs for many minutes keeps its lock
+	// fresh and is never broken.
+	staleLockAge = 5 * time.Minute
+	// lockHeartbeat is how often the holder re-stamps its lock's mtime.
+	lockHeartbeat = 30 * time.Second
+	// lockPoll is how often a waiter re-checks a lock it could not take.
+	lockPoll = time.Second
+	// maxLockWait bounds the total wait, a backstop against a holder that hangs
+	// while still heartbeating (a wedged git). Far above any real clone.
+	maxLockWait = 60 * time.Minute
+)
 
 // scpLike matches git's [user@]host:path syntax. The host must not be a single
 // letter, or a Windows drive ("C:\repo") would parse as a host.
@@ -113,6 +125,9 @@ type Store struct {
 	Report func(format string, a ...any)
 	// Warn receives non-fatal problems; nil discards them.
 	Warn func(format string, a ...any)
+	// LockHeartbeat overrides how often a held lock is re-stamped. Zero uses
+	// lockHeartbeat; exposed mainly so tests can drive the heartbeat quickly.
+	LockHeartbeat time.Duration
 }
 
 func (s *Store) report(f string, a ...any) {
@@ -221,31 +236,90 @@ func (s *Store) Resolve(raw string) (src, setOriginTo string, err error) {
 
 // withLock serialises mirror creation and fetching across processes: two agents
 // spawning workspaces at once will contend for the same mirror.
+//
+// The lock is a file created O_EXCL. While the guarded work runs, a heartbeat
+// re-stamps the lock's mtime, so a waiter can tell a live holder (fresh mtime)
+// from a crashed one (stale) and never breaks a clone that is merely slow -- the
+// bug a fixed timeout had, where a large clone past staleLockAge was torn out
+// from under itself and two clones raced into one mirror.
 func (s *Store) withLock(mirrorPath string, fn func() error) error {
 	lock := mirrorPath + ".lock"
-	const attempts = 120
+	f, err := s.acquireLock(lock)
+	if err != nil {
+		return err
+	}
+	stop := s.heartbeat(lock)
+	defer func() {
+		stop() // stop and join the heartbeat before dropping the lock
+		f.Close()
+		os.Remove(lock)
+	}()
+	return fn()
+}
 
-	var f *os.File
-	for i := 0; i < attempts; i++ {
-		var err error
-		f, err = os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+// acquireLock blocks until it creates the lockfile, breaking a lock whose holder
+// has stopped heartbeating (and so is presumed dead).
+func (s *Store) acquireLock(lock string) (*os.File, error) {
+	deadline := time.Now().Add(maxLockWait)
+	for {
+		f, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 		if err == nil {
-			break
+			fmt.Fprintf(f, "pid %d\n", os.Getpid()) // for a human debugging a stuck lock
+			return f, nil
 		}
 		if !os.IsExist(err) {
-			return err
+			return nil, err
 		}
-		if fi, statErr := os.Stat(lock); statErr == nil && time.Since(fi.ModTime()) > staleLockAge {
-			s.warn("breaking stale mirror lock %s", lock)
-			os.Remove(lock)
+		fi, statErr := os.Stat(lock)
+		if os.IsNotExist(statErr) {
+			continue // released between our create and stat; try again at once
+		}
+		if statErr != nil {
+			return nil, statErr
+		}
+		if time.Since(fi.ModTime()) > staleLockAge {
+			// Presumed abandoned. Re-check the mtime immediately before removing,
+			// so a lock just re-created (and thus fresh) by someone else is left
+			// alone rather than clobbered -- narrowing the check-then-remove race.
+			if again, err := os.Stat(lock); err == nil && time.Since(again.ModTime()) > staleLockAge {
+				s.warn("breaking stale mirror lock %s (untouched for over %s)", lock, staleLockAge)
+				os.Remove(lock)
+			}
 			continue
 		}
-		time.Sleep(time.Second)
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("could not acquire mirror lock %s within %s", lock, maxLockWait)
+		}
+		time.Sleep(lockPoll)
 	}
-	if f == nil {
-		return fmt.Errorf("could not acquire mirror lock %s", lock)
+}
+
+// heartbeat re-stamps the lock's mtime until the returned stop func is called;
+// stop blocks until the heartbeat goroutine has exited, so the caller can drop
+// the lock knowing nothing will touch it afterwards.
+func (s *Store) heartbeat(lock string) (stop func()) {
+	interval := s.LockHeartbeat
+	if interval <= 0 {
+		interval = lockHeartbeat
 	}
-	f.Close()
-	defer os.Remove(lock)
-	return fn()
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				now := time.Now()
+				_ = os.Chtimes(lock, now, now)
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		<-stopped
+	}
 }
