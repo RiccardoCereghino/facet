@@ -214,6 +214,41 @@ func TestBlockedByVariants(t *testing.T) {
 	}
 }
 
+// GitHub owner/repo names are case-insensitive and link whatever the case, so a
+// cross-reference written differently than the routing file (acme/gateway vs the
+// file's acme/Gateway) must still resolve -- otherwise the dependency is silently
+// dropped, which is exactly the evidence Infer exists to catch.
+func TestCrossRefIsCaseInsensitive(t *testing.T) {
+	r := load(t)
+	iss := &ghx.Issue{Body: "Depends on acme/gateway#5 and acme/WIDGETAPI#9.\n"}
+	sel, _ := r.Infer("acme/platform", iss)
+	got := map[string]bool{}
+	for _, s := range sel {
+		got[s.Key] = true
+	}
+	for _, want := range []string{"gateway", "widgetapi"} {
+		if !got[want] {
+			t.Errorf("cross-ref did not resolve %q case-insensitively; got %v", want, Keys(sel))
+		}
+	}
+}
+
+func TestKeyForRepoIsCaseInsensitive(t *testing.T) {
+	r := load(t)
+	cases := map[string]string{
+		"acme/platform":  "platform",  // exact
+		"ACME/Platform":  "platform",  // upper
+		"acme/gateway":   "gateway",   // file says acme/Gateway
+		"acme/WIDGETAPI": "widgetapi", // file says acme/WidgetApi
+		"acme/nope":      "",          // unknown
+	}
+	for in, want := range cases {
+		if got := r.KeyForRepo(in); got != want {
+			t.Errorf("KeyForRepo(%q) = %q; want %q", in, got, want)
+		}
+	}
+}
+
 func TestFragments(t *testing.T) {
 	r := load(t)
 	got := r.Fragments([]string{"area/backups", "widget", "P0-critical"})
