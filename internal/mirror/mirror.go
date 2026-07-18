@@ -160,16 +160,30 @@ func (s *Store) Update(raw string) (string, error) {
 		return "", err
 	}
 	err = s.withLock(path, func() error {
-		if _, statErr := os.Stat(filepath.Join(path, "HEAD")); os.IsNotExist(statErr) {
+		if !mirrorExists(path) {
 			s.report("mirror: creating %s", path)
+			// Clone into a sibling temp dir and rename it into place only on
+			// success. A clone killed midway (SIGKILL, out of disk) writes HEAD
+			// early but not all its packs; renaming atomically means the mirror at
+			// `path` is only ever a *finished* clone, never a half-written one that
+			// the next run would adopt and hardlink corrupt objects from.
+			tmp := path + ".incoming"
+			if err := os.RemoveAll(tmp); err != nil { // clear a prior crash's leftover
+				return err
+			}
 			// The second -c is not redundant: the first configures this command,
 			// the second persists into the new repo, so later fetches inside the
 			// mirror can also write paths past Windows' MAX_PATH.
 			if _, err := s.Git.Run("", nil,
 				"-c", "core.longpaths=true", "clone", "--mirror",
-				"-c", "core.longpaths=true", raw, path,
+				"-c", "core.longpaths=true", raw, tmp,
 			); err != nil {
+				os.RemoveAll(tmp) // never leave a partial clone behind
 				return fmt.Errorf("mirror clone %s: %w", raw, err)
+			}
+			if err := os.Rename(tmp, path); err != nil {
+				os.RemoveAll(tmp)
+				return fmt.Errorf("finalise mirror %s: %w", path, err)
 			}
 			s.stamp(path) // just fetched, by definition
 			return nil
@@ -208,6 +222,14 @@ func (s *Store) stamp(path string) {
 		return
 	}
 	f.Close()
+}
+
+// mirrorExists reports whether a finished mirror sits at path. Because a new
+// mirror is renamed into place only after its clone completes, a bare metadata
+// dir (HEAD present) at path is a completed clone, not a partial one.
+func mirrorExists(path string) bool {
+	_, err := os.Stat(filepath.Join(path, "HEAD"))
+	return err == nil
 }
 
 // fresh reports whether the mirror was fetched within MaxAge.
