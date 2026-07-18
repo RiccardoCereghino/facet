@@ -72,7 +72,7 @@ func runFile(o fileOpts) error {
 	if err != nil {
 		return err
 	}
-	if _, ok := route.OwnerRepoToKey[o.Repo]; !ok {
+	if route.KeyForRepo(o.Repo) == "" {
 		return fmt.Errorf("%s is not in %s's ownerRepoToKey", o.Repo, roots.Routing)
 	}
 	for _, k := range o.Repos {
