@@ -320,14 +320,21 @@ type fakeGit struct {
 	calls [][]string
 	// onClone, if set, runs when a `clone --mirror` is seen (to fabricate a repo).
 	onClone func(dst string)
+	// cloneErr, if set, is returned from a `clone --mirror` after onClone runs, to
+	// model a clone that died partway.
+	cloneErr error
 }
 
 func (f *fakeGit) Run(dir string, env []string, args ...string) (string, error) {
 	f.calls = append(f.calls, args)
-	for i, a := range args {
-		if a == "--mirror" && f.onClone != nil {
-			f.onClone(args[len(args)-1])
-			_ = i
+	for _, a := range args {
+		if a == "--mirror" {
+			if f.onClone != nil {
+				f.onClone(args[len(args)-1])
+			}
+			if f.cloneErr != nil {
+				return "", f.cloneErr
+			}
 		}
 	}
 	return "", nil
@@ -382,6 +389,43 @@ func TestMirrorClonePersistsLongPaths(t *testing.T) {
 	}
 	if !persisted {
 		t.Errorf("core.longpaths is not persisted into the mirror: %v", clone)
+	}
+}
+
+// A clone that dies after writing HEAD but before finishing must not be adopted
+// as a complete mirror: the destination is left absent, and a later Update
+// re-clones cleanly rather than hardlinking from a half-written object store.
+func TestInterruptedCloneIsNotAdopted(t *testing.T) {
+	root := t.TempDir()
+	fg := &fakeGit{
+		onClone: func(dst string) {
+			// A clone that wrote HEAD into its (temp) destination, then died.
+			os.MkdirAll(dst, 0o777)
+			os.WriteFile(filepath.Join(dst, "HEAD"), []byte("ref: refs/heads/main\n"), 0o666)
+		},
+		cloneErr: errors.New("killed mid-clone"),
+	}
+	s := &Store{Root: root, Git: fg}
+	url := "https://example.com/o/r.git"
+
+	if _, err := s.Update(url); err == nil {
+		t.Fatal("Update swallowed a clone failure")
+	}
+	path, _ := PathFor(root, url)
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("a failed clone left a mirror at %s; it must not be adopted", path)
+	}
+	if _, err := os.Stat(path + ".incoming"); !os.IsNotExist(err) {
+		t.Errorf("the partial clone's temp dir survived: %s.incoming", path)
+	}
+
+	// A subsequent successful Update must create the mirror cleanly.
+	fg.cloneErr = nil
+	if _, err := s.Update(url); err != nil {
+		t.Fatalf("retry after a failed clone: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(path, "HEAD")); err != nil {
+		t.Errorf("retry did not create the mirror: %v", err)
 	}
 }
 
