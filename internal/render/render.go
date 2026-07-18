@@ -51,28 +51,63 @@ type IssueData struct {
 	FragmentErrors []string
 }
 
-// fenced matches a code-fence line: ``` or ~~~, with any info string.
-var fenced = regexp.MustCompile("^\\s{0,3}(```|~~~)")
-
 // atxHeading matches a markdown heading line.
 var atxHeading = regexp.MustCompile(`^(#{1,6})(\s+\S)`)
+
+// fenceInfo parses a code-fence line into its marker byte and run length. ok is
+// false when the line is not a fence: fewer than three leading ` or ~ after up
+// to three spaces of indent. rest is whatever follows the run, used to reject a
+// closing fence that carries an info string.
+func fenceInfo(line string) (marker byte, runLen int, rest string, ok bool) {
+	i := 0
+	for i < len(line) && i < 3 && line[i] == ' ' {
+		i++
+	}
+	if i >= len(line) || (line[i] != '`' && line[i] != '~') {
+		return 0, 0, "", false
+	}
+	marker = line[i]
+	j := i
+	for j < len(line) && line[j] == marker {
+		j++
+	}
+	if j-i < 3 {
+		return 0, 0, "", false
+	}
+	return marker, j - i, line[j:], true
+}
 
 // DemoteHeadings pushes every heading in md down by n levels, so an issue body
 // that opens with "## Task" does not collide with the surrounding document's own
 // "## Task". Headings inside fenced code blocks are left alone -- a YAML comment
 // is not a heading -- and nothing is pushed past h6.
+//
+// Fence tracking follows CommonMark: a block opened by ``` closes only on a
+// backtick fence at least as long, and one opened by ~~~ only on a tilde fence.
+// A mismatched marker inside a block is content, not a toggle -- otherwise a
+// crafted issue body could desync the state and slip a heading out of (or into)
+// a code block, letting untrusted text pose as one of this document's own
+// sections.
 func DemoteHeadings(md string, n int) string {
 	if n <= 0 {
 		return md
 	}
 	lines := strings.Split(strings.ReplaceAll(md, "\r\n", "\n"), "\n")
+	var fenceChar byte
+	var fenceLen int
 	inFence := false
 	for i, line := range lines {
-		if fenced.MatchString(line) {
-			inFence = !inFence
+		marker, runLen, rest, isFence := fenceInfo(line)
+		if inFence {
+			// Only a fence of the same marker, at least as long, with no trailing
+			// info string closes the block.
+			if isFence && marker == fenceChar && runLen >= fenceLen && strings.TrimSpace(rest) == "" {
+				inFence = false
+			}
 			continue
 		}
-		if inFence {
+		if isFence {
+			inFence, fenceChar, fenceLen = true, marker, runLen
 			continue
 		}
 		m := atxHeading.FindStringSubmatch(line)
