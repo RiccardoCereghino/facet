@@ -70,6 +70,21 @@ func TestPathForRejectsTraversal(t *testing.T) {
 	}
 }
 
+// A ".." host (or "." host) must be rejected: it is a path segment too, and
+// would otherwise walk the mirror out of root -- https://../etc/passwd once
+// resolved to /etc/passwd.git.
+func TestPathForRejectsHostTraversal(t *testing.T) {
+	for _, raw := range []string{
+		"https://../etc/passwd",
+		"https://./x/y",
+		"x@..:y/z",
+	} {
+		if got, err := PathFor(filepath.FromSlash("/m"), raw); err == nil {
+			t.Errorf("PathFor(%q) = %q; want an error", raw, got)
+		}
+	}
+}
+
 // originRepo builds a throwaway repo with enough objects to force a pack.
 func originRepo(t *testing.T, dir string) string {
 	t.Helper()
