@@ -22,6 +22,13 @@ jobs:
       GIT_AUTHOR_EMAIL: ci@facet.invalid
       GIT_COMMITTER_NAME: facet CI
       GIT_COMMITTER_EMAIL: ci@facet.invalid
+      # The organisation-name guard (internal/privacy) must not carry an
+      # employer's internal names in this public repo, so its word list is
+      # supplied out-of-band as a secret rather than committed. With the secret
+      # set, the guard runs; unset, the guard fails in CI (CI=true) rather than
+      # passing green having checked nothing. Define it under repo Settings ->
+      # Secrets and variables -> Actions as a comma-separated list.
+      FACET_DENYLIST: ${{ secrets.FACET_DENYLIST }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
