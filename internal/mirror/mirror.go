@@ -100,6 +100,13 @@ func PathFor(root, raw string) (string, error) {
 		return "", fmt.Errorf("%q: %w", raw, ErrNotRemote)
 	}
 
+	// The host becomes a path segment too, so it needs the same guard: a URL like
+	// https://../etc/passwd or an scp x@..:y parses to a host of "..", which would
+	// otherwise walk the mirror out of root.
+	if unsafeSegment(host) {
+		return "", fmt.Errorf("%q: unsafe host %q", raw, host)
+	}
+
 	repoPath = strings.Trim(strings.ReplaceAll(repoPath, "\\", "/"), "/")
 	repoPath = strings.TrimSuffix(repoPath, ".git")
 	if repoPath == "" {
@@ -108,12 +115,27 @@ func PathFor(root, raw string) (string, error) {
 
 	segs := []string{root, host}
 	for _, s := range strings.Split(repoPath, "/") {
-		if s == "" || s == "." || s == ".." {
+		if unsafeSegment(s) {
 			return "", fmt.Errorf("%q: unsafe path segment %q", raw, s)
 		}
 		segs = append(segs, s)
 	}
-	return filepath.Join(segs...) + ".git", nil
+	out := filepath.Join(segs...) + ".git"
+
+	// Belt and braces: whatever the segments were, the result must stay under
+	// root. filepath.Clean inside Join has already collapsed any survivors.
+	if rel, err := filepath.Rel(root, out); err != nil ||
+		rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("%q: resolves outside the mirror root", raw)
+	}
+	return out, nil
+}
+
+// unsafeSegment reports whether s cannot be used as a single path component:
+// empty, a self/parent reference, or carrying a separator that would smuggle in
+// extra components.
+func unsafeSegment(s string) bool {
+	return s == "" || s == "." || s == ".." || strings.ContainsAny(s, `/\`)
 }
 
 // Store manages the mirrors beneath Root.
