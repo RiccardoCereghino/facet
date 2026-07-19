@@ -69,7 +69,12 @@ func ResolveWorkspace(path string) (string, error) {
 		return "", err
 	}
 	if fi, err := os.Stat(abs); err != nil {
-		return "", fmt.Errorf("workspace path not found: %s", abs)
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("workspace path not found: %s", abs)
+		}
+		// A path that exists but is unreadable (EACCES) is a different problem;
+		// reporting it as "not found" sends the user to debug the wrong thing.
+		return "", fmt.Errorf("workspace path %s: %w", abs, err)
 	} else if !fi.IsDir() {
 		return "", fmt.Errorf("not a directory: %s", abs)
 	}

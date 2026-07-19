@@ -94,10 +94,23 @@ func LoadAll(dir string, names []string) ([]Fragment, []error) {
 	return out, errs
 }
 
+// opensFrontmatter reports whether b begins with a frontmatter delimiter: exactly
+// "---" on its own line. A longer run ("----") or "---" immediately followed by
+// content is a Markdown thematic break, not an opener, and must be treated as
+// body -- otherwise a fragment that leads with a horizontal rule and never carries
+// another "---" line is rejected as "unterminated frontmatter".
+func opensFrontmatter(b []byte) bool {
+	if !bytes.HasPrefix(b, frontmatterDelim) {
+		return false
+	}
+	rest := b[len(frontmatterDelim):]
+	return len(rest) == 0 || rest[0] == '\n' || rest[0] == '\r'
+}
+
 // split separates YAML frontmatter from the markdown body.
 func split(b []byte) (Meta, []byte, error) {
 	b = bytes.TrimLeft(b, utf8BOM+" \t\r\n")
-	if !bytes.HasPrefix(b, frontmatterDelim) {
+	if !opensFrontmatter(b) {
 		return Meta{}, b, nil // no frontmatter is allowed, just uninformative
 	}
 	rest := b[len(frontmatterDelim):]

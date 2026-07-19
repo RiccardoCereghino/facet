@@ -261,7 +261,7 @@ func TestStaleLockIsBroken(t *testing.T) {
 	if !ran {
 		t.Error("fn did not run: the stale lock was not broken")
 	}
-	if len(warnings) == 0 || !strings.Contains(warnings[0], "stale mirror lock") {
+	if len(warnings) == 0 || !strings.Contains(warnings[0], "stale lock") {
 		t.Errorf("expected a stale-lock warning, got %v", warnings)
 	}
 	if _, err := os.Stat(lock); !os.IsNotExist(err) {
