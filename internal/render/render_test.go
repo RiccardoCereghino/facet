@@ -65,6 +65,25 @@ func TestDemoteHeadings(t *testing.T) {
 	}
 }
 
+func TestSanitizeInline(t *testing.T) {
+	cases := map[string]string{
+		"plain title":            "plain title",
+		"with\nnewline":          "with newline",
+		"tab\tsep":               "tab sep",
+		"carriage\r\nreturn":     "carriage return",
+		"null\x00byte":           "null byte",
+		"  collapse   spaces  ":  "collapse spaces",
+		"café ✓ kept":            "café ✓ kept",
+		"\n\t\x00":               "",
+		"# inject\nreal heading": "# inject real heading",
+	}
+	for in, want := range cases {
+		if got := sanitizeInline(in); got != want {
+			t.Errorf("sanitizeInline(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestSlug(t *testing.T) {
 	tests := []struct{ in, want string }{
 		{"Rehearse a database restore: nothing has ever been restored", "rehearse-a-database-restore-nothing-has"},

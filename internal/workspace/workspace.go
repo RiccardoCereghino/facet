@@ -14,8 +14,13 @@ import (
 	"github.com/RiccardoCereghino/facet/internal/config"
 	"github.com/RiccardoCereghino/facet/internal/fslink"
 	"github.com/RiccardoCereghino/facet/internal/gitx"
+	"github.com/RiccardoCereghino/facet/internal/lockfile"
 	"github.com/RiccardoCereghino/facet/internal/manifest"
 )
+
+// syncLockName is the per-workspace lockfile that serialises Sync across
+// processes.
+const syncLockName = ".facet-sync.lock"
 
 // Reporter receives progress. The symbols mirror the tool this replaced, so the
 // output stays familiar: "=" unchanged, "+" created, "v" fetching, "-" pruned,
@@ -72,6 +77,16 @@ type SyncOptions struct {
 // missing clone and otherwise leaves it entirely alone -- no pull, no reset, no
 // clean -- because it may hold the only copy of unpushed work.
 func Sync(roots config.Roots, ws string, git gitx.Runner, rep Reporter, opt SyncOptions) error {
+	// Serialise the whole read-modify-write across processes. Without this, two
+	// agents syncing the same workspace can both find a clone dir missing and race
+	// into it, or capture-and-write the manifest last-writer-wins and lose one
+	// process's origin capture. Same lock discipline as the mirror.
+	return lockfile.With(filepath.Join(ws, syncLockName), lockfile.Options{Warn: rep.Warn}, func() error {
+		return syncLocked(roots, ws, git, rep, opt)
+	})
+}
+
+func syncLocked(roots config.Roots, ws string, git gitx.Runner, rep Reporter, opt SyncOptions) error {
 	m, err := manifest.Read(ws)
 	if err != nil {
 		return err
@@ -118,7 +133,11 @@ func syncLink(roots config.Roots, ws string, m *manifest.Manifest, name string, 
 		switch {
 		case opt.Bootstrap && origin != "":
 			rep.Working("%s : cloning %s -> %s", name, origin, projectName)
-			if _, err := git.Run("", nil, "clone", origin, target); err != nil {
+			// Route through gitx.Clone so link bootstrap shares the hardened clone
+			// logic (core.longpaths, --no-checkout + reset, LFS handling) that
+			// syncClone uses, instead of a raw `git clone` that fails on Windows
+			// long-path or LFS-hooked repos a normal clone handles.
+			if err := gitx.Clone(git, origin, target, gitx.CloneOptions{}); err != nil {
 				rep.Warn("%s -> %s (clone failed: %v)", name, projectName, err)
 				return false, nil
 			}

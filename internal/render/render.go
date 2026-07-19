@@ -10,6 +10,7 @@ import (
 	"strings"
 	"text/template"
 	"time"
+	"unicode"
 
 	"github.com/RiccardoCereghino/facet/internal/ghx"
 	"github.com/RiccardoCereghino/facet/internal/knowledge"
@@ -38,6 +39,10 @@ type IssueData struct {
 	Workspace string
 	Repo      string
 	Issue     *ghx.Issue
+	// Title is Issue.Title with control characters stripped, safe to interpolate
+	// into the single-line H1. Issue.Title itself is left untouched for callers
+	// that want the raw value.
+	Title string
 	// Body is the issue body with its headings demoted, so they nest under the
 	// generated document's own structure instead of colliding with it.
 	Body           string
@@ -163,6 +168,7 @@ func BuildIssueData(workspace, repo, branch, homeDir string, iss *ghx.Issue,
 
 	d := IssueData{
 		Workspace: workspace, Repo: repo, Issue: iss,
+		Title: sanitizeInline(iss.Title),
 		// The body lands under an h2; demote by two so its own h2s become h4s.
 		Body:   DemoteHeadings(iss.Body, 2),
 		Labels: iss.LabelNames(), Branch: branch, HomeDir: homeDir,
@@ -184,6 +190,24 @@ func BuildIssueData(workspace, repo, branch, homeDir string, iss *ghx.Issue,
 		d.FragmentErrors = append(d.FragmentErrors, e.Error())
 	}
 	return d
+}
+
+// sanitizeInline collapses every control character -- newlines, tabs, and other
+// C0/C1 codes a crafted forge API payload can smuggle into a title even where the
+// web UI forbids them -- into single spaces. Without this a title carrying an
+// embedded newline breaks out of the H1 line and injects extra markdown at the
+// top of CLAUDE.md.
+func sanitizeInline(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			b.WriteByte(' ')
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
 }
 
 // Slug turns an issue title into a short, filesystem-safe branch component.

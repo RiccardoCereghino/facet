@@ -162,6 +162,34 @@ func TestHintsAreNotSelections(t *testing.T) {
 	}
 }
 
+// hints must be deterministic when two prefixes resolve to the same key: map
+// iteration order must not leak into the emitted Reason.
+func TestHintsDeterministicOnCollidingPrefixes(t *testing.T) {
+	r := &Routing{PathHints: map[string]string{
+		"services/": "infra",
+		"modules/":  "infra",
+	}}
+	body := "touches modules/ and services/ both"
+	first := ""
+	for i := 0; i < 50; i++ {
+		h := r.hints(body, nil)
+		if len(h) != 1 {
+			t.Fatalf("want 1 hint, got %d: %v", len(h), h)
+		}
+		if i == 0 {
+			first = h[0].Reason
+			continue
+		}
+		if h[0].Reason != first {
+			t.Fatalf("Reason not deterministic: %q vs %q", first, h[0].Reason)
+		}
+	}
+	// Sorted prefix order => "modules/" (< "services/") wins.
+	if first != "body mentions modules/" {
+		t.Errorf("Reason = %q, want the lexicographically smallest prefix", first)
+	}
+}
+
 // An issue's own repo must never be added twice, nor listed as a cross-ref to
 // itself.
 func TestHomeRepoSelfReferenceIsIgnored(t *testing.T) {

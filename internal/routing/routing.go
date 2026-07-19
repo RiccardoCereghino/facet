@@ -313,7 +313,13 @@ func (r *Routing) scopeField(body string) []string {
 	}) {
 		tok = strings.ToLower(strings.Trim(tok, "`*_-"))
 		switch tok {
-		case "", "unsure", "_no", "response_", "_no_response_", "none":
+		// GitHub's "_No response_" placeholder splits on its space into "_No" and
+		// "response_", which the Trim above reduces to "no" and "response". Those are
+		// skipped only because they fail the r.Repos/r.Aliases lookup below and hit
+		// continue -- so this stays correct as long as no repo is keyed or aliased
+		// "no" or "response". Sentinel cases for the pre-trim forms are unreachable
+		// (the Trim already stripped the underscores) and were removed.
+		case "", "unsure", "none":
 			continue
 		}
 		key, ok := r.Repos[tok]
@@ -357,7 +363,16 @@ func findSection(body, name string) string {
 func (r *Routing) hints(body string, chosen map[string][]string) []Hint {
 	var out []Hint
 	seen := map[string]bool{}
-	for prefix, key := range r.PathHints {
+	// Iterate in sorted prefix order: PathHints is a map, and when two prefixes
+	// resolve to the same key the first match wins, so an unordered range makes the
+	// emitted Reason vary between runs and breaks golden-output diffs.
+	prefixes := make([]string, 0, len(r.PathHints))
+	for prefix := range r.PathHints {
+		prefixes = append(prefixes, prefix)
+	}
+	sort.Strings(prefixes)
+	for _, prefix := range prefixes {
+		key := r.PathHints[prefix]
 		if _, already := chosen[key]; already || seen[key] {
 			continue
 		}

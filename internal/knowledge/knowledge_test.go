@@ -76,6 +76,20 @@ func TestUnterminatedFrontmatter(t *testing.T) {
 	}
 }
 
+// A fragment that opens with a "----" thematic break (or "---" immediately
+// followed by content) is body, not an unterminated frontmatter block.
+func TestLeadingThematicBreakIsBody(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "area-x", "----\n# heading after a rule\n\nbody\n")
+	f, err := Load(dir, "area-x")
+	if err != nil {
+		t.Fatalf("leading thematic break rejected: %v", err)
+	}
+	if !strings.HasPrefix(f.Body, "----") {
+		t.Errorf("body = %q, want the leading rule retained", f.Body)
+	}
+}
+
 // A missing fragment must never block a spawn: it is reported and skipped.
 func TestLoadAllSkipsMissing(t *testing.T) {
 	dir := t.TempDir()
