@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/RiccardoCereghino/facet/internal/gitx"
+	"github.com/RiccardoCereghino/facet/internal/lockfile"
 )
 
 // ErrNotRemote reports a URL that names a local path, which is never mirrored.
@@ -279,91 +280,18 @@ func (s *Store) Resolve(raw string) (src, setOriginTo string, err error) {
 }
 
 // withLock serialises mirror creation and fetching across processes: two agents
-// spawning workspaces at once will contend for the same mirror.
-//
-// The lock is a file created O_EXCL. While the guarded work runs, a heartbeat
-// re-stamps the lock's mtime, so a waiter can tell a live holder (fresh mtime)
-// from a crashed one (stale) and never breaks a clone that is merely slow -- the
-// bug a fixed timeout had, where a large clone past staleLockAge was torn out
-// from under itself and two clones raced into one mirror.
+// spawning workspaces at once will contend for the same mirror. The lock's
+// heartbeat semantics live in internal/lockfile.
 func (s *Store) withLock(mirrorPath string, fn func() error) error {
-	lock := mirrorPath + ".lock"
-	f, err := s.acquireLock(lock)
-	if err != nil {
-		return err
+	heartbeat := s.LockHeartbeat
+	if heartbeat <= 0 {
+		heartbeat = lockHeartbeat
 	}
-	stop := s.heartbeat(lock)
-	defer func() {
-		stop() // stop and join the heartbeat before dropping the lock
-		f.Close()
-		os.Remove(lock)
-	}()
-	return fn()
-}
-
-// acquireLock blocks until it creates the lockfile, breaking a lock whose holder
-// has stopped heartbeating (and so is presumed dead).
-func (s *Store) acquireLock(lock string) (*os.File, error) {
-	deadline := time.Now().Add(maxLockWait)
-	for {
-		f, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-		if err == nil {
-			fmt.Fprintf(f, "pid %d\n", os.Getpid()) // for a human debugging a stuck lock
-			return f, nil
-		}
-		if !os.IsExist(err) {
-			return nil, err
-		}
-		fi, statErr := os.Stat(lock)
-		if os.IsNotExist(statErr) {
-			continue // released between our create and stat; try again at once
-		}
-		if statErr != nil {
-			return nil, statErr
-		}
-		if time.Since(fi.ModTime()) > staleLockAge {
-			// Presumed abandoned. Re-check the mtime immediately before removing,
-			// so a lock just re-created (and thus fresh) by someone else is left
-			// alone rather than clobbered -- narrowing the check-then-remove race.
-			if again, err := os.Stat(lock); err == nil && time.Since(again.ModTime()) > staleLockAge {
-				s.warn("breaking stale mirror lock %s (untouched for over %s)", lock, staleLockAge)
-				os.Remove(lock)
-			}
-			continue
-		}
-		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("could not acquire mirror lock %s within %s", lock, maxLockWait)
-		}
-		time.Sleep(lockPoll)
-	}
-}
-
-// heartbeat re-stamps the lock's mtime until the returned stop func is called;
-// stop blocks until the heartbeat goroutine has exited, so the caller can drop
-// the lock knowing nothing will touch it afterwards.
-func (s *Store) heartbeat(lock string) (stop func()) {
-	interval := s.LockHeartbeat
-	if interval <= 0 {
-		interval = lockHeartbeat
-	}
-	done := make(chan struct{})
-	stopped := make(chan struct{})
-	go func() {
-		defer close(stopped)
-		t := time.NewTicker(interval)
-		defer t.Stop()
-		for {
-			select {
-			case <-done:
-				return
-			case <-t.C:
-				now := time.Now()
-				_ = os.Chtimes(lock, now, now)
-			}
-		}
-	}()
-	return func() {
-		close(done)
-		<-stopped
-	}
+	return lockfile.With(mirrorPath+".lock", lockfile.Options{
+		StaleAge:  staleLockAge,
+		Heartbeat: heartbeat,
+		Poll:      lockPoll,
+		MaxWait:   maxLockWait,
+		Warn:      s.warn,
+	}, fn)
 }

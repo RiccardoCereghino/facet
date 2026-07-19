@@ -109,6 +109,12 @@ func runSpawn(o spawnOpts) error {
 	slug := o.Slug
 	if slug == "" {
 		slug = render.Slug(iss.Title, 40)
+	} else if norm := render.Slug(slug, 0); norm != slug {
+		// An operator-supplied --slug flows straight into a filesystem path via
+		// render.WorkspaceName, which does not sanitise it. Reject anything that is
+		// not already [a-z0-9-] (so "../evil" cannot escape the workspaces root)
+		// rather than silently rewriting it.
+		return fmt.Errorf("--slug must be lowercase [a-z0-9-]; %q is not (try %q)", slug, norm)
 	}
 	wsName := render.WorkspaceName(config.IssuePrefix, homeKey, o.Number, slug)
 	ws := filepath.Join(roots.Workspaces, wsName)
