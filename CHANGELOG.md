@@ -6,6 +6,43 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-07-21
+
+Hardening and correctness, from the first pass of the audit backlog. No command,
+flag or manifest change.
+
+### Fixed
+
+- **`reap` fails safe**: every git-probe failure now blocks the reap instead of
+  reading as a clean tree — an unverifiable clone, a clone dir that is not a
+  repo, detached-HEAD commits, stash entries, and a failed PR lookup.
+- **Mirrors are never half-adopted**: a clone lands in a sibling `.incoming` dir
+  and is renamed into place only on success, so an interrupted clone can no
+  longer look complete to the next `Update` and hardlink corrupt objects into a
+  workspace.
+- **The mirror lock is heartbeaten**: a live holder re-stamps the lock's mtime
+  while its clone/fetch runs, so a peer tells a slow holder from a crashed one
+  and waiters no longer abort a healthy clone at a fixed 120s cap.
+- **`sync` serialises across processes** with a per-workspace lock (the
+  heartbeat logic now lives in `internal/lockfile`, shared with the mirror).
+- **Path traversal in `mirror.PathFor`**: the host segment is validated like the
+  repo-path segments, so a URL such as `https://../etc/passwd` cannot walk the
+  mirror path out of root.
+- **Fence-aware heading demotion**: a code fence closes only on a fence of the
+  same marker and length, so a crafted issue body can no longer desync the
+  renderer and slip a heading out of code to pose as a section of the generated
+  `CLAUDE.md`.
+- **Cross-references match case-insensitively**: a body writing `acme/gateway`
+  resolves against the routing file's `acme/Gateway` instead of silently
+  dropping the cross-repo reference.
+- Smaller correctness fixes: control chars stripped from the issue title in the
+  rendered H1, `--slug` rejected unless lowercase `[a-z0-9-]`, deterministic
+  `Hint.Reason` when prefixes share a key, a leading thematic break read as body
+  rather than frontmatter, the real `ResolveWorkspace` error reported instead of
+  always "not found", and link bootstrap routed through `gitx.Clone`.
+- The organisation-name privacy guard **fails closed in CI** and scans every
+  text file rather than an extension allowlist.
+
 ## [0.1.0] - 2026-07-17
 
 Initial public release.
@@ -37,5 +74,6 @@ Initial public release.
 - Portable by construction (OS-specific code sits behind build tags); CI runs the
   test suite on Linux, macOS, and Windows.
 
-[Unreleased]: https://github.com/RiccardoCereghino/facet/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/RiccardoCereghino/facet/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/RiccardoCereghino/facet/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/RiccardoCereghino/facet/releases/tag/v0.1.0
