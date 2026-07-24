@@ -45,7 +45,9 @@ type IssueState struct {
 	// open PR cannot be ruled out. Distinct from PR == nil, which means the lookup
 	// ran and found none.
 	PRUnknown bool
-	SizeBytes int64
+	// SessionLive means a multiplexer session of this name is running.
+	SessionLive bool
+	SizeBytes   int64
 }
 
 // Blockers lists the reasons this workspace must not be deleted. An empty slice
@@ -82,17 +84,24 @@ func (s *IssueState) Blockers() []string {
 	if s.PRUnknown {
 		out = append(out, "could not determine the pull-request state -- an open PR cannot be ruled out")
 	}
+	if s.SessionLive {
+		out = append(out, "a multiplexer session is attached")
+	}
 	return out
 }
+
+// LiveChecker reports whether a multiplexer session is running. It is an
+// interface so the reap logic is testable without a multiplexer.
+type LiveChecker interface{ Live(session string) bool }
 
 // PRLookup finds the pull request for a branch. Nil means do not look.
 type PRLookup interface {
 	ViewPR(repo, branch string) (*ghx.PR, error)
 }
 
-// InspectIssue gathers the state of one issue workspace. The pull-request lookup
-// is optional: pass nil to skip it.
-func InspectIssue(ws string, git gitx.Runner, pr PRLookup) (*IssueState, error) {
+// InspectIssue gathers the state of one issue workspace. Network and multiplexer
+// lookups are optional: pass nil to skip them.
+func InspectIssue(ws string, git gitx.Runner, pr PRLookup, mux LiveChecker) (*IssueState, error) {
 	m, err := manifest.Read(ws)
 	if err != nil {
 		return nil, err
@@ -128,6 +137,9 @@ func InspectIssue(ws string, git gitx.Runner, pr PRLookup) (*IssueState, error) 
 		} else {
 			st.PRUnknown = true
 		}
+	}
+	if mux != nil {
+		st.SessionLive = mux.Live(m.Name)
 	}
 	st.SizeBytes = dirSize(ws)
 	return st, nil
@@ -181,7 +193,7 @@ func countLines(s string) int {
 }
 
 // ListIssues inspects every issue workspace under the workspaces root.
-func ListIssues(roots config.Roots, git gitx.Runner, pr PRLookup) ([]*IssueState, error) {
+func ListIssues(roots config.Roots, git gitx.Runner, pr PRLookup, mux LiveChecker) ([]*IssueState, error) {
 	entries, err := os.ReadDir(roots.Workspaces)
 	if err != nil {
 		return nil, err
@@ -195,7 +207,7 @@ func ListIssues(roots config.Roots, git gitx.Runner, pr PRLookup) ([]*IssueState
 		if _, err := os.Stat(manifest.Path(dir)); err != nil {
 			continue
 		}
-		st, err := InspectIssue(dir, git, pr)
+		st, err := InspectIssue(dir, git, pr, mux)
 		if err != nil {
 			continue
 		}
