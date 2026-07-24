@@ -177,11 +177,32 @@ facet knows that *some* labels are required, never which ones. Omit the block an
 nothing is enforced. `--repos` is recorded in the body, so the first spawn of that
 issue is exact.
 
+### Opening the workspace
+
+`facet attach` opens a tmux session for the workspace: an agent pane in the home
+clone beside a shell. One session per issue, so `tmux list-sessions` becomes the
+dashboard of what is running. Inside an existing tmux session it adds the
+workspace as a new window instead, because sessions do not nest — being moved
+out of the session you are typing in is never a default. Pass `--switch` when
+you do want to be moved.
+
+`facet spawn --attach` runs the same path immediately after setup. Without
+`--attach` `spawn` just prints where to work and leaves opening a session to
+you. `--mux wt` selects the Windows Terminal fallback (a plain new tab, no
+session persistence).
+
+The layout is built inline by facet and needs no configuration. To customise
+it, drop an executable script at `.tools/issue-layout.sh`; it receives the
+session name, home clone, workspace, issue number, agent executable, and
+agent arguments, and is expected to leave a session of that name ready to
+attach. A non-zero exit warns and falls back to the built-in layout.
+
 ### Tidying up
 
 `facet issues` lists the ephemeral workspaces. `facet reap` deletes one, and
-**refuses** while there are unpushed commits, uncommitted changes, or an open pull
-request — the states where deleting would lose work.
+**refuses** while there are unpushed commits, uncommitted changes, an open pull
+request, or a live multiplexer session — the states where deleting would lose
+work.
 
 ## Mirrors make the clones cheap
 
@@ -200,13 +221,14 @@ warning, because every clone's origin is the forge.
 ## Design
 
 **`facet` knows nothing about your organisation.** Which repositories a label
-implies, and what hazards an area carries, are all *data*, read from your
-workspaces root:
+implies, what hazards an area carries, and the multiplexer layout are all
+*data*, read from your workspaces root:
 
 | File | What it holds |
 | --- | --- |
 | `.tools/routing.json` | the repo table, the label → repos prior, and the project board |
 | `.knowledge/area-*.md` | durable hazards, inlined into a spawned workspace |
+| `.tools/issue-layout.sh` | optional override script for the tmux layout |
 
 A knowledge fragment holds **invariants only** — things true about a system
 whichever issue you happen to be working on. Status, phase and "as of" notes belong
