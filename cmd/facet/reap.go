@@ -22,7 +22,7 @@ func newIssuesCmd() *cobra.Command {
 			if !offline {
 				pr = gh
 			}
-			states, err := workspace.ListIssues(roots, git, pr)
+			states, err := workspace.ListIssues(roots, git, pr, nil)
 			if err != nil {
 				return err
 			}
@@ -85,7 +85,7 @@ func newReapCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			st, err := workspace.InspectIssue(ws, git, gh)
+			st, err := workspace.InspectIssue(ws, git, gh, nil)
 			if err != nil {
 				return err
 			}
