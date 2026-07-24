@@ -53,7 +53,7 @@ func main() {
 	}
 	root.SetVersionTemplate("facet {{.Version}}\n")
 	root.AddCommand(newLsCmd(), newSyncCmd(), newRestoreCmd(), newSpawnCmd(),
-		newFileCmd(), newIssuesCmd(), newReapCmd(),
+		newFileCmd(), newIssuesCmd(), newReapCmd(), newAttachCmd(),
 		newNewCmd(), newAddCmd(), newRmCmd(), newVersionCmd())
 
 	if err := root.Execute(); err != nil {
