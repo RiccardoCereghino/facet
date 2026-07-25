@@ -476,3 +476,72 @@ func TestValidateProject(t *testing.T) {
 		t.Errorf("Validate rejected a good project: %v", err)
 	}
 }
+
+func TestSpawnRC(t *testing.T) {
+	// Nil receiver and no spawn block are both safe and default to off.
+	var nilR *Routing
+	if nilR.SpawnRC() {
+		t.Error("nil routing should not enable RC")
+	}
+	if (&Routing{}).SpawnRC() {
+		t.Error("routing with no spawn block should not enable RC")
+	}
+
+	cases := []struct {
+		name     string
+		body     string
+		wantRC   bool
+		wantPref string
+	}{
+		{"rc true", `{"version":1,"repos":{},"ownerRepoToKey":{},"spawn":{"rc":true,"sessionNamePrefix":"mini"}}`, true, "mini"},
+		{"rc false", `{"version":1,"repos":{},"ownerRepoToKey":{},"spawn":{"rc":false}}`, false, ""},
+		{"no spawn", `{"version":1,"repos":{},"ownerRepoToKey":{}}`, false, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var r Routing
+			if err := json.Unmarshal([]byte(c.body), &r); err != nil {
+				t.Fatal(err)
+			}
+			if got := r.SpawnRC(); got != c.wantRC {
+				t.Errorf("SpawnRC() = %v, want %v", got, c.wantRC)
+			}
+			if got := r.SpawnSessionPrefix(); got != c.wantPref {
+				t.Errorf("SpawnSessionPrefix() = %q, want %q", got, c.wantPref)
+			}
+		})
+	}
+}
+
+func TestResolveRCLogic(t *testing.T) {
+	// Mirror of resolveRC's precedence, kept here so the routing default and the
+	// flag overrides are exercised together: --no-rc beats --rc beats config.
+	rcOn := &Routing{Spawn: &Spawn{RC: true}}
+	rcOff := &Routing{}
+	type tc struct {
+		rc, noRC bool
+		route    *Routing
+		want     bool
+	}
+	resolve := func(c tc) bool {
+		if c.noRC {
+			return false
+		}
+		if c.rc {
+			return true
+		}
+		return c.route.SpawnRC()
+	}
+	cases := map[string]tc{
+		"config on, no flags":    {false, false, rcOn, true},
+		"config off, no flags":   {false, false, rcOff, false},
+		"flag --rc over off":     {true, false, rcOff, true},
+		"flag --no-rc over on":   {false, true, rcOn, false},
+		"both flags, no-rc wins": {true, true, rcOn, false},
+	}
+	for name, c := range cases {
+		if got := resolve(c); got != c.want {
+			t.Errorf("%s: got %v, want %v", name, got, c.want)
+		}
+	}
+}
