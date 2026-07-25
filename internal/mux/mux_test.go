@@ -27,10 +27,10 @@ func TestByName(t *testing.T) {
 // it as a window, never attach a client to another session (which would take
 // over the terminal). Switching happens only when explicitly asked for.
 func TestPlan(t *testing.T) {
-	const name, home, ws = "iss-repo-67-x", "/tmp/home", "/tmp/ws"
+	const name, home = "iss-repo-67-x", "/tmp/home"
 	const winName = "#67"
 	base := planInput{
-		Name: name, HomeDir: home, Workspace: ws, Number: 67,
+		Name: name, HomeDir: home, Number: 67,
 		AgentExe: "/bin/bash", AgentArgs: []string{"-lc", "claude"},
 	}
 
@@ -49,17 +49,18 @@ func TestPlan(t *testing.T) {
 			wantContains: []string{"=" + name},
 		},
 		{
-			name:         "outside, session missing: create detached, split, attach",
+			name:         "outside, session missing: create detached, attach",
 			mut:          func(in *planInput) { in.InSession = false; in.Live = false },
 			wantFirstCmd: "new-session",
-			wantContains: []string{"-d", "-s", name, winName, "split-window", "-p", "40", "attach-session", "-c", home, "-c", ws, "-lc", "claude"},
+			wantContains: []string{"-d", "-s", name, winName, "attach-session", "-c", home, "-lc", "claude"},
+			wantMissing:  []string{"split-window"},
 		},
 		{
 			name:         "inside, as window: new-window on current session, no client attach",
 			mut:          func(in *planInput) { in.InSession = true; in.CurrentSess = "outer"; in.AsTab = true },
 			wantFirstCmd: "new-window",
-			wantContains: []string{"=outer:", winName, "-c", home, "split-window", "-c", ws, "-lc", "claude"},
-			wantMissing:  []string{"attach-session", "switch-client"},
+			wantContains: []string{"=outer:", winName, "-c", home, "-lc", "claude"},
+			wantMissing:  []string{"attach-session", "switch-client", "split-window"},
 		},
 		{
 			// THE REGRESSION THIS GUARDS: adding as tab must win even when a
@@ -67,7 +68,7 @@ func TestPlan(t *testing.T) {
 			name:         "inside, workspace session exists: still add as window, never move the client",
 			mut:          func(in *planInput) { in.InSession = true; in.CurrentSess = "outer"; in.AsTab = true; in.Live = true },
 			wantFirstCmd: "new-window",
-			wantMissing:  []string{"switch-client", "attach-session"},
+			wantMissing:  []string{"switch-client", "attach-session", "split-window"},
 		},
 		{
 			name:         "inside, --switch, workspace session exists: switch-client",
@@ -155,7 +156,7 @@ func containsToken(hay []string, needle string) bool {
 // takes over the client.
 func TestPlanNeverAttachesFromInsideASession(t *testing.T) {
 	base := planInput{
-		Name: "n", HomeDir: "/h", Workspace: "/w", Number: 1,
+		Name: "n", HomeDir: "/h", Number: 1,
 		AgentExe: "/bin/bash", AgentArgs: []string{"-lc", "x"},
 		InSession: true, CurrentSess: "outer",
 	}
@@ -182,7 +183,7 @@ func TestPlanNeverAttachesFromInsideASession(t *testing.T) {
 // to be asked for, every time. This is the whole point of the --switch flag.
 func TestPlanNeverSwitchesUnlessAsked(t *testing.T) {
 	base := planInput{
-		Name: "n", HomeDir: "/h", Workspace: "/w", Number: 1,
+		Name: "n", HomeDir: "/h", Number: 1,
 		AgentExe: "/bin/bash", AgentArgs: []string{"-lc", "x"},
 		InSession: true, CurrentSess: "outer",
 	}
@@ -337,23 +338,18 @@ func TestAgentInvocationEmptyAgent(t *testing.T) {
 	}
 }
 
-// The two panes must land in different places: the agent in the home clone, the
-// shell at the workspace root, so both are reachable without cd.
-func TestBuildSessionSetsCwdOnBothPanes(t *testing.T) {
+// The single pane lands at HomeDir so the agent starts where the code is.
+func TestBuildSessionSetsCwdOnAgentPane(t *testing.T) {
 	in := planInput{
-		Name: "n", HomeDir: "/h", Workspace: "/w", Number: 1,
+		Name: "n", HomeDir: "/h", Number: 1,
 		AgentExe: "/bin/bash", AgentArgs: []string{"-lc", "claude"},
 	}
 	argvs, _ := plan(in)
-	if len(argvs) < 2 {
-		t.Fatalf("expected at least new-session and split-window, got %v", argvs)
+	if len(argvs) == 0 {
+		t.Fatal("expected at least one argv")
 	}
-	// The first argv (new-session) should carry -c /h; the split should carry -c /w.
 	if !argvContains(argvs[0], "-c", "/h") {
 		t.Errorf("agent pane not rooted at HomeDir: %v", argvs[0])
-	}
-	if !argvContains(argvs[1], "-c", "/w") {
-		t.Errorf("shell pane not rooted at Workspace: %v", argvs[1])
 	}
 }
 
@@ -362,7 +358,7 @@ func TestBuildSessionSetsCwdOnBothPanes(t *testing.T) {
 // not as the executable (which would fail for npm shims).
 func TestBuildSessionAgentPaneRunsThroughShell(t *testing.T) {
 	argvs, _ := plan(planInput{
-		Name: "n", HomeDir: "/h", Workspace: "/w", Number: 5,
+		Name: "n", HomeDir: "/h", Number: 5,
 		AgentExe: "/bin/bash", AgentArgs: []string{"-lc", "claude"},
 	})
 	// No send-keys anywhere.
@@ -385,7 +381,7 @@ func TestBuildSessionAgentPaneRunsThroughShell(t *testing.T) {
 
 func TestBuildSessionWindowNameIsIssueNumber(t *testing.T) {
 	argvs, _ := plan(planInput{
-		Name: "n", HomeDir: "/h", Workspace: "/w", Number: 42,
+		Name: "n", HomeDir: "/h", Number: 42,
 		AgentExe: "/bin/bash",
 	})
 	joined := flatten(argvs)
@@ -398,8 +394,8 @@ func TestBuildSessionWindowNameIsIssueNumber(t *testing.T) {
 // `iss-facet-6` would target `iss-facet-67`.
 func TestBuildSessionExactMatchTargets(t *testing.T) {
 	cases := []planInput{
-		{Name: "iss-x-6", HomeDir: "/h", Workspace: "/w", Number: 6, AgentExe: "/bin/bash"},
-		{Name: "iss-x-6", HomeDir: "/h", Workspace: "/w", Number: 6, AgentExe: "/bin/bash", InSession: true, CurrentSess: "outer", AsTab: true},
+		{Name: "iss-x-6", HomeDir: "/h", Number: 6, AgentExe: "/bin/bash"},
+		{Name: "iss-x-6", HomeDir: "/h", Number: 6, AgentExe: "/bin/bash", InSession: true, CurrentSess: "outer", AsTab: true},
 		{Name: "iss-x-6", InSession: true, CurrentSess: "outer", Switch: true, Live: true},
 		{Name: "iss-x-6", Live: true},
 	}
@@ -426,7 +422,7 @@ func TestBuildSessionExactMatchTargets(t *testing.T) {
 // Inside-tmux add-as-tab must emit exactly one new-window (never a create).
 func TestBuildSessionSingleWindow(t *testing.T) {
 	argvs, _ := plan(planInput{
-		Name: "n", HomeDir: "/h", Workspace: "/w", Number: 1,
+		Name: "n", HomeDir: "/h", Number: 1,
 		AgentExe: "/bin/bash", InSession: true, CurrentSess: "outer", AsTab: true,
 	})
 	var newWindow, newSession int
@@ -508,7 +504,7 @@ func TestTmuxAcceptsGeneratedLayout(t *testing.T) {
 	// them on the isolated socket. Drop the final attach-session (which would
 	// block the test).
 	in := planInput{
-		Name: session, HomeDir: t.TempDir(), Workspace: t.TempDir(), Number: 1,
+		Name: session, HomeDir: t.TempDir(), Number: 1,
 		AgentExe: "/bin/sh", AgentArgs: []string{"-c", "sleep 30"},
 	}
 	argvs, guidance := plan(in)

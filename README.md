@@ -179,12 +179,12 @@ issue is exact.
 
 ### Opening the workspace
 
-`facet attach` opens a tmux session for the workspace: an agent pane in the home
-clone beside a shell. One session per issue, so `tmux list-sessions` becomes the
-dashboard of what is running. Inside an existing tmux session it adds the
-workspace as a new window instead, because sessions do not nest — being moved
-out of the session you are typing in is never a default. Pass `--switch` when
-you do want to be moved.
+`facet attach` opens a tmux session for the workspace: one pane, the agent,
+rooted at the home clone. One session per issue, so `tmux list-sessions`
+becomes the dashboard of what is running. Inside an existing tmux session it
+adds the workspace as a new window instead, because sessions do not nest —
+being moved out of the session you are typing in is never a default. Pass
+`--switch` when you do want to be moved.
 
 `facet spawn --attach` runs the same path immediately after setup. Without
 `--attach` `spawn` just prints where to work and leaves opening a session to
@@ -192,10 +192,11 @@ you. `--mux wt` selects the Windows Terminal fallback (a plain new tab, no
 session persistence).
 
 The layout is built inline by facet and needs no configuration. To customise
-it, drop an executable script at `.tools/issue-layout.sh`; it receives the
-session name, home clone, workspace, issue number, agent executable, and
-agent arguments, and is expected to leave a session of that name ready to
-attach. A non-zero exit warns and falls back to the built-in layout.
+it — say, adding a shell pane split, a status pane, or a different focus —
+drop an executable script at `.tools/issue-layout.sh`; it receives the session
+name, home clone, workspace, issue number, agent executable, and agent
+arguments, and is expected to leave a session of that name ready to attach.
+A non-zero exit warns and falls back to the built-in layout.
 
 ### Tidying up
 

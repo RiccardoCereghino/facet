@@ -227,7 +227,6 @@ func (Tmux) Live(session string) bool {
 type planInput struct {
 	Name        string
 	HomeDir     string
-	Workspace   string
 	Number      int
 	AgentExe    string
 	AgentArgs   []string
@@ -259,9 +258,10 @@ func plan(in planInput) (argvs [][]string, guidance string) {
 		}, ""
 
 	case !in.InSession && !in.Live:
-		// Detached create, then split, then attach. Detached-first is the only
-		// safe idiom outside tmux: a signal partway through cannot leave a
-		// half-built session sitting there attached.
+		// Detached create then attach. Detached-first is the only safe idiom
+		// outside tmux: a signal between the two cannot leave a half-built
+		// session sitting there attached. Layout is one pane, the agent, at
+		// HomeDir -- users who want a split shell can add one with prefix + %.
 		create := []string{"new-session", "-d", "-s", in.Name, "-c", in.HomeDir, "-n", winName}
 		if in.AgentExe != "" {
 			create = append(create, in.AgentExe)
@@ -269,10 +269,6 @@ func plan(in planInput) (argvs [][]string, guidance string) {
 		}
 		return [][]string{
 			create,
-			// -d keeps the current (agent) pane active after the split, so the
-			// shell pane is created but does not steal focus. Avoids fragile
-			// pane-index targeting (`.0` vs `.1` depending on pane-base-index).
-			{"split-window", "-h", "-d", "-p", "40", "-t", "=" + in.Name + ":=" + winName, "-c", in.Workspace},
 			{"attach-session", "-t", "=" + in.Name},
 		}, ""
 
@@ -289,22 +285,18 @@ func plan(in planInput) (argvs [][]string, guidance string) {
 
 	case in.InSession && in.AsTab:
 		// Adding a window to the CURRENT session. This wins even when the
-		// workspace has a live session of its own: duplicated windows are cheap
-		// and undoable, being yanked out of the session you are typing in is
-		// neither.
+		// workspace has a live session of its own: duplicated windows are
+		// cheap and undoable, being yanked out of the session you are typing
+		// in is neither.
 		//
-		// Target the current session by name for defensive clarity; `-t ":"`
-		// would work but reads worse in logs.
+		// One pane, the agent, at HomeDir. Target the current session by name
+		// for defensive clarity; `-t ":"` would work but reads worse in logs.
 		add := []string{"new-window", "-t", "=" + in.CurrentSess + ":", "-n", winName, "-c", in.HomeDir}
 		if in.AgentExe != "" {
 			add = append(add, in.AgentExe)
 			add = append(add, in.AgentArgs...)
 		}
-		return [][]string{
-			add,
-			// -d: shell pane does not steal focus from the agent pane.
-			{"split-window", "-h", "-d", "-p", "40", "-t", "=" + in.CurrentSess + ":=" + winName, "-c", in.Workspace},
-		}, ""
+		return [][]string{add}, ""
 
 	default: // in.InSession, and --session was asked for
 		return nil, "you are inside tmux session " + in.CurrentSess + ", so " + in.Name +
@@ -358,7 +350,6 @@ func (z Tmux) Start(s Session) error {
 	argvs, guidance := plan(planInput{
 		Name:        s.Name,
 		HomeDir:     s.HomeDir,
-		Workspace:   s.Workspace,
 		Number:      s.Number,
 		AgentExe:    exe,
 		AgentArgs:   args,
