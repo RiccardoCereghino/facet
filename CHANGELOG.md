@@ -17,6 +17,16 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   last and is never fatal: a missing or unauthenticated `claude` warns and
   leaves the ready workspace untouched.
 
+### Fixed
+
+- **Lock acquisition no longer fails on a Windows delete-pending race**: when a
+  holder releases the lockfile, Windows keeps the name in a delete-pending state
+  until the last handle closes, and a second acquirer creating the same name in
+  that window gets `ERROR_ACCESS_DENIED` (not "already exists"). `acquire` now
+  retries that Windows-only permission error with a short bounded backoff (~2s
+  budget); POSIX has no such window and is unchanged. Surfaced by a flaky
+  `internal/mirror` Windows CI run.
+
 ## [0.1.1] - 2026-07-21
 
 Hardening and correctness, from the first pass of the audit backlog. No command,
