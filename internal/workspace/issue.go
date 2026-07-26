@@ -24,6 +24,13 @@ type CloneState struct {
 	// remote has. This deliberately covers branches with no upstream at all, and
 	// commits made on a detached HEAD: those are the ones most easily lost.
 	Unpushed int
+	// FetchStale is set when `git fetch --prune origin` failed before Unpushed
+	// was computed. The count above is still computed and used against whatever
+	// refs are on disk -- refusing reap on every offline run would make it
+	// useless without a network -- but Blockers appends a disclaimer to the
+	// unpushed-commit line whenever this is set, since that count may be judged
+	// against a remote-tracking ref more stale than usual.
+	FetchStale bool
 	// Stashed counts `git stash` entries, which no push would ever carry.
 	Stashed int
 	// Unverifiable holds the reasons this clone's state could not be confirmed --
@@ -70,7 +77,11 @@ func (s *IssueState) Blockers() []string {
 	}
 	for _, c := range s.Clone {
 		if c.Unpushed > 0 {
-			out = append(out, fmt.Sprintf("%s has %d unpushed commit(s) -- this workspace is their only copy", c.Dir, c.Unpushed))
+			msg := fmt.Sprintf("%s has %d unpushed commit(s) -- this workspace is their only copy", c.Dir, c.Unpushed)
+			if c.FetchStale {
+				msg += " (could not fetch origin first -- a branch merged and deleted upstream may be miscounted here)"
+			}
+			out = append(out, msg)
 		}
 	}
 	for _, c := range s.Clone {
@@ -185,6 +196,17 @@ func inspectClone(git gitx.Runner, dir, p string) CloneState {
 	// signal and is not recorded as a blocker.
 	if out, err := git.Run(p, nil, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
 		c.Branch = out
+	}
+
+	// Refresh remote-tracking refs before judging unpushed-ness: a clone that
+	// hasn't talked to origin since a PR branch was merged and deleted upstream
+	// would otherwise judge those commits against a stale origin/* and count
+	// them as this workspace's only copy. A failure here (no network,
+	// unreachable origin) is not fatal -- the count below still runs against
+	// whatever refs are on disk -- but it is recorded so Blockers can disclose
+	// it.
+	if _, err := git.Run(p, nil, "fetch", "--prune", "origin"); err != nil {
+		c.FetchStale = true
 	}
 
 	// Commits reachable from HEAD or any local branch but from no remote-tracking
