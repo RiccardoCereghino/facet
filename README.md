@@ -67,6 +67,9 @@ facet restore              # a fresh machine: rebuild every workspace
 `sync` makes the directory match the manifest and is safe to run at any time — it
 creates what is missing and leaves what already exists alone. On a fresh machine,
 `restore` walks every workspace and brings them all back from their manifests.
+Run `ls` from a directory with no manifest of its own that holds workspace
+subdirectories — the workspaces root itself — and it lists every workspace
+under it with a rolled-up health summary, instead of erroring.
 
 ## Working from GitHub issues
 
