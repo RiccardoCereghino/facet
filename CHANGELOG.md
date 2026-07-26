@@ -57,6 +57,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   retries that Windows-only permission error with a short bounded backoff (~2s
   budget); POSIX has no such window and is unchanged. Surfaced by a flaky
   `internal/mirror` Windows CI run.
+- **`ls` no longer errors at the workspaces root.** Run against a directory
+  with no manifest of its own, it used to fail with `no .workspace.json in
+  <dir>` even when that directory held several workspace subdirectories. It
+  now falls back to listing every workspace under it with a rolled-up health
+  summary, the same way `restore` already walks them.
 
 ## [0.1.1] - 2026-07-21
 
