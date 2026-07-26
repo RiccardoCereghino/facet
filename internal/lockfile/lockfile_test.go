@@ -101,3 +101,33 @@ func TestHeartbeatKeepsLockFresh(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// createLock claims a free path and reports contention as os.IsExist so the
+// acquire loop's stale/poll path takes over. On Windows it additionally retries
+// the delete-pending ERROR_ACCESS_DENIED window; that path is exercised by the
+// Windows CI leg via internal/mirror's TestHeldLockBlocksUntilReleased. Here we
+// pin the cross-platform contract.
+func TestCreateLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "x.lock")
+
+	f, err := createLock(path)
+	if err != nil {
+		t.Fatalf("first createLock: %v", err)
+	}
+	f.Close()
+
+	// A second create of the same live path is contention, reported as IsExist.
+	if _, err := createLock(path); !os.IsExist(err) {
+		t.Fatalf("second createLock err = %v, want os.IsExist", err)
+	}
+
+	// After removal the path is free again.
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	f2, err := createLock(path)
+	if err != nil {
+		t.Fatalf("createLock after remove: %v", err)
+	}
+	f2.Close()
+}

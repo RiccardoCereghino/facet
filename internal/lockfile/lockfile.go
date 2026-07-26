@@ -9,6 +9,7 @@ package lockfile
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"time"
 )
 
@@ -24,6 +25,9 @@ const (
 	// defaultMaxWait bounds the total wait, a backstop against a holder that hangs
 	// while still heartbeating. Far above any real operation.
 	defaultMaxWait = 60 * time.Minute
+	// winCreateRetryBudget bounds the retry loop that works around Windows
+	// delete-pending lag when creating a just-released lockfile. See createLock.
+	winCreateRetryBudget = 2 * time.Second
 )
 
 // Options tunes lock timing. A zero value uses the defaults.
@@ -74,7 +78,7 @@ func With(path string, opt Options, fn func() error) error {
 func acquire(path string, opt Options) (*os.File, error) {
 	deadline := time.Now().Add(opt.MaxWait)
 	for {
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		f, err := createLock(path)
 		if err == nil {
 			fmt.Fprintf(f, "pid %d\n", os.Getpid()) // for a human debugging a stuck lock
 			return f, nil
@@ -106,6 +110,38 @@ func acquire(path string, opt Options) (*os.File, error) {
 		}
 		time.Sleep(opt.Poll)
 	}
+}
+
+// createLock does the O_CREATE|O_EXCL open that claims the lock. It exists to
+// absorb a Windows-only race: when the releasing holder os.Removes the lockfile,
+// Windows keeps the name in a delete-pending state until the last handle closes,
+// and a create of that same name during the window returns ERROR_ACCESS_DENIED
+// (an os.IsPermission error, not os.IsExist). That is transient, not a real
+// failure, and it can bite any second acquirer in production, not just the test
+// that first surfaced it. So on Windows a permission error is retried with a
+// short bounded backoff. POSIX unlinks immediately and has no such window, so
+// there this is a single attempt and a permission error stays a hard error.
+func createLock(path string) (*os.File, error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err == nil || runtime.GOOS != "windows" {
+		return f, err
+	}
+	deadline := time.Now().Add(winCreateRetryBudget)
+	backoff := 5 * time.Millisecond
+	for os.IsPermission(err) && time.Now().Before(deadline) {
+		time.Sleep(backoff)
+		if backoff < 80*time.Millisecond {
+			backoff *= 2
+		}
+		f, err = os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if err == nil {
+			return f, nil
+		}
+	}
+	// Either the window closed (err is now nil-handled above, or IsExist so the
+	// caller's contention path takes over) or the budget ran out (return the last
+	// error, now a genuine failure).
+	return f, err
 }
 
 // heartbeat re-stamps the lock's mtime until the returned stop func is called;

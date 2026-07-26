@@ -55,6 +55,35 @@ func (r *Routing) Target() (t ghx.ProjectTarget, ok bool) {
 	return ghx.ProjectTarget{Owner: p.Owner, Number: p.Number, Field: field, Option: p.OnSpawn}, true
 }
 
+// Spawn holds defaults for `facet spawn` that belong to the setup, not the
+// binary. Optional: without it, spawn behaves as it always has (scaffold and
+// stop).
+type Spawn struct {
+	// RC makes spawn launch `claude` with Remote Control enabled once the
+	// workspace is ready. Remote Control rides Anthropic's relay over outbound
+	// HTTPS, so an agent session survives a tailnet/tailscaled failure, which is
+	// why it is worth having on by default. The --rc/--no-rc flags override this
+	// per invocation.
+	RC bool `json:"rc,omitempty"`
+	// SessionNamePrefix, when set, is exported as
+	// CLAUDE_REMOTE_CONTROL_SESSION_NAME_PREFIX so RC sessions are named per host.
+	SessionNamePrefix string `json:"sessionNamePrefix,omitempty"`
+}
+
+// SpawnRC reports whether spawn should launch an RC session by default. Safe on
+// a nil receiver or a routing file with no spawn block.
+func (r *Routing) SpawnRC() bool {
+	return r != nil && r.Spawn != nil && r.Spawn.RC
+}
+
+// SpawnSessionPrefix returns the configured RC session-name prefix, or "".
+func (r *Routing) SpawnSessionPrefix() string {
+	if r == nil || r.Spawn == nil {
+		return ""
+	}
+	return r.Spawn.SessionNamePrefix
+}
+
 // Routing is the project-specific data facet reads. It lives outside the binary
 // on purpose: facet itself knows nothing about any particular organisation.
 type Routing struct {
@@ -62,6 +91,8 @@ type Routing struct {
 	Repos   map[string]Repo `json:"repos"`
 	// Project is the board `facet spawn` moves an issue on. Optional.
 	Project *Project `json:"project,omitempty"`
+	// Spawn holds `facet spawn` defaults (e.g. Remote Control). Optional.
+	Spawn *Spawn `json:"spawn,omitempty"`
 	// Conventions are the rules `facet file` enforces. Optional.
 	Conventions *Conventions `json:"conventions,omitempty"`
 	// OwnerRepoToKey maps "owner/name" as GitHub spells it to a repo key.
