@@ -154,6 +154,7 @@ func createBlockedByEdges(repo, issueURL, body string) {
 		return
 	}
 	owner := strings.SplitN(repo, "/", 2)[0]
+	seen := map[string]bool{} // "target#number", after resolving a bare ref to its repo
 
 	for _, ref := range refs {
 		target := repo
@@ -166,6 +167,15 @@ func createBlockedByEdges(repo, issueURL, body string) {
 				continue
 			}
 		}
+		// `#42` and `acme/gateway#42` name the same issue once ref.OwnerRepo
+		// is resolved against repo -- dedupe here, where both spellings
+		// converge on one identity, rather than on the raw parsed ref.
+		key := fmt.Sprintf("%s#%d", target, ref.Number)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+
 		id, err := gh.IssueID(target, ref.Number)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "! blocked-by %s: could not resolve, skipping: %v\n", label, err)

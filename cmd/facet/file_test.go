@@ -96,6 +96,11 @@ func TestRunFile_BlockedByEdges_Mixed(t *testing.T) {
 		issueIDs: map[string]int64{
 			"acme/gateway#5":     1005,
 			"acme/infra-core#41": 1041,
+			// Scripted deliberately, so the cross-owner guard's coverage does
+			// not depend on IssueID failing on a miss: if the guard were
+			// removed, this id would produce a real (and wrong) `<-1009`
+			// call the assertion below would catch.
+			"other/thing#9": 1009,
 		},
 	}
 	prevGH := gh
@@ -148,6 +153,37 @@ func TestRunFile_BlockedByEdges_UnresolvableRefSkipped(t *testing.T) {
 	}
 
 	want := []string{"acme/gateway#7<-1003"}
+	if !equalSlices(fake.addBlockedByCalls, want) {
+		t.Errorf("AddBlockedBy calls = %v, want %v", fake.addBlockedByCalls, want)
+	}
+}
+
+// Two spellings of the same issue -- a bare `#n` and its `owner/repo#n`
+// equivalent in the filing repo -- resolve to one identity and must produce
+// exactly one edge, not two.
+func TestRunFile_BlockedByEdges_DedupesResolvedIdentity(t *testing.T) {
+	withTempRouting(t, "acme/gateway")
+	fake := &fakeGH{
+		createURL: "https://github.com/acme/gateway/issues/10",
+		issueIDs: map[string]int64{
+			"acme/gateway#5": 1005,
+		},
+	}
+	prevGH := gh
+	gh = fake
+	t.Cleanup(func() { gh = prevGH })
+
+	body := "### Blocked by / waiting on\n\n#5, acme/gateway#5\n"
+
+	if err := runFile(fileOpts{
+		Repo:  "acme/gateway",
+		Title: "gateway: fix the thing",
+		Body:  body,
+	}); err != nil {
+		t.Fatalf("runFile: %v", err)
+	}
+
+	want := []string{"acme/gateway#10<-1005"}
 	if !equalSlices(fake.addBlockedByCalls, want) {
 		t.Errorf("AddBlockedBy calls = %v, want %v", fake.addBlockedByCalls, want)
 	}
