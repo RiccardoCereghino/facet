@@ -85,13 +85,17 @@ one was chosen, and waits.** On confirmation it creates an issue-linked branch
 body and the durable hazards recorded for its `area/*` labels. Then it stops and
 tells you where to work — opening an editor or starting an agent is yours.
 
-One agent launch is opt-in: a Remote Control session. With a `spawn` block in
-`.tools/routing.json` (`{"spawn": {"rc": true}}`), spawn runs `claude --rc` in the
-home clone once the workspace is ready, so the session is reachable over
-Anthropic's relay independent of the tailnet. `--rc` / `--no-rc` override the
-default per invocation (`--no-rc` wins). It runs last and is never fatal: if
-`claude` is missing or not signed in, spawn warns and leaves the ready workspace
-for you to open yourself.
+With no pane to put it in, one agent launch is opt-in: a Remote Control session.
+With a `spawn` block in `.tools/routing.json` (`{"spawn": {"rc": true}}`), spawn
+runs `claude --remote-control` in the home clone once the workspace is ready, so
+the session is reachable over Anthropic's relay independent of the tailnet.
+`--claude` turns it on for one invocation and `--claude=false` off. It runs last
+and is never fatal: if `claude` is missing or not signed in, spawn warns and
+leaves the ready workspace for you to open yourself.
+
+Starting claude *here* takes over this terminal, which is why it stays off by
+default. In a multiplexer pane it costs nothing, so `--attach` runs it by
+default — see below.
 
 ```
 acme/platform#67  Rehearse a database restore: nothing has ever been restored
@@ -198,6 +202,43 @@ being moved out of the session you are typing in is never a default. Pass
 `--attach` `spawn` just prints where to work and leaves opening a session to
 you. `--mux wt` selects the Windows Terminal fallback (a plain new tab, no
 session persistence).
+
+#### What the pane runs
+
+By default the pane starts `claude` with Remote Control, so the session is
+reachable from anywhere over Anthropic's relay rather than only from this host.
+Its session URL is printed back here once the pane has it — the CLI writes it
+only into its own pane, and reading it off a background window by hand is the
+one step you would otherwise still be doing manually.
+
+| flags | the pane runs |
+| --- | --- |
+| *(default)* | `$SHELL -lc "claude --remote-control=<workspace>; exec $SHELL -il"` |
+| `--remote=false` | `$SHELL -lc "claude; exec $SHELL -il"` |
+| `--claude=false` | `$SHELL -lc "exec $SHELL -il"` — a plain login shell |
+| `--claude=false --remote=…` | as `--claude=false`; `--remote` only says *how* to launch, never *whether* |
+
+The session name is attached as `--remote-control=<name>`, never as a positional
+argument: the value is optional, so `--remote-control <name> "<prompt>"` is
+ambiguous the moment a prompt follows it.
+
+Two properties worth knowing:
+
+- **The pane outlives the agent.** On exit you land in an interactive login
+  shell in the same directory rather than losing the window and its scrollback,
+  so restarting the agent is `↑`, not rebuilding the window.
+- **The window keeps the name facet gave it.** An agent writes its own terminal
+  title within seconds, and tmux's `automatic-rename` would copy that over the
+  window name — after which `-t <session>:<name>` targets nothing. Both rename
+  options are turned off on the windows facet creates.
+
+`FACET_AGENT` overrides all of this: when it is set the pane runs
+`$SHELL -lc "$FACET_AGENT; exec $SHELL -il"` and neither `--claude` nor
+`--remote` applies. It predates these flags, so it is not made to lose to one of
+their defaults.
+
+(`--rc` and `--no-rc`, the names the first Remote Control launch shipped under,
+still work as deprecated aliases for `--claude --remote` and `--claude=false`.)
 
 The layout is built inline by facet and needs no configuration. To customise
 it — say, adding a shell pane split, a status pane, or a different focus —

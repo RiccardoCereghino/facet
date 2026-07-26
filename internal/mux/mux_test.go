@@ -8,6 +8,9 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/RiccardoCereghino/facet/internal/claudex"
 )
 
 func TestByName(t *testing.T) {
@@ -256,7 +259,7 @@ type fakeLauncher struct{ name string }
 func (f fakeLauncher) Name() string                { return f.name }
 func (fakeLauncher) Available() bool               { return true }
 func (fakeLauncher) Live(string) bool              { return false }
-func (fakeLauncher) Start(Session) error           { return nil }
+func (fakeLauncher) Start(Session) (string, error) { return "", nil }
 func (fakeLauncher) Attach(string) error           { return nil }
 func (fakeLauncher) Kill(string) error             { return nil }
 func (fakeLauncher) AttachCommand(s string) string { return s }
@@ -327,14 +330,160 @@ func TestAgentInvocationRunsThroughAShell(t *testing.T) {
 	}
 }
 
-// With no agent, the pane is just a shell and takes no args.
+// With no agent, the pane is an interactive login shell -- reached through the
+// same `-lc` wrapper, so that one code path builds every pane.
 func TestAgentInvocationEmptyAgent(t *testing.T) {
 	exe, args := agentInvocation("")
 	if exe == "" {
 		t.Skip("no shell found")
 	}
-	if len(args) != 0 {
-		t.Errorf("args = %v; a bare shell needs none", args)
+	if runtime.GOOS == "windows" {
+		if len(args) != 0 {
+			t.Errorf("args = %v; a bare pwsh tab needs none", args)
+		}
+		return
+	}
+	if len(args) != 2 || args[0] != "-lc" {
+		t.Fatalf("args = %v; want [-lc <command>]", args)
+	}
+	if !strings.HasPrefix(args[1], "exec ") || !strings.HasSuffix(args[1], " -il") {
+		t.Errorf("args[1] = %q; want the login shell exec'd, so the pane is interactive", args[1])
+	}
+}
+
+// THE REGRESSION THIS GUARDS: a pane whose only command is the agent dies with
+// the agent, taking the window and its scrollback with it. Restarting an agent
+// must not cost the window.
+func TestAgentInvocationPaneOutlivesTheAgent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pwsh -NoExit already holds the tab open")
+	}
+	exe, args := agentInvocation("claude --remote-control=iss-x")
+	if exe == "" {
+		t.Skip("no shell found")
+	}
+	if len(args) != 2 || args[0] != "-lc" {
+		t.Fatalf("args = %v; want [-lc <command>]", args)
+	}
+	cmd := args[1]
+	if !strings.HasPrefix(cmd, "claude --remote-control=iss-x; ") {
+		t.Errorf("command = %q; the agent must run first, unaltered", cmd)
+	}
+	if !strings.Contains(cmd, "exec ") || !strings.HasSuffix(cmd, " -il") {
+		t.Errorf("command = %q; want a trailing `exec <shell> -il` so the pane survives", cmd)
+	}
+	// exec, not a nested shell: the -lc shell is replaced, not left as a parent.
+	if strings.Count(cmd, "exec ") != 1 {
+		t.Errorf("command = %q; want exactly one exec", cmd)
+	}
+}
+
+// The four rows of the pane matrix, composed exactly as the commands compose
+// them: claudex renders the invocation, mux wraps it in the pane's shell.
+func TestPaneMatrix(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the matrix is specified for a POSIX login shell")
+	}
+	exe := findExecutable(shellCandidates()...)
+	if exe == "" {
+		t.Skip("no shell found")
+	}
+	rc := claudex.ShellCommand(claudex.Options{RemoteControl: true, SessionName: "iss-facet-27"})
+	plain := claudex.ShellCommand(claudex.Options{})
+
+	tests := []struct {
+		name  string
+		agent string
+		want  string
+	}{
+		{
+			name:  "defaults: claude with Remote Control, then a login shell",
+			agent: rc,
+			want:  "claude --remote-control=iss-facet-27; exec " + singleQuote(exe) + " -il",
+		},
+		{
+			name:  "--remote=false: claude without Remote Control",
+			agent: plain,
+			want:  "claude; exec " + singleQuote(exe) + " -il",
+		},
+		{
+			name:  "--claude=false: a plain login shell",
+			agent: "",
+			want:  "exec " + singleQuote(exe) + " -il",
+		},
+		{
+			name:  "FACET_AGENT: its command, and still a surviving pane",
+			agent: "nvim .",
+			want:  "nvim .; exec " + singleQuote(exe) + " -il",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotExe, args := agentInvocation(tt.agent)
+			if gotExe != exe {
+				t.Errorf("exe = %q, want %q", gotExe, exe)
+			}
+			if len(args) != 2 || args[0] != "-lc" {
+				t.Fatalf("args = %v; want [-lc <command>]", args)
+			}
+			if args[1] != tt.want {
+				t.Errorf("command =\n  %q\nwant\n  %q", args[1], tt.want)
+			}
+		})
+	}
+}
+
+// A window whose name the agent can overwrite stops being addressable, and
+// `-t <session>:<name>` is how every other command finds it again.
+func TestCreatedWindowsArePinnedAndAddressable(t *testing.T) {
+	for _, in := range []planInput{
+		{Name: "iss-x", HomeDir: "/tmp/h", Number: 7, InSession: false, Live: false},
+		{Name: "iss-x", HomeDir: "/tmp/h", Number: 7, InSession: true, CurrentSess: "outer", AsTab: true},
+	} {
+		argvs, guidance := plan(in)
+		if guidance != "" {
+			t.Fatalf("unexpected guidance: %s", guidance)
+		}
+		create := argvs[0]
+		if !creates(create) {
+			t.Fatalf("first argv %v is not a create", create)
+		}
+		joined := strings.Join(create, " ")
+		if !strings.Contains(joined, "-P -F #{window_id}") {
+			t.Errorf("create = %v; must print the new window's id, the only stable handle on it", create)
+		}
+	}
+
+	opts := pinWindowName("@12")
+	if len(opts) != 2 {
+		t.Fatalf("pinWindowName = %v; want both rename options off", opts)
+	}
+	joined := ""
+	for _, o := range opts {
+		if o[0] != "set-window-option" || o[1] != "-t" || o[2] != "@12" {
+			t.Errorf("argv = %v; want set-window-option targeting the window id", o)
+		}
+		joined += strings.Join(o, " ") + "\n"
+	}
+	for _, want := range []string{"automatic-rename off", "allow-rename off"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("pinWindowName omits %q:\n%s", want, joined)
+		}
+	}
+}
+
+// Only creates are run with -P; an attach or a switch has no id to print, and
+// asking for one would change what those commands do.
+func TestCreatesOnlyMatchesWindowMakers(t *testing.T) {
+	for _, argv := range [][]string{{"new-session", "-d"}, {"new-window", "-t", "=x:"}} {
+		if !creates(argv) {
+			t.Errorf("creates(%v) = false; want true", argv)
+		}
+	}
+	for _, argv := range [][]string{{"attach-session"}, {"switch-client"}, {"select-window"}, {}} {
+		if creates(argv) {
+			t.Errorf("creates(%v) = true; want false", argv)
+		}
 	}
 }
 
@@ -534,4 +683,83 @@ func argvContains(argv []string, flag, value string) bool {
 		}
 	}
 	return false
+}
+
+// End-to-end against a real tmux on an isolated socket: the window id comes back
+// from the create, the pin sticks, and -- the point of the trailing exec -- the
+// window is still there after the agent has exited.
+func TestTmuxWindowSurvivesTheAgentAndKeepsItsName(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("tmux does not run on native Windows")
+	}
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	socket := fmt.Sprintf("facet-life-%d", os.Getpid())
+	session := fmt.Sprintf("facet-life-%d", os.Getpid())
+	t.Cleanup(func() { _ = exec.Command("tmux", "-L", socket, "kill-server").Run() })
+
+	// `printf` stands in for the agent: it prints a Remote Control banner and
+	// exits at once, which is exactly the case that used to close the window.
+	const banner = "https://claude.ai/code/session_TESTaaa111"
+	exe, args := agentInvocation("printf '" + banner + "\\n'")
+	if exe == "" {
+		t.Skip("no shell found")
+	}
+	in := planInput{Name: session, HomeDir: t.TempDir(), Number: 1, AgentExe: exe, AgentArgs: args}
+	argvs, guidance := plan(in)
+	if guidance != "" {
+		t.Fatalf("unexpected guidance: %s", guidance)
+	}
+
+	windowID := ""
+	for _, argv := range argvs {
+		if len(argv) > 0 && argv[0] == "attach-session" {
+			continue // would block the test
+		}
+		out, err := exec.Command("tmux", append([]string{"-L", socket}, argv...)...).Output()
+		if err != nil {
+			t.Fatalf("tmux %v failed: %v", argv, err)
+		}
+		if creates(argv) {
+			windowID = strings.TrimSpace(string(out))
+		}
+	}
+	if !strings.HasPrefix(windowID, "@") {
+		t.Fatalf("window id = %q; want tmux's @<n> form back from the create", windowID)
+	}
+	for _, opt := range pinWindowName(windowID) {
+		if out, err := exec.Command("tmux", append([]string{"-L", socket}, opt...)...).CombinedOutput(); err != nil {
+			t.Fatalf("tmux %v failed: %v\n%s", opt, err, out)
+		}
+	}
+
+	// Give the agent time to run and exit, then confirm the pane held on.
+	deadline := time.Now().Add(10 * time.Second)
+	var captured string
+	for {
+		out, err := exec.Command("tmux", "-L", socket, "capture-pane", "-p", "-S", "-200", "-t", windowID).Output()
+		if err != nil {
+			t.Fatalf("capture-pane after the agent exited: %v -- the window did not survive", err)
+		}
+		captured = string(out)
+		if strings.Contains(captured, banner) || !time.Now().Before(deadline) {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if !strings.Contains(captured, banner) {
+		t.Fatalf("pane never showed the agent's output:\n%s", captured)
+	}
+	if got := claudex.FindSessionURL(captured); got != banner {
+		t.Errorf("FindSessionURL(pane) = %q, want %q", got, banner)
+	}
+	// The pane is still alive, so the window is still listed and still named.
+	out, err := exec.Command("tmux", "-L", socket, "display-message", "-p", "-t", windowID, "-F", "#{window_name}").Output()
+	if err != nil {
+		t.Fatalf("window gone after the agent exited: %v", err)
+	}
+	if name := strings.TrimSpace(string(out)); name != "#1" {
+		t.Errorf("window name = %q, want %q -- the pin did not hold", name, "#1")
+	}
 }

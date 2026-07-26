@@ -37,8 +37,7 @@ func newSpawnCmd() *cobra.Command {
 		ownSession  bool
 		muxName     string
 		noWriteback bool
-		rc          bool
-		noRC        bool
+		agent       agentFlags
 	)
 	cmd := &cobra.Command{
 		Use:   "spawn <issue-number>",
@@ -63,7 +62,7 @@ func newSpawnCmd() *cobra.Command {
 				Number: number, Repo: repo, Clones: clones, Add: addClones, Remove: rmClones,
 				Slug: slug, Base: base, Yes: yes, NoBranch: noBranch, DryRun: dryRun,
 				Attach: attach, NoAttach: noAttach, OwnSession: ownSession, Mux: muxName,
-				NoWriteback: noWriteback, RC: rc, NoRC: noRC,
+				NoWriteback: noWriteback, Agent: agent.resolve(cmd),
 			})
 		},
 	}
@@ -82,8 +81,7 @@ func newSpawnCmd() *cobra.Command {
 	f.BoolVar(&ownSession, "session", false, "with --attach, open in a session of its own rather than as a window")
 	f.StringVar(&muxName, "mux", "", "multiplexer to use: tmux, wt, or none")
 	f.BoolVar(&noWriteback, "no-writeback", false, "do not record the confirmed repo set in the issue body")
-	f.BoolVar(&rc, "rc", false, "launch claude with Remote Control once the workspace is ready (overrides routing spawn.rc)")
-	f.BoolVar(&noRC, "no-rc", false, "do not launch claude, even if routing sets spawn.rc (overrides --rc)")
+	agent.register(cmd)
 	return cmd
 }
 
@@ -106,9 +104,9 @@ type spawnOpts struct {
 	// NoWriteback leaves the issue body alone. The confirmed repo set is then
 	// re-inferred on every spawn.
 	NoWriteback bool
-	// RC and NoRC override the routing spawn.rc default for launching an RC
-	// session. NoRC wins if both are set.
-	RC, NoRC bool
+	// Agent is what to run for the operator once the workspace is ready: in the
+	// pane when --attach opened one, in this terminal otherwise.
+	Agent agentChoice
 }
 
 func runSpawn(o spawnOpts) error {
@@ -273,7 +271,11 @@ func runSpawn(o spawnOpts) error {
 		// freshly spawned workspace has no session of its own to switch to
 		// anyway.
 		_, asTab := mux.AutoOpen(l, o.OwnSession)
-		return openSession(ws, wsName, homeDir, o.Number, o.Mux, asTab, true, false)
+		agent := o.Agent.agentOpts
+		agent.SessionNamePrefix = route.SpawnSessionPrefix()
+		return openSession(ws, wsName, homeDir, o.Number, openOpts{
+			Mux: o.Mux, AsTab: asTab, Focus: true, Agent: agent,
+		})
 	}
 
 	fmt.Printf("\nwork in:    %s\n", filepath.Join(ws, homeDir))
@@ -281,28 +283,35 @@ func runSpawn(o spawnOpts) error {
 		fmt.Printf("open it:    facet attach --path %s\n", ws)
 	}
 
-	// Launching an agent is normally the operator's job, with one deliberate
-	// exception: an RC session, so the box stays reachable over Anthropic's relay
-	// even if the tailnet drops. It runs last, once the clones, branch and
-	// CLAUDE.md all exist, and is never fatal, exactly like the board move and the
-	// scope write-back above.
-	if resolveRC(o, route) {
+	// With no pane to put it in, launching an agent means taking over THIS
+	// terminal, which no default may decide -- so unlike the pane, this stays
+	// off unless routing or a flag turns it on. It runs last, once the clones,
+	// branch and CLAUDE.md all exist, and is never fatal, exactly like the board
+	// move and the scope write-back above.
+	if resolveLaunch(o, route) {
 		workDir := filepath.Join(ws, homeDir)
-		fmt.Printf("\nlaunching claude with Remote Control in %s\n", workDir)
-		if err := claudex.LaunchRC(workDir, wsName, route.SpawnSessionPrefix()); err != nil {
-			rep.Warn("claude --rc: %v (workspace is ready; open it yourself with `claude --rc` in %s)", err, workDir)
+		opts := claudex.Options{
+			RemoteControl:     o.Agent.Remote,
+			SessionName:       wsName,
+			SessionNamePrefix: route.SpawnSessionPrefix(),
+		}
+		fmt.Printf("\nlaunching %s in %s\n", claudex.ShellCommand(opts), workDir)
+		if err := claudex.Launch(workDir, opts); err != nil {
+			rep.Warn("%s: %v (workspace is ready; open it yourself in %s)",
+				claudex.Exe, err, workDir)
 		}
 	}
 	return nil
 }
 
-// resolveRC decides whether to launch an RC session: an explicit flag wins over
-// the routing default, and --no-rc wins over --rc.
-func resolveRC(o spawnOpts, route *routing.Routing) bool {
-	if o.NoRC {
+// resolveLaunch decides whether to start claude in this terminal. A named flag
+// wins over the routing default; --claude=false and its --no-rc alias win over
+// everything.
+func resolveLaunch(o spawnOpts, route *routing.Routing) bool {
+	if !o.Agent.Claude {
 		return false
 	}
-	if o.RC {
+	if o.Agent.Explicit {
 		return true
 	}
 	return route.SpawnRC()

@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 )
 
@@ -104,6 +105,12 @@ func defaultShell() string {
 // a pane. The agent is launched THROUGH a shell so that `#!/bin/sh` scripts and
 // npm shims (like `claude`) can be started reliably.
 //
+// The pane outlives the agent. Without the trailing `exec`, tmux closes the pane
+// -- and with it the window -- the moment the agent exits, so restarting one
+// means recreating the window and losing its scrollback. Dropping into an
+// interactive login shell in the same directory keeps the window; `exec`
+// replaces the `-lc` shell rather than leaving a second one nested under it.
+//
 // An empty exe means we could not find a shell to trust; the caller should open
 // a plain pane rather than risk the spawn.
 func agentInvocation(agent string) (exe string, args []string) {
@@ -111,13 +118,44 @@ func agentInvocation(agent string) (exe string, args []string) {
 	if exe == "" {
 		return "", nil
 	}
-	if agent == "" {
-		return exe, nil
-	}
 	if runtime.GOOS == "windows" {
+		// pwsh -NoExit already leaves the tab on an interactive prompt.
+		if agent == "" {
+			return exe, nil
+		}
 		return exe, []string{"-NoLogo", "-NoExit", "-Command", agent}
 	}
-	return exe, []string{"-lc", agent}
+	fallback := "exec " + singleQuote(exe) + " -il"
+	if agent == "" {
+		return exe, []string{"-lc", fallback}
+	}
+	return exe, []string{"-lc", agent + "; " + fallback}
+}
+
+// singleQuote makes s one POSIX shell word. Only the shell's own path goes
+// through here, but a home directory with a space in it is ordinary enough.
+func singleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// pinWindowName returns the tmux commands that stop the program in a window from
+// renaming it. An agent writes its own terminal title within seconds of
+// starting, and tmux's automatic-rename copies that over the name facet gave the
+// window -- after which `-t <session>:<name>` targets nothing, and the window is
+// no longer identifiable as the workspace's.
+func pinWindowName(target string) [][]string {
+	return [][]string{
+		{"set-window-option", "-t", target, "automatic-rename", "off"},
+		{"set-window-option", "-t", target, "allow-rename", "off"},
+	}
+}
+
+// creates reports whether a tmux argv makes a new window we can address
+// afterwards. Those are run with `-P -F #{window_id}` so their id comes back on
+// stdout: a window id is stable, where a name can be overwritten and an index
+// shifts when a neighbour closes.
+func creates(argv []string) bool {
+	return len(argv) > 0 && (argv[0] == "new-session" || argv[0] == "new-window")
 }
 
 func shellCandidates() []string {
@@ -159,13 +197,26 @@ type Launcher interface {
 	// Live reports whether a session of that name is currently running.
 	Live(session string) bool
 	// Start creates the session and attaches. It blocks until you detach.
-	Start(s Session) error
+	//
+	// target is a handle on the window it created -- a tmux window id -- or ""
+	// when it created none (it attached, switched, or the launcher has no such
+	// notion). The caller needs it to read back what the pane printed.
+	Start(s Session) (target string, err error)
 	// Attach joins an existing session.
 	Attach(name string) error
 	// Kill removes the session. A missing session is not an error.
 	Kill(name string) error
 	// AttachCommand is what a human would type to join.
 	AttachCommand(name string) string
+}
+
+// PaneReader is implemented by launchers that can read back what a window has
+// printed. Optional: a launcher without it is simply not asked, and the caller
+// does without. It stays deliberately ignorant of what the text means -- the
+// agent's output is the agent package's business, not the multiplexer's.
+type PaneReader interface {
+	// CapturePane returns the last lines of the target window's scrollback.
+	CapturePane(target string, lines int) (string, error)
 }
 
 // Pick returns the best available launcher, or nil.
@@ -262,7 +313,7 @@ func plan(in planInput) (argvs [][]string, guidance string) {
 		// outside tmux: a signal between the two cannot leave a half-built
 		// session sitting there attached. Layout is one pane, the agent, at
 		// HomeDir -- users who want a split shell can add one with prefix + %.
-		create := []string{"new-session", "-d", "-s", in.Name, "-c", in.HomeDir, "-n", winName}
+		create := []string{"new-session", "-d", "-s", in.Name, "-c", in.HomeDir, "-n", winName, "-P", "-F", "#{window_id}"}
 		if in.AgentExe != "" {
 			create = append(create, in.AgentExe)
 			create = append(create, in.AgentArgs...)
@@ -291,7 +342,7 @@ func plan(in planInput) (argvs [][]string, guidance string) {
 		//
 		// One pane, the agent, at HomeDir. Target the current session by name
 		// for defensive clarity; `-t ":"` would work but reads worse in logs.
-		add := []string{"new-window", "-t", "=" + in.CurrentSess + ":", "-n", winName, "-c", in.HomeDir}
+		add := []string{"new-window", "-t", "=" + in.CurrentSess + ":", "-n", winName, "-c", in.HomeDir, "-P", "-F", "#{window_id}"}
 		if in.AgentExe != "" {
 			add = append(add, in.AgentExe)
 			add = append(add, in.AgentArgs...)
@@ -309,7 +360,7 @@ func plan(in planInput) (argvs [][]string, guidance string) {
 
 // Start opens the workspace: attaching, switching, or adding a window as the
 // situation allows. It blocks while tmux holds the terminal.
-func (z Tmux) Start(s Session) error {
+func (z Tmux) Start(s Session) (string, error) {
 	inSession := InSession()
 	currentSess := ""
 	if inSession {
@@ -317,7 +368,7 @@ func (z Tmux) Start(s Session) error {
 		// Already sitting in the workspace's own session: adding a window for
 		// it again would just duplicate, and switching to it is a no-op.
 		if currentSess == s.Name {
-			return &ErrGuidance{Msg: "you are already inside tmux session " + s.Name + "."}
+			return "", &ErrGuidance{Msg: "you are already inside tmux session " + s.Name + "."}
 		}
 	}
 
@@ -330,9 +381,9 @@ func (z Tmux) Start(s Session) error {
 			// happen after the built-in path: attach from outside, or nothing
 			// (the window is already there) from inside.
 			if !inSession {
-				return passthrough("tmux", "attach-session", "-t", "="+s.Name)
+				return "", passthrough("tmux", "attach-session", "-t", "="+s.Name)
 			}
-			return nil
+			return "", nil
 		} else if !os.IsNotExist(err) {
 			fmt.Fprintf(os.Stderr, "warning: layout override %s failed (%v); using the built-in layout instead.\n",
 				s.Override, err)
@@ -360,7 +411,7 @@ func (z Tmux) Start(s Session) error {
 		Switch:      s.Switch,
 	})
 	if guidance != "" {
-		return &ErrGuidance{Msg: guidance}
+		return "", &ErrGuidance{Msg: guidance}
 	}
 
 	// `tmux new-window` always focuses the window it creates. Note where we
@@ -374,20 +425,44 @@ func (z Tmux) Start(s Session) error {
 	// outside) needs to be run under passthrough because it blocks the
 	// terminal. Everything before that is a tmux command whose exit code we
 	// want to observe without seizing the terminal.
+	target := ""
 	for i, argv := range argvs {
 		last := i == len(argvs)-1
 		if last && len(argv) > 0 && argv[0] == "attach-session" {
-			return passthrough("tmux", argv...)
+			return target, passthrough("tmux", argv...)
+		}
+		if creates(argv) {
+			out, err := exec.Command("tmux", argv...).Output()
+			if err != nil {
+				return "", fmt.Errorf("tmux %s: %w", strings.Join(argv, " "), err)
+			}
+			target = strings.TrimSpace(string(out))
+			// Pin the name before the agent has had time to overwrite it. A
+			// failure here costs targeting, not the window, so it is not fatal.
+			for _, opt := range pinWindowName(target) {
+				_ = exec.Command("tmux", opt...).Run()
+			}
+			continue
 		}
 		if err := exec.Command("tmux", argv...).Run(); err != nil {
-			return fmt.Errorf("tmux %s: %w", strings.Join(argv, " "), err)
+			return "", fmt.Errorf("tmux %s: %w", strings.Join(argv, " "), err)
 		}
 	}
 
 	if restore != "" {
 		_ = exec.Command("tmux", "select-window", "-t", "="+currentSess+":"+restore).Run()
 	}
-	return nil
+	return target, nil
+}
+
+// CapturePane returns the last lines of the target window's scrollback,
+// implementing PaneReader.
+func (Tmux) CapturePane(target string, lines int) (string, error) {
+	out, err := exec.Command("tmux", "capture-pane", "-p", "-S", "-"+strconv.Itoa(lines), "-t", target).Output()
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
 }
 
 // focusedWindowIndex returns the current session's active window index, or ""
@@ -458,12 +533,14 @@ func (WindowsTerminal) Available() bool {
 // be discovered after the fact.
 func (WindowsTerminal) Live(string) bool { return false }
 
-func (WindowsTerminal) Start(s Session) error {
+// Start opens a tab. It returns no target: a Windows Terminal tab has no handle
+// facet can address afterwards, so nothing can be read back out of it.
+func (WindowsTerminal) Start(s Session) (string, error) {
 	args := []string{"-w", "facet", "nt", "--title", s.Name, "-d", s.HomeDir}
 	if s.Agent != "" {
 		args = append(args, s.Agent)
 	}
-	return exec.Command("wt", args...).Start()
+	return "", exec.Command("wt", args...).Start()
 }
 
 func (WindowsTerminal) Attach(string) error {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/RiccardoCereghino/facet/internal/config"
 	"github.com/RiccardoCereghino/facet/internal/mux"
+	"github.com/RiccardoCereghino/facet/internal/routing"
 	"github.com/RiccardoCereghino/facet/internal/workspace"
 	"github.com/spf13/cobra"
 )
@@ -132,6 +133,7 @@ func newAttachCmd() *cobra.Command {
 		path       string
 		ownSession bool
 		switchTo   bool
+		agent      agentFlags
 	)
 	cmd := &cobra.Command{
 		Use:   "attach",
@@ -142,7 +144,11 @@ func newAttachCmd() *cobra.Command {
 			"being moved out of the session you are typing in is never a default. Pass\n" +
 			"--switch to be moved.\n\n" +
 			"Outside tmux it attaches to the workspace's own session, creating it from\n" +
-			"scratch if needed.",
+			"scratch if needed.\n\n" +
+			"The pane runs claude with Remote Control, so the session is reachable off\n" +
+			"this host, and its URL is printed here once the pane has it. --remote=false\n" +
+			"runs claude without it; --claude=false leaves a plain login shell. Setting\n" +
+			"FACET_AGENT overrides all of that with its own command.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if ownSession && switchTo {
@@ -157,16 +163,27 @@ func newAttachCmd() *cobra.Command {
 				return err
 			}
 			_, asTab := mux.AutoOpen(muxFor(""), ownSession)
+			a := agent.resolve(cmd).agentOpts
+			// The session-name prefix is a property of the host, not of
+			// spawning, so an attached pane wants it too. Routing is not
+			// required to open a workspace, so a failure to read it costs
+			// the prefix and nothing else.
+			if route, err := routing.Load(roots.Routing); err == nil {
+				a.SessionNamePrefix = route.SpawnSessionPrefix()
+			}
 			// `facet attach` means "show me this workspace" -- not "move
 			// me". The window it adds is focused, because you asked to go
 			// there; --switch is what moves the whole client to the
 			// workspace's own session.
-			return openSession(ws, st.Name, st.Issue.Home, st.Issue.Number, "", asTab, true, switchTo)
+			return openSession(ws, st.Name, st.Issue.Home, st.Issue.Number, openOpts{
+				AsTab: asTab, Focus: true, Switch: switchTo, Agent: a,
+			})
 		},
 	}
 	cmd.Flags().StringVar(&path, "path", "", "issue workspace (default: working directory)")
 	cmd.Flags().BoolVar(&ownSession, "session", false, "open in a session of its own instead of a window (must not already be inside tmux)")
 	cmd.Flags().BoolVar(&switchTo, "switch", false, "move this client to the workspace's own tmux session, when it has one")
+	agent.register(cmd)
 	return cmd
 }
 
