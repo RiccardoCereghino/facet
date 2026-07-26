@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RiccardoCereghino/facet/internal/claudex"
 	"github.com/RiccardoCereghino/facet/internal/config"
 	"github.com/RiccardoCereghino/facet/internal/ghx"
 	"github.com/RiccardoCereghino/facet/internal/knowledge"
@@ -31,6 +32,8 @@ func newSpawnCmd() *cobra.Command {
 		noBranch    bool
 		dryRun      bool
 		noWriteback bool
+		rc          bool
+		noRC        bool
 	)
 	cmd := &cobra.Command{
 		Use:   "spawn <issue-number>",
@@ -53,7 +56,7 @@ func newSpawnCmd() *cobra.Command {
 			return runSpawn(spawnOpts{
 				Number: number, Repo: repo, Clones: clones, Add: addClones, Remove: rmClones,
 				Slug: slug, Base: base, Yes: yes, NoBranch: noBranch, DryRun: dryRun,
-				NoWriteback: noWriteback,
+				NoWriteback: noWriteback, RC: rc, NoRC: noRC,
 			})
 		},
 	}
@@ -68,6 +71,8 @@ func newSpawnCmd() *cobra.Command {
 	f.BoolVar(&noBranch, "no-branch", false, "do not create or check out an issue branch")
 	f.BoolVar(&dryRun, "dry-run", false, "show the inference and exit, creating nothing")
 	f.BoolVar(&noWriteback, "no-writeback", false, "do not record the confirmed repo set in the issue body")
+	f.BoolVar(&rc, "rc", false, "launch claude with Remote Control once the workspace is ready (overrides routing spawn.rc)")
+	f.BoolVar(&noRC, "no-rc", false, "do not launch claude, even if routing sets spawn.rc (overrides --rc)")
 	return cmd
 }
 
@@ -80,6 +85,9 @@ type spawnOpts struct {
 	// NoWriteback leaves the issue body alone. The confirmed repo set is then
 	// re-inferred on every spawn.
 	NoWriteback bool
+	// RC and NoRC override the routing spawn.rc default for launching an RC
+	// session. NoRC wins if both are set.
+	RC, NoRC bool
 }
 
 func runSpawn(o spawnOpts) error {
@@ -227,7 +235,32 @@ func runSpawn(o spawnOpts) error {
 
 	fmt.Printf("\nWorkspace ready: %s\n", ws)
 	fmt.Printf("\nwork in:    %s\n", filepath.Join(ws, homeDir))
+
+	// Launching an agent is normally the operator's job, with one deliberate
+	// exception: an RC session, so the box stays reachable over Anthropic's relay
+	// even if the tailnet drops. It runs last, once the clones, branch and
+	// CLAUDE.md all exist, and is never fatal, exactly like the board move and the
+	// scope write-back above.
+	if resolveRC(o, route) {
+		workDir := filepath.Join(ws, homeDir)
+		fmt.Printf("\nlaunching claude with Remote Control in %s\n", workDir)
+		if err := claudex.LaunchRC(workDir, wsName, route.SpawnSessionPrefix()); err != nil {
+			rep.Warn("claude --rc: %v (workspace is ready; open it yourself with `claude --rc` in %s)", err, workDir)
+		}
+	}
 	return nil
+}
+
+// resolveRC decides whether to launch an RC session: an explicit flag wins over
+// the routing default, and --no-rc wins over --rc.
+func resolveRC(o spawnOpts, route *routing.Routing) bool {
+	if o.NoRC {
+		return false
+	}
+	if o.RC {
+		return true
+	}
+	return route.SpawnRC()
 }
 
 // checkoutIssueBranch fetches the branch explicitly, because the mirror may have

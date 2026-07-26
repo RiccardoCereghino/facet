@@ -6,6 +6,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`spawn` can launch a Remote Control session**: once the workspace is ready,
+  `spawn` optionally runs `claude --rc` in the home clone. Remote Control rides
+  Anthropic's relay over outbound HTTPS, so an agent stays reachable even if the
+  tailnet drops. Off unless enabled: a `spawn` block in `.tools/routing.json`
+  (`{"spawn": {"rc": true, "sessionNamePrefix": "..."}}`) sets the default, and
+  `--rc` / `--no-rc` override per invocation (`--no-rc` wins). The launch runs
+  last and is never fatal: a missing or unauthenticated `claude` warns and
+  leaves the ready workspace untouched.
+
 ### Fixed
 
 - **Lock acquisition no longer fails on a Windows delete-pending race**: when a

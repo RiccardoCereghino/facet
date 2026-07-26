@@ -85,6 +85,14 @@ one was chosen, and waits.** On confirmation it creates an issue-linked branch
 body and the durable hazards recorded for its `area/*` labels. Then it stops and
 tells you where to work — opening an editor or starting an agent is yours.
 
+One agent launch is opt-in: a Remote Control session. With a `spawn` block in
+`.tools/routing.json` (`{"spawn": {"rc": true}}`), spawn runs `claude --rc` in the
+home clone once the workspace is ready, so the session is reachable over
+Anthropic's relay independent of the tailnet. `--rc` / `--no-rc` override the
+default per invocation (`--no-rc` wins). It runs last and is never fatal: if
+`claude` is missing or not signed in, spawn warns and leaves the ready workspace
+for you to open yourself.
+
 ```
 acme/platform#67  Rehearse a database restore: nothing has ever been restored
   labels: P0-critical, area/backups, blocked
