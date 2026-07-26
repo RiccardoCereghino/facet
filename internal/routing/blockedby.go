@@ -43,6 +43,7 @@ func ParseBlockedBy(body string) []BlockedByRef {
 	}
 
 	var out []BlockedByRef
+	seen := map[BlockedByRef]bool{}
 	for _, m := range blockedByRefPattern.FindAllStringSubmatchIndex(section, -1) {
 		ownerStart, ownerEnd := m[2], m[3]
 		if ownerStart == -1 {
@@ -60,6 +61,13 @@ func ParseBlockedBy(body string) []BlockedByRef {
 		if ownerStart != -1 {
 			ref.OwnerRepo = section[ownerStart:ownerEnd]
 		}
+		// The same dependency named twice in one section (a bullet list that
+		// also mentions it in prose, say) must produce exactly one edge --
+		// not one POST per mention.
+		if seen[ref] {
+			continue
+		}
+		seen[ref] = true
 		out = append(out, ref)
 	}
 	return out

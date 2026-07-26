@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -40,12 +41,21 @@ func (f *fakeGH) CreateIssue(repo, title, body string, labels []string) (string,
 	return f.createURL, nil
 }
 
+// IssueID errors on a map miss, matching the real CLI's behaviour on a
+// nonexistent or inaccessible issue (a 404 via `gh api`) -- a test relying on
+// "an unscripted issue is skipped" must see the same failure mode the real
+// client produces, not a fake id of 0 that happens to also look like an error
+// path today but wouldn't catch a caller that started treating 0 as valid.
 func (f *fakeGH) IssueID(repo string, number int) (int64, error) {
 	k := f.key(repo, number)
 	if err, ok := f.issueErrs[k]; ok {
 		return 0, err
 	}
-	return f.issueIDs[k], nil
+	id, ok := f.issueIDs[k]
+	if !ok {
+		return 0, fmt.Errorf("fakeGH.IssueID: no issue id scripted for %s", k)
+	}
+	return id, nil
 }
 
 func (f *fakeGH) AddBlockedBy(repo string, number int, blockingID int64) error {

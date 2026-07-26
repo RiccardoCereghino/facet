@@ -59,6 +59,11 @@ func TestParseBlockedBy(t *testing.T) {
 			body: "### Blocked by / waiting on\n\n#5\n\n### Blocking\n\n#9\n",
 			want: []BlockedByRef{{Number: 5}},
 		},
+		{
+			name: "the same ref named twice dedupes to one",
+			body: "### Blocked by / waiting on\n\n- #5\n\nAlso see #5 and acme/infra-core#41, acme/infra-core#41 again.\n",
+			want: []BlockedByRef{{Number: 5}, {OwnerRepo: "acme/infra-core", Number: 41}},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
