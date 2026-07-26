@@ -9,13 +9,44 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - **`spawn` can launch a Remote Control session**: once the workspace is ready,
-  `spawn` optionally runs `claude --rc` in the home clone. Remote Control rides
-  Anthropic's relay over outbound HTTPS, so an agent stays reachable even if the
-  tailnet drops. Off unless enabled: a `spawn` block in `.tools/routing.json`
-  (`{"spawn": {"rc": true, "sessionNamePrefix": "..."}}`) sets the default, and
-  `--rc` / `--no-rc` override per invocation (`--no-rc` wins). The launch runs
-  last and is never fatal: a missing or unauthenticated `claude` warns and
-  leaves the ready workspace untouched.
+  `spawn` optionally runs `claude` with Remote Control in the home clone. Remote
+  Control rides Anthropic's relay over outbound HTTPS, so an agent stays
+  reachable even if the tailnet drops. Off unless enabled — starting it here
+  takes over the terminal `spawn` was run from — so a `spawn` block in
+  `.tools/routing.json` (`{"spawn": {"rc": true, "sessionNamePrefix": "..."}}`)
+  sets the default and `--claude` / `--claude=false` override per invocation.
+  The launch runs last and is never fatal: a missing or unauthenticated `claude`
+  warns and leaves the ready workspace untouched.
+- **`facet attach`, and `spawn --attach`**, open the workspace in tmux: one
+  pane, the agent, rooted at the home clone. One session per issue, so
+  `tmux list-sessions` is the dashboard of what is running; from inside a
+  session it adds a window instead, because sessions do not nest. `--mux wt`
+  selects a degraded Windows Terminal fallback, `--mux none` opens nothing, and
+  `.tools/issue-layout.sh` overrides the built-in layout. `reap` and `issues`
+  now hold back on a live session.
+- **The pane launches claude with Remote Control by default**, and prints the
+  session URL back once the pane has it — the CLI writes that URL only into its
+  own pane, and it is the whole deliverable for reaching a session from
+  elsewhere. `--remote=false` runs claude without Remote Control;
+  `--claude=false` leaves a plain login shell; `FACET_AGENT` still overrides all
+  of it. In a pane this is on by default, where the terminal-seizing launch
+  above is not: a pane costs nothing to give away.
+
+### Changed
+
+- **A pane outlives its agent.** Panes run `<agent>; exec $SHELL -il`, so
+  quitting the agent drops you into a login shell in the same directory instead
+  of closing the window and losing its scrollback.
+- **The session name is passed as `--remote-control=<name>`**, not as a
+  positional argument. The value is optional, so a positional name is ambiguous
+  the moment an initial prompt follows it.
+
+### Fixed
+
+- **A window facet creates keeps the name facet gave it.** `automatic-rename`
+  and `allow-rename` are turned off on it: an agent writes its own terminal
+  title within seconds of starting, and tmux would copy that over the window
+  name, after which `-t <session>:<name>` targets nothing.
 
 ### Fixed
 

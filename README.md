@@ -85,13 +85,17 @@ one was chosen, and waits.** On confirmation it creates an issue-linked branch
 body and the durable hazards recorded for its `area/*` labels. Then it stops and
 tells you where to work — opening an editor or starting an agent is yours.
 
-One agent launch is opt-in: a Remote Control session. With a `spawn` block in
-`.tools/routing.json` (`{"spawn": {"rc": true}}`), spawn runs `claude --rc` in the
-home clone once the workspace is ready, so the session is reachable over
-Anthropic's relay independent of the tailnet. `--rc` / `--no-rc` override the
-default per invocation (`--no-rc` wins). It runs last and is never fatal: if
-`claude` is missing or not signed in, spawn warns and leaves the ready workspace
-for you to open yourself.
+With no pane to put it in, one agent launch is opt-in: a Remote Control session.
+With a `spawn` block in `.tools/routing.json` (`{"spawn": {"rc": true}}`), spawn
+runs `claude --remote-control` in the home clone once the workspace is ready, so
+the session is reachable over Anthropic's relay independent of the tailnet.
+`--claude` turns it on for one invocation and `--claude=false` off. It runs last
+and is never fatal: if `claude` is missing or not signed in, spawn warns and
+leaves the ready workspace for you to open yourself.
+
+Starting claude *here* takes over this terminal, which is why it stays off by
+default. In a multiplexer pane it costs nothing, so `--attach` runs it by
+default — see below.
 
 ```
 acme/platform#67  Rehearse a database restore: nothing has ever been restored
@@ -185,11 +189,70 @@ facet knows that *some* labels are required, never which ones. Omit the block an
 nothing is enforced. `--repos` is recorded in the body, so the first spawn of that
 issue is exact.
 
+### Opening the workspace
+
+`facet attach` opens a tmux session for the workspace: one pane, the agent,
+rooted at the home clone. One session per issue, so `tmux list-sessions`
+becomes the dashboard of what is running. Inside an existing tmux session it
+adds the workspace as a new window instead, because sessions do not nest —
+being moved out of the session you are typing in is never a default. Pass
+`--switch` when you do want to be moved.
+
+`facet spawn --attach` runs the same path immediately after setup. Without
+`--attach` `spawn` just prints where to work and leaves opening a session to
+you. `--mux wt` selects the Windows Terminal fallback (a plain new tab, no
+session persistence).
+
+#### What the pane runs
+
+By default the pane starts `claude` with Remote Control, so the session is
+reachable from anywhere over Anthropic's relay rather than only from this host.
+Its session URL is printed back here once the pane has it — the CLI writes it
+only into its own pane, and reading it off a background window by hand is the
+one step you would otherwise still be doing manually.
+
+| flags | the pane runs |
+| --- | --- |
+| *(default)* | `$SHELL -lc "claude --remote-control=<workspace>; exec $SHELL -il"` |
+| `--remote=false` | `$SHELL -lc "claude; exec $SHELL -il"` |
+| `--claude=false` | `$SHELL -lc "exec $SHELL -il"` — a plain login shell |
+| `--claude=false --remote=…` | as `--claude=false`; `--remote` only says *how* to launch, never *whether* |
+
+The session name is attached as `--remote-control=<name>`, never as a positional
+argument: the value is optional, so `--remote-control <name> "<prompt>"` is
+ambiguous the moment a prompt follows it.
+
+Two properties worth knowing:
+
+- **The pane outlives the agent.** On exit you land in an interactive login
+  shell in the same directory rather than losing the window and its scrollback,
+  so restarting the agent is `↑`, not rebuilding the window.
+- **The window keeps the name facet gave it.** An agent writes its own terminal
+  title within seconds, and tmux's `automatic-rename` would copy that over the
+  window name — after which `-t <session>:<name>` targets nothing. Both rename
+  options are turned off on the windows facet creates.
+
+`FACET_AGENT` overrides all of this: when it is set the pane runs
+`$SHELL -lc "$FACET_AGENT; exec $SHELL -il"` and neither `--claude` nor
+`--remote` applies. It predates these flags, so it is not made to lose to one of
+their defaults.
+
+(`--rc` and `--no-rc`, the names the first Remote Control launch shipped under,
+still work as deprecated aliases for `--claude --remote` and `--claude=false`.)
+
+The layout is built inline by facet and needs no configuration. To customise
+it — say, adding a shell pane split, a status pane, or a different focus —
+drop an executable script at `.tools/issue-layout.sh`; it receives the session
+name, home clone, workspace, issue number, agent executable, and agent
+arguments, and is expected to leave a session of that name ready to attach.
+A non-zero exit warns and falls back to the built-in layout.
+
 ### Tidying up
 
 `facet issues` lists the ephemeral workspaces. `facet reap` deletes one, and
-**refuses** while there are unpushed commits, uncommitted changes, or an open pull
-request — the states where deleting would lose work.
+**refuses** while there are unpushed commits, uncommitted changes, an open pull
+request, or a live multiplexer session — the states where deleting would lose
+work.
 
 ## Mirrors make the clones cheap
 
@@ -208,13 +271,14 @@ warning, because every clone's origin is the forge.
 ## Design
 
 **`facet` knows nothing about your organisation.** Which repositories a label
-implies, and what hazards an area carries, are all *data*, read from your
-workspaces root:
+implies, what hazards an area carries, and the multiplexer layout are all
+*data*, read from your workspaces root:
 
 | File | What it holds |
 | --- | --- |
 | `.tools/routing.json` | the repo table, the label → repos prior, and the project board |
 | `.knowledge/area-*.md` | durable hazards, inlined into a spawned workspace |
+| `.tools/issue-layout.sh` | optional override script for the tmux layout |
 
 A knowledge fragment holds **invariants only** — things true about a system
 whichever issue you happen to be working on. Status, phase and "as of" notes belong

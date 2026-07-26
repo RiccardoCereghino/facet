@@ -14,6 +14,7 @@ import (
 	"github.com/RiccardoCereghino/facet/internal/ghx"
 	"github.com/RiccardoCereghino/facet/internal/knowledge"
 	"github.com/RiccardoCereghino/facet/internal/manifest"
+	"github.com/RiccardoCereghino/facet/internal/mux"
 	"github.com/RiccardoCereghino/facet/internal/render"
 	"github.com/RiccardoCereghino/facet/internal/routing"
 	"github.com/RiccardoCereghino/facet/internal/workspace"
@@ -31,9 +32,12 @@ func newSpawnCmd() *cobra.Command {
 		yes         bool
 		noBranch    bool
 		dryRun      bool
+		attach      bool
+		noAttach    bool
+		ownSession  bool
+		muxName     string
 		noWriteback bool
-		rc          bool
-		noRC        bool
+		agent       agentFlags
 	)
 	cmd := &cobra.Command{
 		Use:   "spawn <issue-number>",
@@ -45,8 +49,9 @@ func newSpawnCmd() *cobra.Command {
 			"Labels alone cannot decide the repo set: the same topic label is used in\n" +
 			"several repos, and a cross-repo dependency lives in the issue body. So the\n" +
 			"inference is always shown and never silently trusted.\n\n" +
-			"It sets the workspace up and stops there: it prints where to work and leaves\n" +
-			"opening an editor or starting an agent to you.",
+			"It sets the workspace up and stops there, spawning no shell: it just prints\n" +
+			"where to work. Opening a multiplexer and starting the agent are yours --\n" +
+			"pass --attach to have facet open it (tmux or Windows Terminal).",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			number, err := strconv.Atoi(args[0])
@@ -56,7 +61,8 @@ func newSpawnCmd() *cobra.Command {
 			return runSpawn(spawnOpts{
 				Number: number, Repo: repo, Clones: clones, Add: addClones, Remove: rmClones,
 				Slug: slug, Base: base, Yes: yes, NoBranch: noBranch, DryRun: dryRun,
-				NoWriteback: noWriteback, RC: rc, NoRC: noRC,
+				Attach: attach, NoAttach: noAttach, OwnSession: ownSession, Mux: muxName,
+				NoWriteback: noWriteback, Agent: agent.resolve(cmd),
 			})
 		},
 	}
@@ -70,24 +76,37 @@ func newSpawnCmd() *cobra.Command {
 	f.BoolVarP(&yes, "yes", "y", false, "skip the confirmation prompt")
 	f.BoolVar(&noBranch, "no-branch", false, "do not create or check out an issue branch")
 	f.BoolVar(&dryRun, "dry-run", false, "show the inference and exit, creating nothing")
+	f.BoolVar(&attach, "attach", false, "open the workspace in a multiplexer after setup (default: spawn nothing, just print where to work)")
+	f.BoolVar(&noAttach, "no-attach", false, "no-op; not opening is now the default")
+	f.BoolVar(&ownSession, "session", false, "with --attach, open in a session of its own rather than as a window")
+	f.StringVar(&muxName, "mux", "", "multiplexer to use: tmux, wt, or none")
 	f.BoolVar(&noWriteback, "no-writeback", false, "do not record the confirmed repo set in the issue body")
-	f.BoolVar(&rc, "rc", false, "launch claude with Remote Control once the workspace is ready (overrides routing spawn.rc)")
-	f.BoolVar(&noRC, "no-rc", false, "do not launch claude, even if routing sets spawn.rc (overrides --rc)")
+	agent.register(cmd)
 	return cmd
 }
 
+// muxFor resolves a launcher by name, or picks the best available.
+func muxFor(name string) mux.Launcher {
+	if name != "" {
+		return mux.ByName(name)
+	}
+	return mux.Pick()
+}
+
 type spawnOpts struct {
-	Number                int
-	Repo                  string
-	Clones, Add, Remove   []string
-	Slug, Base            string
-	Yes, NoBranch, DryRun bool
+	Number                       int
+	Repo                         string
+	Clones, Add, Remove          []string
+	Slug, Base                   string
+	Yes, NoBranch, DryRun        bool
+	Attach, NoAttach, OwnSession bool
+	Mux                          string
 	// NoWriteback leaves the issue body alone. The confirmed repo set is then
 	// re-inferred on every spawn.
 	NoWriteback bool
-	// RC and NoRC override the routing spawn.rc default for launching an RC
-	// session. NoRC wins if both are set.
-	RC, NoRC bool
+	// Agent is what to run for the operator once the workspace is ready: in the
+	// pane when --attach opened one, in this terminal otherwise.
+	Agent agentChoice
 }
 
 func runSpawn(o spawnOpts) error {
@@ -234,30 +253,65 @@ func runSpawn(o spawnOpts) error {
 	}
 
 	fmt.Printf("\nWorkspace ready: %s\n", ws)
-	fmt.Printf("\nwork in:    %s\n", filepath.Join(ws, homeDir))
 
-	// Launching an agent is normally the operator's job, with one deliberate
-	// exception: an RC session, so the box stays reachable over Anthropic's relay
-	// even if the tailnet drops. It runs last, once the clones, branch and
-	// CLAUDE.md all exist, and is never fatal, exactly like the board move and the
-	// scope write-back above.
-	if resolveRC(o, route) {
+	// The multiplexer comes last and is never fatal: the clones, the branch
+	// and the CLAUDE.md all exist by now. By DEFAULT nothing is opened here
+	// and no shell is spawned -- facet sets the workspace up and prints where
+	// to work. Opening -- and the shell it runs -- is opt-in via --attach.
+	//
+	// When we do open a pane, the pane owns the agent: launching a second,
+	// blocking claude in this terminal underneath it would fight for stdin.
+	if o.Attach && !o.NoAttach && o.Mux != "none" {
+		l := muxFor(o.Mux)
+		if l == nil {
+			fmt.Printf("\nNo multiplexer available; work in %s\n", filepath.Join(ws, homeDir))
+			return nil
+		}
+		// spawn opens beside whatever you are doing; it must not move you. A
+		// freshly spawned workspace has no session of its own to switch to
+		// anyway.
+		_, asTab := mux.AutoOpen(l, o.OwnSession)
+		agent := o.Agent.agentOpts
+		agent.SessionNamePrefix = route.SpawnSessionPrefix()
+		return openSession(ws, wsName, homeDir, o.Number, openOpts{
+			Mux: o.Mux, AsTab: asTab, Focus: true, Agent: agent,
+		})
+	}
+
+	fmt.Printf("\nwork in:    %s\n", filepath.Join(ws, homeDir))
+	if o.Mux != "none" {
+		fmt.Printf("open it:    facet attach --path %s\n", ws)
+	}
+
+	// With no pane to put it in, launching an agent means taking over THIS
+	// terminal, which no default may decide -- so unlike the pane, this stays
+	// off unless routing or a flag turns it on. It runs last, once the clones,
+	// branch and CLAUDE.md all exist, and is never fatal, exactly like the board
+	// move and the scope write-back above.
+	if resolveLaunch(o, route) {
 		workDir := filepath.Join(ws, homeDir)
-		fmt.Printf("\nlaunching claude with Remote Control in %s\n", workDir)
-		if err := claudex.LaunchRC(workDir, wsName, route.SpawnSessionPrefix()); err != nil {
-			rep.Warn("claude --rc: %v (workspace is ready; open it yourself with `claude --rc` in %s)", err, workDir)
+		opts := claudex.Options{
+			RemoteControl:     o.Agent.Remote,
+			SessionName:       wsName,
+			SessionNamePrefix: route.SpawnSessionPrefix(),
+		}
+		fmt.Printf("\nlaunching %s in %s\n", claudex.ShellCommand(opts), workDir)
+		if err := claudex.Launch(workDir, opts); err != nil {
+			rep.Warn("%s: %v (workspace is ready; open it yourself in %s)",
+				claudex.Exe, err, workDir)
 		}
 	}
 	return nil
 }
 
-// resolveRC decides whether to launch an RC session: an explicit flag wins over
-// the routing default, and --no-rc wins over --rc.
-func resolveRC(o spawnOpts, route *routing.Routing) bool {
-	if o.NoRC {
+// resolveLaunch decides whether to start claude in this terminal. A named flag
+// wins over the routing default; --claude=false and its --no-rc alias win over
+// everything.
+func resolveLaunch(o spawnOpts, route *routing.Routing) bool {
+	if !o.Agent.Claude {
 		return false
 	}
-	if o.RC {
+	if o.Agent.Explicit {
 		return true
 	}
 	return route.SpawnRC()

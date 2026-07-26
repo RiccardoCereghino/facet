@@ -7,6 +7,8 @@ import (
 	"text/tabwriter"
 
 	"github.com/RiccardoCereghino/facet/internal/config"
+	"github.com/RiccardoCereghino/facet/internal/mux"
+	"github.com/RiccardoCereghino/facet/internal/routing"
 	"github.com/RiccardoCereghino/facet/internal/workspace"
 	"github.com/spf13/cobra"
 )
@@ -22,7 +24,7 @@ func newIssuesCmd() *cobra.Command {
 			if !offline {
 				pr = gh
 			}
-			states, err := workspace.ListIssues(roots, git, pr)
+			states, err := workspace.ListIssues(roots, git, pr, muxLive())
 			if err != nil {
 				return err
 			}
@@ -75,8 +77,8 @@ func newReapCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "reap",
 		Short: "Delete an ephemeral issue workspace once its work has landed",
-		Long: "Refuses while there are unpushed commits, uncommitted changes, or an open\n" +
-			"pull request.\n\n" +
+		Long: "Refuses while there are unpushed commits, uncommitted changes, an open pull\n" +
+			"request, or a live multiplexer session.\n\n" +
 			"The shared mirror is never touched: a clone's objects are hardlinks, so\n" +
 			"deleting the workspace drops those names and leaves the mirror's own intact.",
 		Args: cobra.NoArgs,
@@ -85,7 +87,7 @@ func newReapCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			st, err := workspace.InspectIssue(ws, git, gh)
+			st, err := workspace.InspectIssue(ws, git, gh, muxLive())
 			if err != nil {
 				return err
 			}
@@ -106,6 +108,12 @@ func newReapCmd() *cobra.Command {
 				fmt.Println("aborted.")
 				return nil
 			}
+			// Kill any lingering session first. A live session holds file
+			// handles on the working tree, which on some platforms would
+			// refuse the removeAll below.
+			if l := mux.Pick(); l != nil {
+				_ = l.Kill(st.Name)
+			}
 			if err := workspace.Reap(st); err != nil {
 				return err
 			}
@@ -118,6 +126,73 @@ func newReapCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&force, "force", false, "delete even when work would be lost")
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "skip the confirmation prompt")
 	return cmd
+}
+
+func newAttachCmd() *cobra.Command {
+	var (
+		path       string
+		ownSession bool
+		switchTo   bool
+		agent      agentFlags
+	)
+	cmd := &cobra.Command{
+		Use:   "attach",
+		Short: "Open, or rejoin, an issue workspace in the multiplexer",
+		Long: "Inside a tmux session this adds the workspace as a new window, because\n" +
+			"sessions do not nest and attaching from within one would seize this client.\n" +
+			"It does this even when the workspace already has a session of its own:\n" +
+			"being moved out of the session you are typing in is never a default. Pass\n" +
+			"--switch to be moved.\n\n" +
+			"Outside tmux it attaches to the workspace's own session, creating it from\n" +
+			"scratch if needed.\n\n" +
+			"The pane runs claude with Remote Control, so the session is reachable off\n" +
+			"this host, and its URL is printed here once the pane has it. --remote=false\n" +
+			"runs claude without it; --claude=false leaves a plain login shell. Setting\n" +
+			"FACET_AGENT overrides all of that with its own command.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if ownSession && switchTo {
+				return fmt.Errorf("--session and --switch are opposites: one makes a session, the other joins one")
+			}
+			ws, err := config.ResolveWorkspace(path)
+			if err != nil {
+				return err
+			}
+			st, err := workspace.InspectIssue(ws, git, nil, nil)
+			if err != nil {
+				return err
+			}
+			_, asTab := mux.AutoOpen(muxFor(""), ownSession)
+			a := agent.resolve(cmd).agentOpts
+			// The session-name prefix is a property of the host, not of
+			// spawning, so an attached pane wants it too. Routing is not
+			// required to open a workspace, so a failure to read it costs
+			// the prefix and nothing else.
+			if route, err := routing.Load(roots.Routing); err == nil {
+				a.SessionNamePrefix = route.SpawnSessionPrefix()
+			}
+			// `facet attach` means "show me this workspace" -- not "move
+			// me". The window it adds is focused, because you asked to go
+			// there; --switch is what moves the whole client to the
+			// workspace's own session.
+			return openSession(ws, st.Name, st.Issue.Home, st.Issue.Number, openOpts{
+				AsTab: asTab, Focus: true, Switch: switchTo, Agent: a,
+			})
+		},
+	}
+	cmd.Flags().StringVar(&path, "path", "", "issue workspace (default: working directory)")
+	cmd.Flags().BoolVar(&ownSession, "session", false, "open in a session of its own instead of a window (must not already be inside tmux)")
+	cmd.Flags().BoolVar(&switchTo, "switch", false, "move this client to the workspace's own tmux session, when it has one")
+	agent.register(cmd)
+	return cmd
+}
+
+// muxLive returns a session checker, or nil when no multiplexer is available.
+func muxLive() workspace.LiveChecker {
+	if l := mux.Pick(); l != nil {
+		return l
+	}
+	return nil
 }
 
 func humanBytes(n int64) string {
