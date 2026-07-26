@@ -47,7 +47,12 @@ type IssueState struct {
 	PRUnknown bool
 	// SessionLive means a multiplexer session of this name is running.
 	SessionLive bool
-	SizeBytes   int64
+	// LiveRoots names tmux panes or processes -- in any session, not only the
+	// one above -- whose current working directory is rooted here. Non-empty
+	// is itself a blocker: deleting a directory out from under a running
+	// process is silent corruption, not a merely premature reap.
+	LiveRoots []string
+	SizeBytes int64
 }
 
 // Blockers lists the reasons this workspace must not be deleted. An empty slice
@@ -87,12 +92,26 @@ func (s *IssueState) Blockers() []string {
 	if s.SessionLive {
 		out = append(out, "a multiplexer session is attached")
 	}
+	for _, r := range s.LiveRoots {
+		out = append(out, fmt.Sprintf("%s -- kill it before reaping", r))
+	}
 	return out
 }
 
 // LiveChecker reports whether a multiplexer session is running. It is an
 // interface so the reap logic is testable without a multiplexer.
 type LiveChecker interface{ Live(session string) bool }
+
+// LiveRootChecker reports tmux panes or processes, in any session, whose
+// current working directory is rooted inside a workspace -- unlike
+// LiveChecker, this is not limited to the one session named after the
+// workspace, so a pane moved elsewhere (tmux's link-window does exactly
+// this) is still caught. Implemented optionally by whatever LiveChecker is
+// passed to InspectIssue; one that does not implement it is simply not
+// asked, the same way a missing PaneReader is skipped in package mux.
+type LiveRootChecker interface {
+	LiveRoots(dir string) ([]string, error)
+}
 
 // PRLookup finds the pull request for a branch. Nil means do not look.
 type PRLookup interface {
@@ -140,6 +159,11 @@ func InspectIssue(ws string, git gitx.Runner, pr PRLookup, mux LiveChecker) (*Is
 	}
 	if mux != nil {
 		st.SessionLive = mux.Live(m.Name)
+	}
+	if lr, ok := mux.(LiveRootChecker); ok {
+		if roots, err := lr.LiveRoots(ws); err == nil {
+			st.LiveRoots = roots
+		}
 	}
 	st.SizeBytes = dirSize(ws)
 	return st, nil

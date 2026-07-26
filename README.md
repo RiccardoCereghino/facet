@@ -254,8 +254,9 @@ A non-zero exit warns and falls back to the built-in layout.
 
 `facet issues` lists the ephemeral workspaces. `facet reap` deletes one, and
 **refuses** while there are unpushed commits, uncommitted changes, an open pull
-request, or a live multiplexer session — the states where deleting would lose
-work.
+request, a live multiplexer session, or a tmux pane or process still rooted in
+the workspace — the states where deleting would lose work, or delete a
+directory out from under something still running in it.
 
 ## Mirrors make the clones cheap
 
@@ -312,6 +313,11 @@ it can be adopted by an existing, versioned set of workspaces without churn.
   deleting, because Windows will not remove a directory a process is sitting in.
 - **`reap` never touches the mirror.** Deleting a hardlinked object drops that
   name; the mirror keeps its own.
+- **`reap` also refuses while a tmux pane or process is rooted in the
+  workspace**, in any session — not only the one named after it, which a
+  `link-window`ed pane would slip past. `tmux list-panes -a` and `lsof -d cwd`
+  are both a convenience layered on the git-based checks: a missing tool
+  degrades to "nothing found", never a false refusal.
 
 ## Status
 

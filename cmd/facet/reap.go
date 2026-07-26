@@ -78,7 +78,8 @@ func newReapCmd() *cobra.Command {
 		Use:   "reap",
 		Short: "Delete an ephemeral issue workspace once its work has landed",
 		Long: "Refuses while there are unpushed commits, uncommitted changes, an open pull\n" +
-			"request, or a live multiplexer session.\n\n" +
+			"request, a live multiplexer session, or a tmux pane or process still rooted\n" +
+			"in the workspace.\n\n" +
 			"The shared mirror is never touched: a clone's objects are hardlinks, so\n" +
 			"deleting the workspace drops those names and leaves the mirror's own intact.",
 		Args: cobra.NoArgs,

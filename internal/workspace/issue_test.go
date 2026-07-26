@@ -36,6 +36,15 @@ type fakeLive struct{ live bool }
 
 func (f fakeLive) Live(string) bool { return f.live }
 
+// fakeLiveRoots implements both LiveChecker and LiveRootChecker, the same
+// combination mux.Tmux satisfies in production, so InspectIssue's type
+// assertion to LiveRootChecker picks it up.
+type fakeLiveRoots struct{ roots []string }
+
+func (fakeLiveRoots) Live(string) bool { return false }
+
+func (f fakeLiveRoots) LiveRoots(string) ([]string, error) { return f.roots, nil }
+
 // issueWorkspace builds a real issue workspace: an origin repo, a clone of it,
 // and a manifest carrying the issue block.
 func issueWorkspace(t *testing.T) (ws string, clone string) {
@@ -260,6 +269,40 @@ func TestLiveSessionBlocksReap(t *testing.T) {
 	st, _ = InspectIssue(ws, gitx.Git{}, nil, nil)
 	if hasBlocker(st, "multiplexer session") {
 		t.Errorf("no checker must not block: %v", st.Blockers())
+	}
+}
+
+// A tmux pane or process rooted in the workspace -- in any session, not only
+// the one named after it -- must block reap the same way a live named session
+// does, and must name the pane so the operator can kill it.
+func TestLiveTmuxPaneBlocksReap(t *testing.T) {
+	ws, _ := issueWorkspace(t)
+	st, err := InspectIssue(ws, gitx.Git{}, nil, fakeLiveRoots{roots: []string{"tmux pane iss-x:1.0 (pid 4242) at " + ws}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasBlocker(st, "kill it before reaping") {
+		t.Errorf("Blockers() = %v; want the live tmux pane to block reap", st.Blockers())
+	}
+}
+
+func TestNoLiveRootsDoesNotBlockReap(t *testing.T) {
+	ws, _ := issueWorkspace(t)
+	st, err := InspectIssue(ws, gitx.Git{}, nil, fakeLiveRoots{roots: nil})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasBlocker(st, "kill it before reaping") {
+		t.Errorf("Blockers() = %v; empty roots must not block", st.Blockers())
+	}
+	// A checker that implements only LiveChecker, not LiveRootChecker, must
+	// not block either -- the assertion in InspectIssue must simply skip it.
+	st, err = InspectIssue(ws, gitx.Git{}, nil, fakeLive{live: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasBlocker(st, "kill it before reaping") {
+		t.Errorf("Blockers() = %v; a checker without LiveRoots must not block", st.Blockers())
 	}
 }
 
