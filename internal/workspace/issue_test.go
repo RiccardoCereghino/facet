@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RiccardoCereghino/facet/internal/ghx"
 	"github.com/RiccardoCereghino/facet/internal/gitx"
@@ -34,6 +35,10 @@ func (failGit) Run(string, []string, ...string) (string, error) {
 // fetchFailGit delegates to the real git for everything except `fetch`, which
 // always errors -- models an unreachable origin (offline clone, DNS failure,
 // revoked credentials) without touching any other probe.
+//
+// RunTimeout is overridden too, not just Run: fetchFailGit embeds gitx.Git,
+// so without this override inspectClone's type assertion to timeoutRunner
+// would find the real, promoted RunTimeout and bypass the fake entirely.
 type fetchFailGit struct{ gitx.Git }
 
 func (f fetchFailGit) Run(dir string, env []string, args ...string) (string, error) {
@@ -41,6 +46,13 @@ func (f fetchFailGit) Run(dir string, env []string, args ...string) (string, err
 		return "", errors.New("could not resolve host: origin")
 	}
 	return f.Git.Run(dir, env, args...)
+}
+
+func (f fetchFailGit) RunTimeout(dir string, env []string, timeout time.Duration, args ...string) (string, error) {
+	if len(args) > 0 && args[0] == "fetch" {
+		return "", errors.New("could not resolve host: origin")
+	}
+	return f.Git.RunTimeout(dir, env, timeout, args...)
 }
 
 // fakeLive stands in for a multiplexer that reports the queried session as live.
