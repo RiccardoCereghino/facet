@@ -45,3 +45,11 @@ func TestResolveLaunch(t *testing.T) {
 		})
 	}
 }
+
+func TestIssueBranchNameCarriesFeaturePrefix(t *testing.T) {
+	got := issueBranchName(42, "some-slug")
+	want := "feature/42-some-slug"
+	if got != want {
+		t.Errorf("issueBranchName(42, %q) = %q, want %q", "some-slug", got, want)
+	}
+}
