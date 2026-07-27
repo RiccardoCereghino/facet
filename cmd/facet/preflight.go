@@ -90,6 +90,15 @@ func writeNotes(w io.Writer, notes []string) {
 	}
 }
 
+// checkSSHKey is a package var for the same reason `gh` is: so a test can drive
+// the reporting path with another platform's not-applicable notice.
+//
+// Without it the display rule -- a green tick must never imply a check that did
+// not run -- would be unguarded on every host except Windows, since that is the
+// only platform where the real check produces a notice. A rule about what the
+// operator sees has to be testable wherever the tests run.
+var checkSSHKey = ghx.CheckSSHKey
+
 // preflight runs every check and returns the problems, any checks that could
 // not be applied on this platform, and the status it read, so callers can
 // report all three.
@@ -99,7 +108,7 @@ func preflight(req ghx.Requirements) (probs []ghx.Problem, notes []string, st *g
 		return nil, nil, nil, fmt.Errorf("read gh auth status: %w", err)
 	}
 	probs = ghx.Check(st, req)
-	keyProbs, notApplicable := ghx.CheckSSHKey(req.SSHKey)
+	keyProbs, notApplicable := checkSSHKey(req.SSHKey)
 	probs = append(probs, keyProbs...)
 	if notApplicable != "" {
 		notes = append(notes, notApplicable)
