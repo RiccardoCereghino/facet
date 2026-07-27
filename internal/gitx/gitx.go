@@ -7,10 +7,12 @@ package gitx
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // Runner runs git. The interface exists so callers can be tested against a fake.
@@ -42,12 +44,43 @@ func (e *Error) Error() string {
 // per-command means GIT_LFS_SKIP_SMUDGE is scoped to the one clone that wants
 // it, rather than mutated globally and unset in a defer.
 func (Git) Run(dir string, env []string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+	return run(context.Background(), dir, env, args...)
+}
+
+// RunTimeout behaves like Run but kills git if it has not finished within
+// timeout. Local git operations return in milliseconds; a network operation
+// (fetch) against a blackholed connection or captive portal does not return
+// at all. Callers that must not hang forever on the latter use this instead
+// of Run.
+func (Git) RunTimeout(dir string, env []string, timeout time.Duration, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	out, err := run(ctx, dir, env, args...)
+	if err != nil && ctx.Err() == context.DeadlineExceeded {
+		return out, fmt.Errorf("git %s: timed out after %s", strings.Join(args, " "), timeout)
+	}
+	return out, err
+}
+
+// waitDelay bounds how long Wait() will wait for the stdout/stderr pipes to
+// close once a context deadline kills the process. Killing `git fetch` does
+// not kill an orphaned grandchild -- a remote helper (ssh, git-remote-ext,
+// git-remote-https) that inherited the pipe and is still running -- so
+// without this, Wait blocks until that grandchild exits on its own, which
+// defeats the entire point of a bounded RunTimeout: a hung transport hangs
+// the caller exactly as before, just with an extra unread context error.
+const waitDelay = 2 * time.Second
+
+func run(ctx context.Context, dir string, env []string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
 	if len(env) > 0 {
 		cmd.Env = append(os.Environ(), env...)
+	}
+	if _, ok := ctx.Deadline(); ok {
+		cmd.WaitDelay = waitDelay
 	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

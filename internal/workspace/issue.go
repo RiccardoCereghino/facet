@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/RiccardoCereghino/facet/internal/config"
 	"github.com/RiccardoCereghino/facet/internal/ghx"
@@ -24,6 +25,13 @@ type CloneState struct {
 	// remote has. This deliberately covers branches with no upstream at all, and
 	// commits made on a detached HEAD: those are the ones most easily lost.
 	Unpushed int
+	// FetchStale is set when `git fetch --prune origin` failed, or did not
+	// finish within fetchTimeout, before Unpushed was computed. The count above
+	// is still computed and used against whatever refs are on disk -- refusing
+	// reap on every offline run would make it useless without a network -- but
+	// Blockers appends a disclaimer to the unpushed-commit line whenever this is
+	// set and there are unpushed commits to disclaim.
+	FetchStale bool
 	// Stashed counts `git stash` entries, which no push would ever carry.
 	Stashed int
 	// Unverifiable holds the reasons this clone's state could not be confirmed --
@@ -70,7 +78,11 @@ func (s *IssueState) Blockers() []string {
 	}
 	for _, c := range s.Clone {
 		if c.Unpushed > 0 {
-			out = append(out, fmt.Sprintf("%s has %d unpushed commit(s) -- this workspace is their only copy", c.Dir, c.Unpushed))
+			msg := fmt.Sprintf("%s has %d unpushed commit(s) -- this workspace is their only copy", c.Dir, c.Unpushed)
+			if c.FetchStale {
+				msg += " (could not fetch origin first -- a branch merged and deleted upstream may be miscounted here)"
+			}
+			out = append(out, msg)
 		}
 	}
 	for _, c := range s.Clone {
@@ -117,6 +129,20 @@ type LiveRootChecker interface {
 type PRLookup interface {
 	ViewPR(repo, branch string) (*ghx.PR, error)
 }
+
+// timeoutRunner is implemented by gitx.Git for operations that must not hang
+// the caller forever -- a fetch against a blackholed connection or captive
+// portal never returns on its own. Optional, the same way LiveRootChecker is
+// optional on LiveChecker above: a Runner fake that does not implement it
+// simply runs the fetch unbounded, since fakes model failure, not a hang.
+type timeoutRunner interface {
+	RunTimeout(dir string, env []string, timeout time.Duration, args ...string) (string, error)
+}
+
+// fetchTimeout bounds the pre-unpushed-check fetch. Long enough for a real,
+// slow-but-working origin; short enough that a hung one degrades reap/issues/
+// attach to a disclaimer instead of blocking them indefinitely.
+const fetchTimeout = 15 * time.Second
 
 // InspectIssue gathers the state of one issue workspace. Network and multiplexer
 // lookups are optional: pass nil to skip them.
@@ -185,6 +211,22 @@ func inspectClone(git gitx.Runner, dir, p string) CloneState {
 	// signal and is not recorded as a blocker.
 	if out, err := git.Run(p, nil, "rev-parse", "--abbrev-ref", "HEAD"); err == nil {
 		c.Branch = out
+	}
+
+	// Refresh remote-tracking refs before judging unpushed-ness: a clone that
+	// hasn't talked to origin since a PR branch was merged and deleted upstream
+	// would otherwise judge those commits against a stale origin/* and count
+	// them as this workspace's only copy. Bounded to fetchTimeout wherever the
+	// Runner supports it: a fast failure (no network, unreachable origin) and a
+	// hung one (blackholed connection, captive portal) are both not fatal --
+	// the count below still runs against whatever refs are on disk -- but both
+	// are recorded so Blockers can disclose them.
+	if tr, ok := git.(timeoutRunner); ok {
+		if _, err := tr.RunTimeout(p, nil, fetchTimeout, "fetch", "--prune", "origin"); err != nil {
+			c.FetchStale = true
+		}
+	} else if _, err := git.Run(p, nil, "fetch", "--prune", "origin"); err != nil {
+		c.FetchStale = true
 	}
 
 	// Commits reachable from HEAD or any local branch but from no remote-tracking

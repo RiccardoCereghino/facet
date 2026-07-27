@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RiccardoCereghino/facet/internal/ghx"
 	"github.com/RiccardoCereghino/facet/internal/gitx"
@@ -29,6 +30,29 @@ type failGit struct{}
 
 func (failGit) Run(string, []string, ...string) (string, error) {
 	return "", errors.New("git unavailable")
+}
+
+// fetchFailGit delegates to the real git for everything except `fetch`, which
+// always errors -- models an unreachable origin (offline clone, DNS failure,
+// revoked credentials) without touching any other probe.
+//
+// RunTimeout is overridden too, not just Run: fetchFailGit embeds gitx.Git,
+// so without this override inspectClone's type assertion to timeoutRunner
+// would find the real, promoted RunTimeout and bypass the fake entirely.
+type fetchFailGit struct{ gitx.Git }
+
+func (f fetchFailGit) Run(dir string, env []string, args ...string) (string, error) {
+	if len(args) > 0 && args[0] == "fetch" {
+		return "", errors.New("could not resolve host: origin")
+	}
+	return f.Git.Run(dir, env, args...)
+}
+
+func (f fetchFailGit) RunTimeout(dir string, env []string, timeout time.Duration, args ...string) (string, error) {
+	if len(args) > 0 && args[0] == "fetch" {
+		return "", errors.New("could not resolve host: origin")
+	}
+	return f.Git.RunTimeout(dir, env, timeout, args...)
 }
 
 // fakeLive stands in for a multiplexer that reports the queried session as live.
@@ -139,6 +163,100 @@ func TestUnpushedCommitsOnBranchWithNoUpstreamBlockReap(t *testing.T) {
 	// And unpushed work must be reported before the merely-inconvenient reasons.
 	if !strings.Contains(st.Blockers()[0], "unpushed") {
 		t.Errorf("unpushed work should be the first blocker, got %q", st.Blockers()[0])
+	}
+}
+
+// A clone that has never re-fetched since a PR branch was merged and deleted
+// upstream must not judge that commit as unpushed just because its own
+// origin/* refs are stale -- reap must fetch first. This reproduces the
+// mandate-3 teardown bug: the commit is landed on origin under a different
+// branch name (never the checked-out default -- pushing onto that trips
+// git's receive.denyCurrentBranch on the non-bare origin fixture) while the
+// workspace clone's own remote-tracking refs are left exactly as they were
+// at Sync time.
+func TestStaleRemoteRefButCommitAlreadyUpstreamReapsClean(t *testing.T) {
+	ws, clone := issueWorkspace(t)
+	m, err := manifest.Read(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin := m.Clones["repo"]
+
+	g := gitx.Git{}
+	if _, err := g.Run(clone, nil, "checkout", "-qb", "1-x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clone, "landed.txt"), []byte("landed\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "commit", "-qm", "landed upstream"); err != nil {
+		t.Fatal(err)
+	}
+
+	second := t.TempDir()
+	if _, err := g.Run(second, nil, "clone", "-q", clone, second); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(second, nil, "remote", "set-url", "origin", origin); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(second, nil, "push", "-q", "origin", "HEAD:refs/heads/landed"); err != nil {
+		t.Fatal(err)
+	}
+
+	// clone's own origin/* refs are still exactly what Sync left them at --
+	// stale relative to what's now on origin -- until InspectIssue fetches.
+	st, err := InspectIssue(ws, gitx.Git{}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := st.Blockers(); len(b) != 0 {
+		t.Errorf("a commit already landed upstream must reap clean once refs are fetched fresh, got %v", b)
+	}
+}
+
+// A fetch failure alone -- no network, unreachable origin -- must not turn
+// into a hard block on a clean clone; that would make reap useless offline.
+func TestFetchFailureIsStalenessDisclaimerNotBlocker(t *testing.T) {
+	ws, _ := issueWorkspace(t)
+	st, err := InspectIssue(ws, fetchFailGit{}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := st.Blockers(); len(b) != 0 {
+		t.Errorf("a failed fetch on an otherwise clean clone must not block, got %v", b)
+	}
+}
+
+// Genuinely unpushed work must still refuse even when the fetch itself
+// failed, and the blocker message must disclose that the count may be stale.
+func TestFetchFailureDisclaimerOnGenuinelyUnpushedWork(t *testing.T) {
+	ws, clone := issueWorkspace(t)
+	g := gitx.Git{}
+	if _, err := g.Run(clone, nil, "checkout", "-qb", "never-pushed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clone, "new.txt"), []byte("work\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "commit", "-qm", "precious"); err != nil {
+		t.Fatal(err)
+	}
+	st, err := InspectIssue(ws, fetchFailGit{}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasBlocker(st, "unpushed") {
+		t.Fatalf("genuinely unpushed work must still block reap when the fetch fails; blockers = %v", st.Blockers())
+	}
+	if !hasBlocker(st, "could not fetch") {
+		t.Errorf("a failed fetch must be disclosed on the unpushed blocker; blockers = %v", st.Blockers())
 	}
 }
 
