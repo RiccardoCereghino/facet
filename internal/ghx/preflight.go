@@ -136,35 +136,63 @@ func Check(st *AuthStatus, req Requirements) []Problem {
 	return probs
 }
 
-// CheckSSHKey reports whether the key git actually pushes with is present and
-// private.
-//
-// It is deliberately local-only: no network, no agent, no `ssh -T`. The
-// preflight must run when the machine is offline or the forge is down, and a
-// gate that cannot be skipped must not be able to go red for a reason that is
-// not about this machine's credentials. The cost is declared rather than
-// hidden: this proves the key EXISTS and is not world-readable, not that GitHub
-// still accepts it. A live probe belongs elsewhere.
-func CheckSSHKey(path string) []Problem {
-	if path == "" {
-		return nil
-	}
-	const why = "the token authenticates the API; this key authenticates every push " +
-		"the fleet makes. Nothing checked it before stele#55, so half the credential " +
-		"surface was unmonitored. SSH cannot replace the token -- GitHub's API does " +
-		"not accept SSH authentication -- so both must hold, independently."
+// sshKeyWhy is the reason attached to every SSH-key problem.
+const sshKeyWhy = "the token authenticates the API; this key authenticates every push " +
+	"the fleet makes. Nothing checked it before stele#55, so half the credential " +
+	"surface was unmonitored. SSH cannot replace the token -- GitHub's API does " +
+	"not accept SSH authentication -- so both must hold, independently."
 
+// CheckSSHKey reports whether the key git actually pushes with is present and
+// private. It returns the problems found and, as a second value, a non-empty
+// string when a check could NOT be applied on this platform.
+//
+// The caller must surface that string. A preflight that prints a clean pass on
+// a platform where half the check did not run is a lie, and a worse one than a
+// red: the operator reads "green" and believes their key permissions were
+// verified. The difference between a platform carve-out and a lie is whether
+// the output says which one happened.
+//
+// # Two halves, with different portability
+//
+// The EXISTENCE half is platform-neutral and runs everywhere.
+//
+// The PERMISSION half is Unix-only, deliberately and explicitly. Go's
+// os.FileMode does not represent NTFS ACLs, so on Windows the mode bits are
+// synthesised and "is this key 0600 or stricter" cannot mean there what it
+// means on Unix -- a mode test would pass or fail for reasons unrelated to who
+// can actually read the file. Win32-OpenSSH does enforce an ACL rule of its
+// own, so a real check IS expressible there; it needs DACL enumeration via
+// golang.org/x/sys/windows, which is a new dependency and a body of code that
+// cannot be exercised on the machine this fleet runs on. Rather than ship a
+// mode test that is meaningless on Windows, or drop the check to get a green
+// tick, the permission half declares itself not applicable and says why. See
+// keyPermission, which has one implementation per platform.
+//
+// # Local-only, deliberately
+//
+// No network, no agent, no `ssh -T`. The preflight must run when the machine is
+// offline or the forge is down, and a gate that cannot be skipped must not be
+// able to go red for a reason that is not about this machine's credentials. The
+// cost is declared rather than hidden: this proves the key EXISTS and, on Unix,
+// that it is not group- or world-readable. It does not prove GitHub still
+// accepts it. A live probe belongs elsewhere.
+func CheckSSHKey(path string) (probs []Problem, notApplicable string) {
+	if path == "" {
+		return nil, ""
+	}
 	info, err := os.Stat(path)
 	if err != nil {
+		// Permissions are moot when there is no key: the missing key is the
+		// finding, and reporting a platform caveat next to it would only
+		// dilute it.
 		return []Problem{{Check: "ssh key", Want: "a private key at " + path,
-			Got: "missing (" + err.Error() + ")", Why: why}}
+			Got: "missing (" + err.Error() + ")", Why: sshKeyWhy}}, ""
 	}
-	if mode := info.Mode().Perm(); mode&0o077 != 0 {
-		return []Problem{{Check: "ssh key permissions", Want: "0600 at " + path,
-			Got: fmt.Sprintf("%#o", mode),
-			Why: why + " ssh refuses to use a key others can read."}}
+	prob, why := keyPermission(path, info.Mode().Perm())
+	if prob != nil {
+		return []Problem{*prob}, ""
 	}
-	return nil
+	return nil, why
 }
 
 // missingScopes returns the required scopes absent from have.

@@ -285,7 +285,17 @@ is what happened; that `repo`, `read:org` and `workflow` are all granted; that
 git's **host-level** protocol is `ssh` (`gh auth login --with-token` flips it to
 https silently, and `gh config get git_protocol` reports the *global* default, so
 it is the wrong thing to read); and that `~/.ssh/id_ed25519` exists and is not
-world-readable, since that key authenticates every push.
+group- or world-readable, since that key authenticates every push.
+
+**The permission half of the key check is Unix-only, and says so on Windows.**
+Go's `os.FileMode` does not represent NTFS ACLs, so a mode test there would pass
+or fail for reasons unrelated to who can actually read the key. Rather than ship
+a meaningless test — or drop the check to get a green tick — Windows prints a
+`!` line stating the check **did not run**, tells you to verify it with
+`icacls`, and the pass line itself reads *"passed — but 1 check did NOT run on
+this platform"*. **A green preflight must never be readable as "your key
+permissions were verified" when they were not.** The existence half is
+platform-neutral and runs everywhere.
 
 `facet spawn` runs the same checks first, before routing and before the issue
 lookup, so a bad credential produces a refusal rather than a half-created

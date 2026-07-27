@@ -3,6 +3,7 @@ package ghx
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -129,35 +130,82 @@ func TestProblemsCarryReasons(t *testing.T) {
 	}
 }
 
-func TestCheckSSHKey(t *testing.T) {
+// TestCheckSSHKeyExistence covers the platform-neutral half. It must hold
+// everywhere, Windows included.
+func TestCheckSSHKeyExistence(t *testing.T) {
 	dir := t.TempDir()
 
-	if probs := CheckSSHKey(""); probs != nil {
-		t.Errorf("an empty path skips the check, got: %s", names(probs))
+	probs, note := CheckSSHKey("")
+	if probs != nil || note != "" {
+		t.Errorf("an empty path skips the check, got: %s / %q", names(probs), note)
 	}
 
-	missing := filepath.Join(dir, "id_ed25519")
-	probs := CheckSSHKey(missing)
+	key := filepath.Join(dir, "id_ed25519")
+	probs, note = CheckSSHKey(key)
 	if len(probs) != 1 || probs[0].Check != "ssh key" {
-		t.Fatalf("a missing key must be reported, got: %s", names(probs))
+		t.Fatalf("a missing key must be reported on every platform, got: %s", names(probs))
 	}
 	if !strings.Contains(probs[0].Why, "API does not accept SSH") {
 		t.Errorf("Why must say SSH cannot replace the token: %q", probs[0].Why)
 	}
-
-	if err := os.WriteFile(missing, []byte("not a real key\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if probs := CheckSSHKey(missing); len(probs) != 0 {
-		t.Errorf("a 0600 key must pass, got: %s", names(probs))
+	if note != "" {
+		t.Errorf("a missing key is the finding; permissions are moot, so no note: %q", note)
 	}
 
-	if err := os.Chmod(missing, 0o644); err != nil {
+	if err := os.WriteFile(key, []byte("not a real key\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	probs = CheckSSHKey(missing)
+	if probs, _ = CheckSSHKey(key); len(probs) != 0 {
+		t.Errorf("a present, 0600 key must produce no problem anywhere, got: %s", names(probs))
+	}
+}
+
+// TestCheckSSHKeyPermissions asserts the DOCUMENTED behaviour of the permission
+// half on each platform. It is deliberately not a skip: on Windows it asserts
+// that the check declares itself not applicable and explains why, which is a
+// real assertion about a real contract. Weakening either branch to make both
+// pass would be the thing Law 4 forbids -- a green tick standing in for a check
+// that did not happen.
+func TestCheckSSHKeyPermissions(t *testing.T) {
+	key := filepath.Join(t.TempDir(), "id_ed25519")
+	if err := os.WriteFile(key, []byte("not a real key\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(key, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	probs, note := CheckSSHKey(key)
+
+	if runtime.GOOS == "windows" {
+		// Windows has no POSIX permission bits: os.FileMode does not represent
+		// NTFS ACLs, so a mode test would pass or fail for reasons unrelated to
+		// who can read the key.
+		if len(probs) != 0 {
+			t.Errorf("no mode-based verdict may be reached on Windows, got: %s", names(probs))
+		}
+		if note == "" {
+			t.Fatal("Windows MUST report that the permission check did not run — " +
+				"a silent pass would let an operator believe it was verified")
+		}
+		if !strings.Contains(note, "NOT checked") {
+			t.Errorf("the note must be unmistakable, not a hedge: %q", note)
+		}
+		if !strings.Contains(note, "icacls") {
+			t.Errorf("the note must tell the operator how to check it themselves: %q", note)
+		}
+		return
+	}
+
+	// Every other platform: this is a real check and it fires.
 	if len(probs) != 1 || probs[0].Check != "ssh key permissions" {
-		t.Fatalf("a world-readable key must be reported, got: %s", names(probs))
+		t.Fatalf("a group/world-readable key must be reported, got: %s", names(probs))
+	}
+	if probs[0].Got != "0644" {
+		t.Errorf("Got must name the offending mode, got %q", probs[0].Got)
+	}
+	if note != "" {
+		t.Errorf("the check applies on %s, so nothing may be reported as skipped: %q",
+			runtime.GOOS, note)
 	}
 }
 

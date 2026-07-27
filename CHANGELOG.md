@@ -15,7 +15,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   active, the expected account, a token type that another `gh auth login`
   elsewhere cannot rotate away (`gho_` is refused even while it works), the
   scopes the fleet actually calls, git talking SSH at the *host* level, and the
-  push key present and private. `spawn` runs the same checks first, before
+  push key present and private. The key's *permission* half is Unix-only —
+  `os.FileMode` cannot represent NTFS ACLs — so on Windows it reports that the
+  check **did not run**, on the pass line itself, rather than letting a green
+  tick imply a verification that did not happen. `spawn` runs the same checks first, before
   routing and before the issue lookup, so a bad credential is a refusal rather
   than a half-created workspace. Every failure states the incident it exists
   for. There is no skip flag.
