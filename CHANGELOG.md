@@ -8,6 +8,26 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`facet preflight`, and a credential gate on `spawn`**: every layer of the
+  fleet shares one GitHub credential, and on 2026-07-27 it was invalidated
+  silently — the failure was found mid-operation, by trying to use it. The new
+  command reports whether this machine holds a sound credential: logged in and
+  active, the expected account, a token type that another `gh auth login`
+  elsewhere cannot rotate away (`gho_` is refused even while it works), the
+  scopes the fleet actually calls, git talking SSH at the *host* level, and the
+  push key present and private. The key's *permission* half is Unix-only —
+  `os.FileMode` cannot represent NTFS ACLs — so on Windows it reports that the
+  check **did not run**, on the pass line itself, rather than letting a green
+  tick imply a verification that did not happen. `spawn` runs the same checks first, before
+  routing and before the issue lookup, so a bad credential is a refusal rather
+  than a half-created workspace. Every failure states the incident it exists
+  for. There is no skip flag.
+
+  It reads `gh auth status` and nothing else, deliberately: gh reports a
+  credential as invalid *without* a valid credential, so the check does not go
+  blind during the fault it catches. No token value is ever read, printed or
+  stored — only the type prefix — and nothing here calls `gh auth`
+  `login`/`logout`/`refresh`. Ruling and reasoning: `RiccardoCereghino/stele#55`.
 - **`spawn` can launch a Remote Control session**: once the workspace is ready,
   `spawn` optionally runs `claude` with Remote Control in the home clone. Remote
   Control rides Anthropic's relay over outbound HTTPS, so an agent stays

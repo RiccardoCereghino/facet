@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/RiccardoCereghino/facet/internal/routing"
@@ -132,7 +133,70 @@ func runFile(o fileOpts) error {
 		return err
 	}
 	fmt.Println(url)
+
+	createBlockedByEdges(o.Repo, url, body)
 	return nil
+}
+
+// createBlockedByEdges creates a native GitHub issue-dependency edge for every
+// resolvable reference in the new issue's "Blocked by / waiting on" section.
+// An edge that cannot be created -- a cross-owner ref, one the API rejects, or
+// one it cannot resolve -- is reported and skipped: the issue is already
+// filed, and a missing edge is not worth losing that over.
+func createBlockedByEdges(repo, issueURL, body string) {
+	refs := routing.ParseBlockedBy(body)
+	if len(refs) == 0 {
+		return
+	}
+	number, err := issueNumber(issueURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "! could not parse issue number from %s, skipping blocked-by edges: %v\n", issueURL, err)
+		return
+	}
+	owner := strings.SplitN(repo, "/", 2)[0]
+	seen := map[string]bool{} // "target#number", after resolving a bare ref to its repo
+
+	for _, ref := range refs {
+		target := repo
+		label := fmt.Sprintf("#%d", ref.Number)
+		if ref.OwnerRepo != "" {
+			target = ref.OwnerRepo
+			label = target + label
+			if refOwner := strings.SplitN(target, "/", 2)[0]; !strings.EqualFold(refOwner, owner) {
+				fmt.Fprintf(os.Stderr, "! blocked-by %s: cross-owner refs are not supported, skipping\n", label)
+				continue
+			}
+		}
+		// `#42` and `acme/gateway#42` name the same issue once ref.OwnerRepo
+		// is resolved against repo -- dedupe here, where both spellings
+		// converge on one identity, rather than on the raw parsed ref.
+		key := fmt.Sprintf("%s#%d", target, ref.Number)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+
+		id, err := gh.IssueID(target, ref.Number)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "! blocked-by %s: could not resolve, skipping: %v\n", label, err)
+			continue
+		}
+		if err := gh.AddBlockedBy(repo, number, id); err != nil {
+			fmt.Fprintf(os.Stderr, "! blocked-by %s: could not create edge, skipping: %v\n", label, err)
+			continue
+		}
+		fmt.Printf("blocked by %s\n", label)
+	}
+}
+
+// issueNumber pulls the trailing number off an issue URL, e.g.
+// https://github.com/acme/gateway/issues/42 -> 42.
+func issueNumber(issueURL string) (int, error) {
+	i := strings.LastIndex(issueURL, "/")
+	if i < 0 {
+		return 0, fmt.Errorf("no / in %q", issueURL)
+	}
+	return strconv.Atoi(issueURL[i+1:])
 }
 
 func readBody(o fileOpts) (string, error) {

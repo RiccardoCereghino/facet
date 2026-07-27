@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -75,6 +76,10 @@ type ProjectTarget struct {
 // Client is the GitHub surface facet uses. It is an interface so the spawn and
 // reap logic can be tested without touching the network.
 type Client interface {
+	// Auth reports what `gh auth status` says about the current credential. It
+	// is the only method here that answers without a working token, which is
+	// why the preflight is built on it.
+	Auth() (*AuthStatus, error)
 	// ViewIssue fetches one issue from repo ("owner/name").
 	ViewIssue(repo string, number int) (*Issue, error)
 	// DevelopBranch creates a branch on the forge linked to the issue, and
@@ -95,6 +100,13 @@ type Client interface {
 	SearchIssues(repo, terms string) ([]Issue, error)
 	// CreateIssue files one and returns its URL.
 	CreateIssue(repo, title, body string, labels []string) (string, error)
+	// IssueID returns the numeric database id of an issue. This is what the
+	// issue dependencies API wants as issue_id -- it is not the issue number,
+	// which is only unique within one repository.
+	IssueID(repo string, number int) (int64, error)
+	// AddBlockedBy declares repo#number is blocked by the issue with database
+	// id blockingID, as a native GitHub issue-dependency edge.
+	AddBlockedBy(repo string, number int, blockingID int64) error
 }
 
 // CLI is the real client, backed by the gh binary.
@@ -217,6 +229,29 @@ func (CLI) CreateIssue(repo, title, body string, labels []string) (string, error
 	// gh prints the URL on the last non-empty line.
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	return strings.TrimSpace(lines[len(lines)-1]), nil
+}
+
+// IssueID looks up an issue's numeric database id via the REST API -- there is
+// no `gh issue` subcommand for it, so this is `gh api` rather than a
+// first-class subcommand like every other method here.
+func (CLI) IssueID(repo string, number int) (int64, error) {
+	out, err := run("api", fmt.Sprintf("repos/%s/issues/%d", repo, number), "--jq", ".id")
+	if err != nil {
+		return 0, err
+	}
+	id, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse database id of %s#%d: %w", repo, number, err)
+	}
+	return id, nil
+}
+
+// AddBlockedBy creates the native dependency edge. Like IssueID, there is no
+// `gh issue` subcommand for it.
+func (CLI) AddBlockedBy(repo string, number int, blockingID int64) error {
+	_, err := run("api", fmt.Sprintf("repos/%s/issues/%d/dependencies/blocked_by", repo, number),
+		"-X", "POST", "-F", fmt.Sprintf("issue_id=%d", blockingID))
+	return err
 }
 
 // SetIssueStatus adds the issue to the board and sets one single-select field.
