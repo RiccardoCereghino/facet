@@ -41,6 +41,10 @@ one working tree: one branch, one dirty index. Giving each task its own checkout
 fixes that, and costs disk. `facet` makes the checkouts nearly free, and makes the
 throwaway ones disposable without losing work.
 
+How this came about — worktrees failing twice, a multiplexer integration that got
+deleted the day before v0, and the one rule that survived all of it — is written
+up in [*Several agents, one dirty index*](https://dev.to/riccardo_cereghino/several-agents-one-dirty-index-disposable-multi-repo-workspaces-for-claude-code-1936).
+
 ## Install
 
 ```sh
