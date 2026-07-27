@@ -83,6 +83,30 @@ func Check(st *AuthStatus, req Requirements) []Problem {
 		return probs
 	}
 
+	if !st.Verified {
+		// STILL FATAL. If the forge is unreachable, spawn cannot clone or fetch
+		// either, so refusing is right. What must not happen is refusing for the
+		// WRONG STATED REASON -- a gate that fires on the right condition and
+		// blames the wrong thing is a broken gate, not a strict one.
+		add("credential confirmed", "gh can confirm the credential with github.com",
+			"gh could NOT confirm it"+withReason(st.VerifyFailure),
+			"DO NOT REGENERATE THE TOKEN ON THE STRENGTH OF THIS MESSAGE. gh "+
+				"prints exactly this when the token is dead AND when it simply "+
+				"cannot reach github.com, and it does not distinguish the two -- so "+
+				"neither can this check. Your credential may be perfectly fine. "+
+				"gh's own advice here ('To re-authenticate, run: gh auth login' / "+
+				"'To forget about this account, run: gh auth logout') will DESTROY a "+
+				"working credential if the real problem is the network, and this "+
+				"fleet has already had a ~72-second no-credential window from "+
+				"exactly that move (stele#55). Check connectivity FIRST -- `curl -sS "+
+				"-o /dev/null -w '%{http_code}' https://api.github.com` -- and only "+
+				"reissue if the network is fine.")
+		// The X-shaped output carries no Token or scopes lines at all, so every
+		// check below would report "none reported" and bury the one finding that
+		// matters.
+		return probs
+	}
+
 	if !st.Active {
 		add("active account", "the credential is the active one", "inactive",
 			"gh can hold several logins at once; an inactive one is present in the "+
@@ -216,6 +240,15 @@ func scopesGot(scopes []string) string {
 		return "none reported"
 	}
 	return strings.Join(scopes, ", ")
+}
+
+// withReason appends gh's own words when it gave any, so the report quotes the
+// tool rather than paraphrasing it.
+func withReason(s string) string {
+	if s == "" {
+		return ""
+	}
+	return " (gh says: " + s + ")"
 }
 
 func orNone(s string) string {

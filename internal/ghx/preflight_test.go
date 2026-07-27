@@ -53,6 +53,49 @@ func TestCheckLoggedOut(t *testing.T) {
 	}
 }
 
+// TestCheckUnconfirmedIsFatalButBlamesTheRightThing.
+//
+// Still fatal -- the foreman's all-fatal ruling stands, and if github.com is
+// unreachable then spawn cannot clone or fetch either, so refusing is correct.
+// What is asserted here is the MESSAGE, because a gate that fires on the right
+// condition for the wrong stated reason is a broken gate, not a strict one.
+//
+// The hazard is concrete: told "you have no credential", a reasonable operator
+// regenerates the token -- a `gh auth logout`, which is precisely how this fleet
+// got a ~72-second no-credential window. gh's own printed advice says to do it.
+func TestCheckUnconfirmedIsFatalButBlamesTheRightThing(t *testing.T) {
+	probs := checkFixture(t, unconfirmed)
+
+	if len(probs) != 1 {
+		t.Fatalf("want exactly one finding, not a pile of 'none reported': %s", names(probs))
+	}
+	p := probs[0]
+	if p.Check == "logged in" {
+		t.Fatal("a configured-but-unconfirmable credential must NOT be reported as absent")
+	}
+	if p.Check != "credential confirmed" {
+		t.Fatalf("Check = %q", p.Check)
+	}
+	// The three things that stop this message causing the damage.
+	for _, want := range []string{"DO NOT REGENERATE", "cannot reach", "gh auth logout"} {
+		if !strings.Contains(p.Why, want) {
+			t.Errorf("Why must contain %q, so the operator does not destroy a working credential: %q", want, p.Why)
+		}
+	}
+	// And it must quote gh rather than paraphrase it.
+	if !strings.Contains(p.Got, "is invalid") {
+		t.Errorf("Got must carry gh's own words: %q", p.Got)
+	}
+}
+
+// TestCheckUnconfirmedIsStillFatal states the ruling as an assertion, so a
+// later reader cannot mistake the friendlier message for a softened gate.
+func TestCheckUnconfirmedIsStillFatal(t *testing.T) {
+	if len(checkFixture(t, unconfirmed)) == 0 {
+		t.Fatal("an unconfirmable credential must still fail the preflight")
+	}
+}
+
 // TestCheckOAuthToken: valid, active, right account, ample scopes -- and still
 // wrong, because the token type is the failure mode.
 func TestCheckOAuthToken(t *testing.T) {

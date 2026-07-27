@@ -37,6 +37,22 @@ const httpsFlip = `github.com
 
 const loggedOut = "You are not logged into any GitHub hosts. To log in, run: gh auth login\n"
 
+// unconfirmed is the shape gh ACTUALLY produced during the 2026-07-27 outage,
+// and — captured live on 2026-07-27 with a known-good credential and github.com
+// made unreachable — the shape it produces on a network fault too. gh prints
+// the same thing for both and does not distinguish them.
+//
+// This fixture was missing, and its absence is why the collapse of "cannot
+// confirm" into "no credential" survived to review. Note gh's own last two
+// lines: following them during a network blip destroys a working credential.
+const unconfirmed = `github.com
+  X Failed to log in to github.com account RiccardoCereghino (/Users/cerre/.config/gh/hosts.yml)
+  - Active account: true
+  - The token in /Users/cerre/.config/gh/hosts.yml is invalid.
+  - To re-authenticate, run: gh auth login -h github.com
+  - To forget about this account, run: gh auth logout -h github.com -u RiccardoCereghino
+`
+
 func TestParseAuthStatusHealthy(t *testing.T) {
 	st, err := parseAuthStatus(healthy)
 	if err != nil {
@@ -78,6 +94,54 @@ func TestParseAuthStatusLoggedOut(t *testing.T) {
 	}
 	if st.TokenType != "" || len(st.Scopes) != 0 {
 		t.Errorf("logged out status carried credential fields: %+v", st)
+	}
+}
+
+// TestParseAuthStatusUnconfirmed: a configured-but-unconfirmable credential is
+// its own state. Reporting it as "logged out" would tell an operator whose
+// credential is fine that they have none.
+func TestParseAuthStatusUnconfirmed(t *testing.T) {
+	st, err := parseAuthStatus(unconfirmed)
+	if err != nil {
+		t.Fatalf("parseAuthStatus: %v", err)
+	}
+	if !st.LoggedIn {
+		t.Error("a credential IS configured here — gh names the account and the file")
+	}
+	if st.Verified {
+		t.Error("gh did not confirm it, so Verified must be false")
+	}
+	if st.Account != "RiccardoCereghino" {
+		t.Errorf("Account = %q, want RiccardoCereghino", st.Account)
+	}
+	if st.Host != "github.com" {
+		t.Errorf("Host = %q, want github.com", st.Host)
+	}
+	if st.ConfigSource != "/Users/cerre/.config/gh/hosts.yml" {
+		t.Errorf("ConfigSource = %q", st.ConfigSource)
+	}
+	if !strings.Contains(st.VerifyFailure, "is invalid") {
+		t.Errorf("VerifyFailure must quote gh's own words, got %q", st.VerifyFailure)
+	}
+}
+
+// TestVerifiedOnlyOnConfirmation pins the three states apart, which is the
+// whole point: two of them are failures and they need different responses.
+func TestVerifiedOnlyOnConfirmation(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		out              string
+		loggedIn, verify bool
+	}{
+		{"confirmed", healthy, true, true},
+		{"configured but unconfirmable", unconfirmed, true, false},
+		{"no credential at all", loggedOut, false, false},
+	} {
+		st, _ := parseAuthStatus(tc.out)
+		if st.LoggedIn != tc.loggedIn || st.Verified != tc.verify {
+			t.Errorf("%s: LoggedIn=%v Verified=%v, want %v/%v",
+				tc.name, st.LoggedIn, st.Verified, tc.loggedIn, tc.verify)
+		}
 	}
 }
 

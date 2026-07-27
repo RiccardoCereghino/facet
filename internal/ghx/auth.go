@@ -14,8 +14,25 @@ import (
 type AuthStatus struct {
 	// Host is the forge, e.g. "github.com". Empty when logged out.
 	Host string
-	// LoggedIn is true when gh reports a credential for Host at all.
+	// LoggedIn is true when gh reports a credential for Host at all -- that is,
+	// one is configured. It says nothing about whether that credential works.
 	LoggedIn bool
+	// Verified is true only when gh CONFIRMED the credential with the forge.
+	//
+	// The distinction is load-bearing. `gh auth status` makes a network call,
+	// and when it cannot reach GitHub it prints "X Failed to log in ... The
+	// token ... is invalid" for a perfectly good credential. It prints exactly
+	// the same thing for a genuinely revoked one. gh does not distinguish the
+	// two, so neither may we: LoggedIn && !Verified means "a credential is
+	// configured and could not be confirmed", which is a THIRD state, not a
+	// flavour of "no credential".
+	//
+	// Collapsing it into !LoggedIn is dangerous, not merely imprecise -- see
+	// Problem's text in preflight.go for what an operator does when told they
+	// have no credential.
+	Verified bool
+	// VerifyFailure is gh's own stated reason when Verified is false.
+	VerifyFailure string
 	// Account is the login gh says the credential belongs to.
 	Account string
 	// Active is gh's "Active account" line: with several accounts logged in,
@@ -74,6 +91,13 @@ func tokenType(line string) string {
 //     exactly the property a check on the credential needs. Anything that
 //     required a valid credential to run would go blind during the fault it
 //     exists to catch.
+//
+//     It does NOT work offline, and an earlier version of this comment claimed
+//     it did. `gh auth status` makes a network call: with the forge unreachable
+//     it prints "X Failed to log in ... The token ... is invalid" for a
+//     credential that is fine. So the correct claim is that this check needs no
+//     VALID token, not that it needs no network -- see AuthStatus.Verified.
+//
 //   - A repair path that can leave the machine with no credential is the same
 //     class of fault as the incident. The 2026-07-27 swap script's
 //     install-failure fallback ran `gh auth logout` and left the mini with no
@@ -103,13 +127,19 @@ func parseAuthStatus(out string) (*AuthStatus, error) {
 			return st, nil
 		case strings.HasPrefix(line, "✓ Logged in to"):
 			st.LoggedIn = true
+			st.Verified = true
 			st.Host, st.Account, st.ConfigSource = parseLoginLine(line)
-		case strings.HasPrefix(line, "X ") || strings.HasPrefix(line, "✗ "):
-			// gh marks a host it cannot authenticate with an X and still names
-			// it. Record the host so the report can say which one is broken.
-			if h, _, _ := parseLoginLine(line); h != "" {
-				st.Host = h
-			}
+		case strings.HasPrefix(line, "X Failed to log in to"),
+			strings.HasPrefix(line, "✗ Failed to log in to"):
+			// A credential IS configured -- gh names the account and the file --
+			// and gh could not confirm it. Either the token is genuinely dead or
+			// the forge was unreachable; gh reports both identically.
+			st.LoggedIn = true
+			st.Verified = false
+			st.Host, st.Account, st.ConfigSource = parseLoginLine(line)
+		case strings.HasPrefix(line, "- The token in ") && strings.HasSuffix(line, "is invalid."),
+			strings.Contains(line, "invalid token"):
+			st.VerifyFailure = strings.TrimPrefix(line, "- ")
 		case strings.HasPrefix(line, "- Active account:"):
 			st.Active = strings.EqualFold(fieldValue(line), "true")
 		case strings.HasPrefix(line, "- Git operations protocol:"):
@@ -136,10 +166,12 @@ func fieldValue(line string) string {
 	return strings.TrimSpace(v)
 }
 
-// parseLoginLine pulls the host, account and config source out of
-// "✓ Logged in to github.com account RiccardoCereghino (/path/to/hosts.yml)".
+// parseLoginLine pulls the host, account and config source out of either
+// "✓ Logged in to github.com account RiccardoCereghino (/path/to/hosts.yml)" or
+// "X Failed to log in to github.com account RiccardoCereghino (/path/…)".
+// Cutting at "in to " covers both without a second parser.
 func parseLoginLine(line string) (host, account, source string) {
-	if _, rest, ok := strings.Cut(line, "Logged in to "); ok {
+	if _, rest, ok := strings.Cut(line, "in to "); ok {
 		fields := strings.Fields(rest)
 		if len(fields) > 0 {
 			host = fields[0]
