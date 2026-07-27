@@ -109,6 +109,10 @@ type spawnOpts struct {
 	Agent agentChoice
 }
 
+func issueBranchName(number int, slug string) string {
+	return fmt.Sprintf("feature/%d-%s", number, slug)
+}
+
 func runSpawn(o spawnOpts) error {
 	if o.Repo == "" {
 		return fmt.Errorf("--repo is required (owner/name): more than one repo may host issues, and gh's notion of the current repo is not it")
@@ -153,7 +157,7 @@ func runSpawn(o spawnOpts) error {
 	}
 	wsName := render.WorkspaceName(config.IssuePrefix, homeKey, o.Number, slug)
 	ws := filepath.Join(roots.Workspaces, wsName)
-	branch := fmt.Sprintf("%d-%s", o.Number, slug)
+	branch := issueBranchName(o.Number, slug)
 	if o.NoBranch {
 		branch = ""
 	}
