@@ -53,13 +53,22 @@ const unconfirmed = `github.com
   - To forget about this account, run: gh auth logout -h github.com -u RiccardoCereghino
 `
 
+// futureShape is a plausible rewording gh has not shipped. It exists because
+// gh's wording DOES move -- the logged-out message has already changed streams
+// across releases -- so some future output will match no shape this code knows.
+//
+// Where that lands is a safety property: see CredentialState.
+const futureShape = `github.com
+  ! Could not authenticate to github.com account RiccardoCereghino (/Users/cerre/.config/gh/hosts.yml)
+`
+
 func TestParseAuthStatusHealthy(t *testing.T) {
 	st, err := parseAuthStatus(healthy)
 	if err != nil {
 		t.Fatalf("parseAuthStatus: %v", err)
 	}
-	if !st.LoggedIn {
-		t.Error("LoggedIn = false, want true")
+	if st.State != StateConfirmed {
+		t.Errorf("State = %v, want confirmed", st.State)
 	}
 	if st.Host != "github.com" {
 		t.Errorf("Host = %q, want github.com", st.Host)
@@ -89,8 +98,8 @@ func TestParseAuthStatusLoggedOut(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseAuthStatus: %v", err)
 	}
-	if st.LoggedIn {
-		t.Error("LoggedIn = true, want false")
+	if st.State != StateAbsent {
+		t.Errorf("State = %v, want absent", st.State)
 	}
 	if st.TokenType != "" || len(st.Scopes) != 0 {
 		t.Errorf("logged out status carried credential fields: %+v", st)
@@ -105,11 +114,9 @@ func TestParseAuthStatusUnconfirmed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseAuthStatus: %v", err)
 	}
-	if !st.LoggedIn {
-		t.Error("a credential IS configured here — gh names the account and the file")
-	}
-	if st.Verified {
-		t.Error("gh did not confirm it, so Verified must be false")
+	if st.State != StateUnconfirmed {
+		t.Errorf("State = %v, want unconfirmed — a credential IS configured here, "+
+			"gh names the account and the file, it just could not check it", st.State)
 	}
 	if st.Account != "RiccardoCereghino" {
 		t.Errorf("Account = %q, want RiccardoCereghino", st.Account)
@@ -129,18 +136,23 @@ func TestParseAuthStatusUnconfirmed(t *testing.T) {
 // whole point: two of them are failures and they need different responses.
 func TestVerifiedOnlyOnConfirmation(t *testing.T) {
 	for _, tc := range []struct {
-		name             string
-		out              string
-		loggedIn, verify bool
+		name string
+		out  string
+		want CredentialState
 	}{
-		{"confirmed", healthy, true, true},
-		{"configured but unconfirmable", unconfirmed, true, false},
-		{"no credential at all", loggedOut, false, false},
+		{"confirmed", healthy, StateConfirmed},
+		{"configured but unconfirmable", unconfirmed, StateUnconfirmed},
+		{"no credential at all", loggedOut, StateAbsent},
+		// The safety default. gh's wording moves between versions, so some
+		// future output will match nothing here -- and it must NOT become
+		// "you have no credential", because that tells the operator to go and
+		// issue one.
+		{"unrecognised shape", futureShape, StateUnconfirmed},
+		{"no output at all", "", StateUnconfirmed},
 	} {
 		st, _ := parseAuthStatus(tc.out)
-		if st.LoggedIn != tc.loggedIn || st.Verified != tc.verify {
-			t.Errorf("%s: LoggedIn=%v Verified=%v, want %v/%v",
-				tc.name, st.LoggedIn, st.Verified, tc.loggedIn, tc.verify)
+		if st.State != tc.want {
+			t.Errorf("%s: State = %v, want %v", tc.name, st.State, tc.want)
 		}
 	}
 }

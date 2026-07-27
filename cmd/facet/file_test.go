@@ -36,7 +36,7 @@ func (f *fakeGH) Auth() (*ghx.AuthStatus, error) {
 		return f.auth, nil
 	}
 	return &ghx.AuthStatus{
-		Host: "github.com", LoggedIn: true, Verified: true,
+		Host: "github.com", State: ghx.StateConfirmed,
 		Account: "RiccardoCereghino", Active: true,
 		TokenType: "ghp_", Scopes: []string{"read:org", "repo", "workflow"},
 		GitProtocol: "ssh", ConfigSource: "/dev/null",

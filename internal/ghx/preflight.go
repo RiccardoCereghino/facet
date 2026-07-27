@@ -74,7 +74,9 @@ func Check(st *AuthStatus, req Requirements) []Problem {
 		probs = append(probs, Problem{Check: check, Want: want, Got: got, Why: why})
 	}
 
-	if st == nil || !st.LoggedIn {
+	// A nil status is not evidence of an absent credential -- it is evidence of
+	// nothing at all, so it takes the cautious branch with the rest.
+	if st != nil && st.State == StateAbsent {
 		add("logged in", "a credential for github.com", "none",
 			"this is the fault itself: on 2026-07-27 the fleet lost GitHub access "+
 				"mid-teardown and found out by trying to use it. gh reports this "+
@@ -83,13 +85,13 @@ func Check(st *AuthStatus, req Requirements) []Problem {
 		return probs
 	}
 
-	if !st.Verified {
+	if st == nil || st.State != StateConfirmed {
 		// STILL FATAL. If the forge is unreachable, spawn cannot clone or fetch
 		// either, so refusing is right. What must not happen is refusing for the
 		// WRONG STATED REASON -- a gate that fires on the right condition and
 		// blames the wrong thing is a broken gate, not a strict one.
 		add("credential confirmed", "gh can confirm the credential with github.com",
-			"gh could NOT confirm it"+withReason(st.VerifyFailure),
+			"gh could NOT confirm it"+withReason(verifyFailure(st)),
 			"DO NOT REGENERATE THE TOKEN ON THE STRENGTH OF THIS MESSAGE. gh "+
 				"prints exactly this when the token is dead AND when it simply "+
 				"cannot reach github.com, and it does not distinguish the two -- so "+
@@ -240,6 +242,14 @@ func scopesGot(scopes []string) string {
 		return "none reported"
 	}
 	return strings.Join(scopes, ", ")
+}
+
+// verifyFailure is st's stated reason, tolerating a nil status.
+func verifyFailure(st *AuthStatus) string {
+	if st == nil {
+		return "gh's status could not be read at all"
+	}
+	return st.VerifyFailure
 }
 
 // withReason appends gh's own words when it gave any, so the report quotes the

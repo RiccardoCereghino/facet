@@ -44,7 +44,7 @@ func runPreflight(w io.Writer) error {
 		return err
 	}
 
-	if st != nil && st.LoggedIn {
+	if st != nil && st.State == ghx.StateConfirmed {
 		fmt.Fprintf(w, "host        %s\n", orDash(st.Host))
 		fmt.Fprintf(w, "account     %s\n", orDash(st.Account))
 		fmt.Fprintf(w, "token type  %s (value never read)\n", orDash(st.TokenType))

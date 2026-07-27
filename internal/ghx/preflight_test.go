@@ -96,6 +96,68 @@ func TestCheckUnconfirmedIsStillFatal(t *testing.T) {
 	}
 }
 
+// TestUnrecognisedOutputKeepsTheWarning is the guard on the parser's DEFAULT.
+//
+// The do-not-regenerate warning hangs off the unconfirmed branch alone. If an
+// unrecognised output fell through to "absent", the operator would instead read
+// "got none" -- and the natural response to that is to reissue the token, which
+// is the ~72-second bare-machine window. The fall-through would bypass the
+// protection precisely when the parse is least reliable.
+//
+// So this asserts on THE WARNING, not merely on the state: the warning is the
+// thing being protected.
+func TestUnrecognisedOutputKeepsTheWarning(t *testing.T) {
+	for _, tc := range []struct{ name, out string }{
+		{"a wording gh has not shipped yet", futureShape},
+		{"no output at all", ""},
+		{"garbage", "totally unexpected\nnonsense from somewhere\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			probs := checkFixture(t, tc.out)
+			if len(probs) != 1 {
+				t.Fatalf("want exactly one finding, got: %s", names(probs))
+			}
+			p := probs[0]
+			if p.Check == "logged in" {
+				t.Fatal("an unrecognised output must NOT be reported as 'no credential' — " +
+					"that tells the operator to go and issue one, and issuing is the " +
+					"dangerous step")
+			}
+			if p.Check != "credential confirmed" {
+				t.Fatalf("Check = %q, want the cautious branch", p.Check)
+			}
+			if !strings.Contains(p.Why, "DO NOT REGENERATE") {
+				t.Errorf("the warning is the thing being protected and it is missing: %q", p.Why)
+			}
+		})
+	}
+}
+
+// TestUnrecognisedOutputBlamesTheParser: when the shape is unknown, the report
+// must say the PARSER did not recognise it, not imply a verdict on the
+// credential it never reached.
+func TestUnrecognisedOutputBlamesTheParser(t *testing.T) {
+	probs := checkFixture(t, futureShape)
+	if len(probs) != 1 {
+		t.Fatalf("want one finding, got: %s", names(probs))
+	}
+	if !strings.Contains(probs[0].Got, "matched no status shape") {
+		t.Errorf("Got must name the parse gap: %q", probs[0].Got)
+	}
+}
+
+// TestNilStatusIsCautious: absence of evidence is not evidence of absence. A
+// nil status must take the same suppressing branch.
+func TestNilStatusIsCautious(t *testing.T) {
+	probs := Check(nil, req())
+	if len(probs) != 1 || probs[0].Check != "credential confirmed" {
+		t.Fatalf("a nil status must land cautious, got: %s", names(probs))
+	}
+	if !strings.Contains(probs[0].Why, "DO NOT REGENERATE") {
+		t.Error("the warning must survive a nil status too")
+	}
+}
+
 // TestCheckOAuthToken: valid, active, right account, ample scopes -- and still
 // wrong, because the token type is the failure mode.
 func TestCheckOAuthToken(t *testing.T) {
