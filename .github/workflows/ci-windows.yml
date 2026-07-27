@@ -16,7 +16,8 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  test-windows:
+    name: test-windows
     runs-on: windows-latest
     # The suite makes real git commits (reap-blocker tests); a fresh runner has no
     # git identity, so supply one.
