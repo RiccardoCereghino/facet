@@ -22,6 +22,25 @@ type fakeGH struct {
 
 	addBlockedByCalls []string // "repo#number<-id" per call
 	addBlockedByErr   error
+
+	// auth is what Auth returns. Nil means "a sound credential": tests that are
+	// not about the preflight should not have to script one, and the zero value
+	// of a scripted status is logged out, which would fail every one of them.
+	auth *ghx.AuthStatus
+}
+
+// Auth returns the scripted status, defaulting to a credential that satisfies
+// ghx.FleetRequirements so unrelated tests are unaffected by the preflight.
+func (f *fakeGH) Auth() (*ghx.AuthStatus, error) {
+	if f.auth != nil {
+		return f.auth, nil
+	}
+	return &ghx.AuthStatus{
+		Host: "github.com", State: ghx.StateConfirmed,
+		Account: "RiccardoCereghino", Active: true,
+		TokenType: "ghp_", Scopes: []string{"read:org", "repo", "workflow"},
+		GitProtocol: "ssh", ConfigSource: "/dev/null",
+	}, nil
 }
 
 func (f *fakeGH) key(repo string, number int) string {
