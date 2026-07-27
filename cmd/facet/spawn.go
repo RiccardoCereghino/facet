@@ -113,6 +113,14 @@ func runSpawn(o spawnOpts) error {
 	if o.Repo == "" {
 		return fmt.Errorf("--repo is required (owner/name): more than one repo may host issues, and gh's notion of the current repo is not it")
 	}
+	// Before routing, before the issue lookup, before anything is created on
+	// disk or on the forge. A spawn that gets halfway on a bad credential
+	// leaves a workspace whose branch was never linked, which is worse than a
+	// refusal -- and the credential fault this catches was found mid-operation
+	// last time precisely because nothing looked first. See stele#55.
+	if err := requirePreflight(os.Stderr, "spawn"); err != nil {
+		return err
+	}
 	route, err := routing.Load(roots.Routing)
 	if err != nil {
 		return err

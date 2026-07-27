@@ -76,6 +76,10 @@ type ProjectTarget struct {
 // Client is the GitHub surface facet uses. It is an interface so the spawn and
 // reap logic can be tested without touching the network.
 type Client interface {
+	// Auth reports what `gh auth status` says about the current credential. It
+	// is the only method here that answers without a working token, which is
+	// why the preflight is built on it.
+	Auth() (*AuthStatus, error)
 	// ViewIssue fetches one issue from repo ("owner/name").
 	ViewIssue(repo string, number int) (*Issue, error)
 	// DevelopBranch creates a branch on the forge linked to the issue, and

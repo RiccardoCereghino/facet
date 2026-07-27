@@ -258,6 +258,50 @@ request, a live multiplexer session, or a tmux pane or process still rooted in
 the workspace — the states where deleting would lose work, or delete a
 directory out from under something still running in it.
 
+## The credential preflight
+
+Everything facet does on the forge rides one `gh` credential, and so does
+everything prism and every agent session does. On 2026-07-27 that credential was
+invalidated with no announcement, and the fleet found out mid-operation.
+
+`facet preflight` checks the credential surface before it is needed:
+
+```
+$ facet preflight
+host        github.com
+account     RiccardoCereghino
+token type  ghp_ (value never read)
+scopes      read:org, repo, workflow
+protocol    ssh
+source      /Users/cerre/.config/gh/hosts.yml
+
+✓ credential preflight passed
+```
+
+It checks that gh is logged in and the account is active and the expected one;
+that the token is **not** a `gho_` OAuth-App token — GitHub issues one per (app,
+user) pair, so any other `gh auth login` anywhere silently invalidates it, which
+is what happened; that `repo`, `read:org` and `workflow` are all granted; that
+git's **host-level** protocol is `ssh` (`gh auth login --with-token` flips it to
+https silently, and `gh config get git_protocol` reports the *global* default, so
+it is the wrong thing to read); and that `~/.ssh/id_ed25519` exists and is not
+world-readable, since that key authenticates every push.
+
+`facet spawn` runs the same checks first, before routing and before the issue
+lookup, so a bad credential produces a refusal rather than a half-created
+workspace. **There is no skip flag** — a gate with an escape hatch is not a gate.
+
+Two properties are deliberate. It reads `gh auth status` and nothing else,
+because gh reports a credential as invalid *without* a valid credential: the
+check does not go blind during the fault it exists to catch. And it never reads,
+prints or stores a token value — only the type prefix — and never calls
+`gh auth login`, `logout` or `refresh`, because a repair path that can leave the
+machine with no credential is the same class of fault as the outage.
+
+Both are also true of the failure path, and `preflight` works with no workspaces
+root and a broken config: the thing you reach for when the lab is wrong cannot
+require the lab to be right.
+
 ## Mirrors make the clones cheap
 
 `facet sync --via-mirror`, and every `facet spawn`, clones from a bare mirror under
