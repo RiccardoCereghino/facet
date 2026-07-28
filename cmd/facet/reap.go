@@ -33,7 +33,7 @@ func newIssuesCmd() *cobra.Command {
 				return nil
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "WORKSPACE\tISSUE\tBRANCH\tSTATE\tPR\tSIZE")
+			_, _ = fmt.Fprintln(w, "WORKSPACE\tISSUE\tBRANCH\tSTATE\tPR\tSIZE")
 			for _, s := range states {
 				state := "reapable"
 				if b := s.Blockers(); len(b) > 0 {
@@ -47,7 +47,7 @@ func newIssuesCmd() *cobra.Command {
 				if branch == "" {
 					branch = "-"
 				}
-				fmt.Fprintf(w, "%s\t%s#%d\t%s\t%s\t%s\t%s\n",
+				_, _ = fmt.Fprintf(w, "%s\t%s#%d\t%s\t%s\t%s\t%s\n",
 					s.Name, s.Issue.Repo, s.Issue.Number, branch, state, pr, humanBytes(s.SizeBytes))
 			}
 			if err := w.Flush(); err != nil {

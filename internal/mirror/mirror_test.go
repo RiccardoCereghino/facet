@@ -290,7 +290,7 @@ func TestHeldLockBlocksUntilReleased(t *testing.T) {
 	case <-time.After(2 * lockPoll):
 	}
 
-	os.Remove(lock) // the holder releases
+	_ = os.Remove(lock) // the holder releases
 	select {
 	case err := <-done:
 		if err != nil {
@@ -377,8 +377,8 @@ func sawFetch(fg *gitxtest.Runner) bool {
 func TestMirrorClonePersistsLongPaths(t *testing.T) {
 	root := t.TempDir()
 	fg := mirrorFake(func(dst string) {
-		os.MkdirAll(dst, 0o777)
-		os.WriteFile(filepath.Join(dst, "HEAD"), []byte("ref: refs/heads/main\n"), 0o666)
+		_ = os.MkdirAll(dst, 0o777)
+		_ = os.WriteFile(filepath.Join(dst, "HEAD"), []byte("ref: refs/heads/main\n"), 0o666)
 	})
 	s := &Store{Root: root, Git: fg}
 	if _, err := s.Update("https://example.com/o/r.git"); err != nil {
@@ -410,8 +410,8 @@ func TestInterruptedCloneIsNotAdopted(t *testing.T) {
 	root := t.TempDir()
 	fg := mirrorFake(func(dst string) {
 		// A clone that wrote HEAD into its (temp) destination, then died.
-		os.MkdirAll(dst, 0o777)
-		os.WriteFile(filepath.Join(dst, "HEAD"), []byte("ref: refs/heads/main\n"), 0o666)
+		_ = os.MkdirAll(dst, 0o777)
+		_ = os.WriteFile(filepath.Join(dst, "HEAD"), []byte("ref: refs/heads/main\n"), 0o666)
 	})
 	fg.Err = errors.New("killed mid-clone")
 	s := &Store{Root: root, Git: fg}
@@ -443,8 +443,8 @@ func TestInterruptedCloneIsNotAdopted(t *testing.T) {
 func TestFreshMirrorIsNotRefetched(t *testing.T) {
 	root := t.TempDir()
 	fg := mirrorFake(func(dst string) {
-		os.MkdirAll(dst, 0o777)
-		os.WriteFile(filepath.Join(dst, "HEAD"), []byte("ref: refs/heads/main\n"), 0o666)
+		_ = os.MkdirAll(dst, 0o777)
+		_ = os.WriteFile(filepath.Join(dst, "HEAD"), []byte("ref: refs/heads/main\n"), 0o666)
 	})
 	s := &Store{Root: root, Git: fg}
 	url := "https://example.com/o/r.git"

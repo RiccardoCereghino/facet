@@ -37,13 +37,13 @@ func newLsCmd() *cobra.Command {
 			fmt.Printf("%s -- %s\n\n", m.Name, m.Description)
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "ENTRY\tKIND\tSTATUS\tTARGET\tORIGIN")
+			_, _ = fmt.Fprintln(w, "ENTRY\tKIND\tSTATUS\tTARGET\tORIGIN")
 			for _, e := range entries {
 				name := e.Name
 				if e.Transient {
 					name += " *"
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", name, e.Kind, e.Status, e.Target, e.Origin)
+				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", name, e.Kind, e.Status, e.Target, e.Origin)
 			}
 			if err := w.Flush(); err != nil {
 				return err
@@ -68,15 +68,15 @@ func lsRoot(root string, dirs []string) error {
 	fmt.Printf("%s -- workspaces root\n\n", root)
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "WORKSPACE\tENTRIES\tHEALTH")
+	_, _ = fmt.Fprintln(w, "WORKSPACE\tENTRIES\tHEALTH")
 	for _, dir := range dirs {
 		name := filepath.Base(dir)
 		_, entries, err := workspace.List(roots, dir, git)
 		if err != nil {
-			fmt.Fprintf(w, "%s\t-\terror: %v\n", name, err)
+			_, _ = fmt.Fprintf(w, "%s\t-\terror: %v\n", name, err)
 			continue
 		}
-		fmt.Fprintf(w, "%s\t%d\t%s\n", name, len(entries), summarizeHealth(entries))
+		_, _ = fmt.Fprintf(w, "%s\t%d\t%s\n", name, len(entries), summarizeHealth(entries))
 	}
 	return w.Flush()
 }
