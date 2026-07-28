@@ -71,8 +71,8 @@ func With(path string, opt Options, fn func() error) error {
 	stop := heartbeat(path, opt.Heartbeat)
 	defer func() {
 		stop() // stop and join the heartbeat before dropping the lock
-		f.Close()
-		os.Remove(path)
+		_ = f.Close()
+		_ = os.Remove(path)
 	}()
 	return fn()
 }
@@ -90,7 +90,7 @@ func acquire(path string, opt Options) (*os.File, error) {
 			var err error
 			f, err = createLock(path)
 			if err == nil {
-				fmt.Fprintf(f, "pid %d\n", os.Getpid()) // for a human debugging a stuck lock
+				_, _ = fmt.Fprintf(f, "pid %d\n", os.Getpid()) // for a human debugging a stuck lock
 				ferr = nil
 				return true
 			}
@@ -114,7 +114,7 @@ func acquire(path string, opt Options) (*os.File, error) {
 					if opt.Warn != nil {
 						opt.Warn("breaking stale lock %s (untouched for over %s)", path, opt.StaleAge)
 					}
-					os.Remove(path)
+					_ = os.Remove(path)
 				}
 				continue
 			}

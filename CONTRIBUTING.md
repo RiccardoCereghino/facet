@@ -157,10 +157,38 @@ listing.
 
 ## CI
 
-`.github/workflows/ci.yml` covers Linux and macOS; `ci-windows.yml` covers
-Windows in a workflow of its own, so that a secondary platform's red is reported
-as a distinct result rather than folded into the primary one. Between them they
-run formatting, build, vet, race tests, and the privacy guard.
+`.github/workflows/ci.yml` runs in two tiers:
+
+1. **Linux**, on every push and every pull request including drafts: `gofmt`,
+   build, `vet`, lint, `govulncheck`, and `go test -race` (which is where the
+   privacy guard runs).
+2. **macOS and Windows**, each a named job gated behind Linux passing, and
+   skipped on draft pull requests and on pull requests not targeting `main`.
+   Build and test only — every other gate is platform-independent by
+   construction, so running it three times buys nothing. What these legs
+   uniquely prove is that the code compiles and its tests pass where filesystem
+   semantics differ.
+
+The tiering is about feedback, **not** cost: this is a public repository, so
+GitHub-hosted runners are free on every OS. A formatting slip should fail in
+under a minute rather than after three platform runs finish, and three runners
+should not be queued to answer one question. `windows` stays a distinctly named
+job so a secondary platform's red is still reported as its own result.
+
+**Lint** is `staticcheck`, `errcheck` and `unused`, configured in
+`.golangci.yml` and run through `golangci-lint-action` at a pinned version. It
+is not a `go.mod` `tool` directive: that would drag golangci-lint's whole
+dependency tree into this module's `go.sum`, a poor trade for a module with two
+direct dependencies. To run the same thing locally, use the version pinned in
+the workflow.
+
+Two notes on reading its output. It reports **every** finding rather than a
+sample — `max-same-issues` and `max-issues-per-linter` are both set to `0`,
+because the defaults cap repeated identical messages at three, and successive
+runs then show a different arbitrary three while the totals still agree, which
+reads as non-determinism. And `errcheck` treats `_ =` as an explicit decision to
+ignore an error: that is the intended way to say "I considered this", not a way
+around the gate. Where the ignore is not obvious, say why in a comment.
 
 **Any new gate must be demonstrated failing on a deliberate violation, then
 green,** with both runs linked from the pull request that adds it. A gate never
@@ -192,17 +220,32 @@ list of forbidden names would be the disclosure it prevents. It fails rather
 than skips in CI when unconfigured — a guard that passes having checked nothing
 is a hole, not a pass.
 
-The qualified-reference rule is not yet mechanised: a fixed word list
-structurally cannot catch a *pattern*. Until it is, that one is on the author
-and the reviewer.
+The qualified-reference rule is **deliberately not** mechanised as a pattern
+check, and it is worth saying why so nobody adds one thinking it was an
+oversight. facet's own subject matter is issue references: it parses them out of
+issue bodies, and its documentation, tests and fixtures are full of the shape by
+necessity. A regex for it flags every one of those and no real leak — a gate
+with a false-positive rate of one hundred percent, which would teach people to
+delete legitimate examples rather than to drop coordinates.
+
+The disclosive part of such a reference is the **name**, not the shape, and the
+denylist above already catches a name wherever it appears, including inside a
+reference. So keep the private names on the list; the shape needs no gate.
 
 ## Working on a change
 
 ```sh
-go build ./... && go vet ./... && gofmt -l . && go test -race ./...
+gofmt -l . && go build ./... && go vet ./... && go test -race ./...
+go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 ```
 
-That is what CI runs, so a green run locally means a green run there.
+Plus the linter, at the version pinned in `.github/workflows/ci.yml`. Together
+that is what CI's Linux tier runs, so a green run locally means a green run
+there.
+
+**Examples use reserved placeholder names** — `acme/…`, `owner/repo`, `o/r`.
+Documentation and fixtures needing a repository or an issue reference should
+reach for those rather than inventing a plausible-looking real one.
 
 **Keep behaviour changes out of refactors.** A diff that both moves code and
 changes what it does cannot be reviewed as either. If a refactor turns up a

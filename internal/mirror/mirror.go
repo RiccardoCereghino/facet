@@ -201,11 +201,11 @@ func (s *Store) Update(raw string) (string, error) {
 				"-c", "core.longpaths=true", "clone", "--mirror",
 				"-c", "core.longpaths=true", raw, tmp,
 			); err != nil {
-				os.RemoveAll(tmp) // never leave a partial clone behind
+				_ = os.RemoveAll(tmp) // never leave a partial clone behind
 				return fmt.Errorf("mirror clone %s: %w", raw, err)
 			}
 			if err := os.Rename(tmp, path); err != nil {
-				os.RemoveAll(tmp)
+				_ = os.RemoveAll(tmp)
 				return fmt.Errorf("finalise mirror %s: %w", path, err)
 			}
 			s.stamp(path) // just fetched, by definition
@@ -244,7 +244,7 @@ func (s *Store) stamp(path string) {
 		s.warn("could not stamp mirror %s: %v", path, err)
 		return
 	}
-	f.Close()
+	_ = f.Close()
 }
 
 // mirrorExists reports whether a finished mirror sits at path. Because a new

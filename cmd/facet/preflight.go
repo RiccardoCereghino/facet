@@ -45,13 +45,13 @@ func runPreflight(w io.Writer) error {
 	}
 
 	if st != nil && st.State == ghx.StateConfirmed {
-		fmt.Fprintf(w, "host        %s\n", orDash(st.Host))
-		fmt.Fprintf(w, "account     %s\n", orDash(st.Account))
-		fmt.Fprintf(w, "token type  %s (value never read)\n", orDash(st.TokenType))
-		fmt.Fprintf(w, "scopes      %s\n", orDash(strings.Join(st.Scopes, ", ")))
-		fmt.Fprintf(w, "protocol    %s\n", orDash(st.GitProtocol))
-		fmt.Fprintf(w, "source      %s\n", orDash(st.ConfigSource))
-		fmt.Fprintln(w)
+		_, _ = fmt.Fprintf(w, "host        %s\n", orDash(st.Host))
+		_, _ = fmt.Fprintf(w, "account     %s\n", orDash(st.Account))
+		_, _ = fmt.Fprintf(w, "token type  %s (value never read)\n", orDash(st.TokenType))
+		_, _ = fmt.Fprintf(w, "scopes      %s\n", orDash(strings.Join(st.Scopes, ", ")))
+		_, _ = fmt.Fprintf(w, "protocol    %s\n", orDash(st.GitProtocol))
+		_, _ = fmt.Fprintf(w, "source      %s\n", orDash(st.ConfigSource))
+		_, _ = fmt.Fprintln(w)
 	}
 
 	// Notes print on the pass path too, and before the verdict. A check that
@@ -61,13 +61,13 @@ func runPreflight(w io.Writer) error {
 	writeNotes(w, notes)
 
 	if len(probs) == 0 {
-		fmt.Fprintln(w, passLine(notes))
+		_, _ = fmt.Fprintln(w, passLine(notes))
 		return nil
 	}
 	for _, p := range probs {
-		fmt.Fprintf(w, "✗ %s\n", p)
+		_, _ = fmt.Fprintf(w, "✗ %s\n", p)
 	}
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w)
 	return fmt.Errorf("credential preflight failed: %d %s", len(probs), plural(len(probs), "problem", "problems"))
 }
 
@@ -83,10 +83,10 @@ func passLine(notes []string) string {
 
 func writeNotes(w io.Writer, notes []string) {
 	for _, n := range notes {
-		fmt.Fprintf(w, "! %s\n", n)
+		_, _ = fmt.Fprintf(w, "! %s\n", n)
 	}
 	if len(notes) > 0 {
-		fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w)
 	}
 }
 
@@ -131,9 +131,9 @@ func requirePreflight(w io.Writer, what string) error {
 		return nil
 	}
 	for _, p := range probs {
-		fmt.Fprintf(w, "✗ %s\n", p)
+		_, _ = fmt.Fprintf(w, "✗ %s\n", p)
 	}
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w)
 	return fmt.Errorf("%s refused: the GitHub credential is not sound (%d %s). "+
 		"Run `facet preflight` for the full report. There is no skip flag: this is "+
 		"exactly the failure that went unnoticed until it was mid-operation",

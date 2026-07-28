@@ -13,7 +13,7 @@ import (
 	"github.com/RiccardoCereghino/facet/internal/manifest"
 )
 
-// TestLsAtWorkspacesRootListsEveryWorkspace is the regression test for facet#31:
+// TestLsAtWorkspacesRootListsEveryWorkspace is the regression test for #31:
 // `facet ls` run against a directory with no manifest of its own, but which
 // contains manifest-bearing subdirectories, must list every one of them
 // instead of erroring with "no .workspace.json in <dir>".

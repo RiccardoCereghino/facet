@@ -55,7 +55,7 @@ func TestOnCallRunsBeforeFailIsChecked(t *testing.T) {
 		Fail:   func(args []string) bool { return true },
 		Err:    errors.New("boom"),
 	}
-	r.Run("", nil, "clone")
+	_, _ = r.Run("", nil, "clone")
 	if len(seen) != 1 || seen[0] != "clone" {
 		t.Fatalf("OnCall did not observe the failed call: %v", seen)
 	}
@@ -63,9 +63,9 @@ func TestOnCallRunsBeforeFailIsChecked(t *testing.T) {
 
 func TestCallFindsTheFirstMatch(t *testing.T) {
 	r := &Runner{}
-	r.Run("", nil, "status")
-	r.Run("", nil, "clone", "--mirror", "x")
-	r.Run("", nil, "clone", "--mirror", "y")
+	_, _ = r.Run("", nil, "status")
+	_, _ = r.Run("", nil, "clone", "--mirror", "x")
+	_, _ = r.Run("", nil, "clone", "--mirror", "y")
 
 	got := r.Call(func(a []string) bool { return len(a) > 0 && a[0] == "clone" })
 	if len(got) == 0 || got[len(got)-1] != "x" {
