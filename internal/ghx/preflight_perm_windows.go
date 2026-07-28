@@ -18,7 +18,7 @@ const notApplicableWindows = "ssh key permissions were NOT checked on this platf
 	"Win32-OpenSSH enforces an ACL rule of its own -- verify it yourself with " +
 	"`icacls %USERPROFILE%\\.ssh\\id_ed25519`, which should list your account " +
 	"and nothing else. Implementing this properly needs DACL enumeration via " +
-	"golang.org/x/sys/windows (stele#55, proposed)."
+	"golang.org/x/sys/windows -- proposed, not yet done."
 
 // keyPermission declines to judge on Windows, and says so.
 //

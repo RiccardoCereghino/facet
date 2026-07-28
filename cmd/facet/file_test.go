@@ -30,7 +30,7 @@ type fakeGH struct {
 }
 
 // Auth returns the scripted status, defaulting to a credential that satisfies
-// ghx.FleetRequirements so unrelated tests are unaffected by the preflight.
+// ghx.DefaultRequirements so unrelated tests are unaffected by the preflight.
 func (f *fakeGH) Auth() (*ghx.AuthStatus, error) {
 	if f.auth != nil {
 		return f.auth, nil

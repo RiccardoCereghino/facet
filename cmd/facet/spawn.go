@@ -120,8 +120,8 @@ func runSpawn(o spawnOpts) error {
 	// Before routing, before the issue lookup, before anything is created on
 	// disk or on the forge. A spawn that gets halfway on a bad credential
 	// leaves a workspace whose branch was never linked, which is worse than a
-	// refusal -- and the credential fault this catches was found mid-operation
-	// last time precisely because nothing looked first. See stele#55.
+	// refusal -- and a credential fault like this is worst found mid-operation,
+	// by trying to use it, rather than checked first.
 	if err := requirePreflight(os.Stderr, "spawn"); err != nil {
 		return err
 	}
