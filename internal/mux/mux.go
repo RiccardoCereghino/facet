@@ -55,11 +55,11 @@ var sessionNameFn = func() string {
 	if !InSession() {
 		return ""
 	}
-	out, err := exec.Command("tmux", "display-message", "-p", "#S").Output()
+	out, err := tmuxOutput("display-message", "-p", "#S")
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	return strings.TrimSpace(out)
 }
 
 // SessionName is the tmux session we are inside, if any. tmux does not export
@@ -257,6 +257,30 @@ func ByName(name string) Launcher {
 // to `iss-repo-67`.
 type Tmux struct{}
 
+// tmuxRun and tmuxOutput are the two ways this package talks to tmux, and the
+// only places the executable is named. gitx and ghx each converged on a single
+// run()-shaped wrapper around their tool; this is the same idea for tmux, and
+// the reason is the same: one place to look when the invocation has to change.
+//
+// They deliberately do not interpret the result. tmux commands disagree about
+// what their output means -- `display-message` yields one line that wants
+// trimming, `capture-pane` yields scrollback whose trailing blank lines are
+// part of the answer -- so trimming belongs to the caller that knows which it
+// asked for. A helper that guessed would be wrong for one of them.
+//
+// They also take no socket argument. Tests that need an isolated server pass
+// `-L <socket>` as part of argv (see liveroots.go); teaching these helpers
+// about sockets would put test-only state in the production path.
+
+// tmuxRun runs a tmux command for its exit status alone.
+func tmuxRun(args ...string) error { return exec.Command("tmux", args...).Run() }
+
+// tmuxOutput runs a tmux command and returns its stdout verbatim.
+func tmuxOutput(args ...string) (string, error) {
+	out, err := exec.Command("tmux", args...).Output()
+	return string(out), err
+}
+
 func (Tmux) Name() string { return "tmux" }
 
 // Available reports whether tmux is installed. Native Windows has no tmux;
@@ -265,13 +289,13 @@ func (Tmux) Available() bool {
 	if runtime.GOOS == "windows" {
 		return false
 	}
-	return exec.Command("tmux", "-V").Run() == nil
+	return tmuxRun("-V") == nil
 }
 
 // Live reports whether the named session exists on the tmux server. tmux has
 // no "exited" state -- a session is either present or it is not.
 func (Tmux) Live(session string) bool {
-	return exec.Command("tmux", "has-session", "-t", "="+session).Run() == nil
+	return tmuxRun("has-session", "-t", "="+session) == nil
 }
 
 // planInput carries everything plan() needs to compose a session or window.
@@ -432,25 +456,25 @@ func (z Tmux) Start(s Session) (string, error) {
 			return target, passthrough("tmux", argv...)
 		}
 		if creates(argv) {
-			out, err := exec.Command("tmux", argv...).Output()
+			out, err := tmuxOutput(argv...)
 			if err != nil {
 				return "", fmt.Errorf("tmux %s: %w", strings.Join(argv, " "), err)
 			}
-			target = strings.TrimSpace(string(out))
+			target = strings.TrimSpace(out)
 			// Pin the name before the agent has had time to overwrite it. A
 			// failure here costs targeting, not the window, so it is not fatal.
 			for _, opt := range pinWindowName(target) {
-				_ = exec.Command("tmux", opt...).Run()
+				_ = tmuxRun(opt...)
 			}
 			continue
 		}
-		if err := exec.Command("tmux", argv...).Run(); err != nil {
+		if err := tmuxRun(argv...); err != nil {
 			return "", fmt.Errorf("tmux %s: %w", strings.Join(argv, " "), err)
 		}
 	}
 
 	if restore != "" {
-		_ = exec.Command("tmux", "select-window", "-t", "="+currentSess+":"+restore).Run()
+		_ = tmuxRun("select-window", "-t", "="+currentSess+":"+restore)
 	}
 	return target, nil
 }
@@ -458,11 +482,11 @@ func (z Tmux) Start(s Session) (string, error) {
 // CapturePane returns the last lines of the target window's scrollback,
 // implementing PaneReader.
 func (Tmux) CapturePane(target string, lines int) (string, error) {
-	out, err := exec.Command("tmux", "capture-pane", "-p", "-S", "-"+strconv.Itoa(lines), "-t", target).Output()
+	out, err := tmuxOutput("capture-pane", "-p", "-S", "-"+strconv.Itoa(lines), "-t", target)
 	if err != nil {
 		return "", err
 	}
-	return string(out), nil
+	return out, nil
 }
 
 // focusedWindowIndex returns the current session's active window index, or ""
@@ -471,11 +495,11 @@ func focusedWindowIndex(session string) string {
 	if session == "" {
 		return ""
 	}
-	out, err := exec.Command("tmux", "display-message", "-p", "-t", "="+session+":", "-F", "#{window_index}").Output()
+	out, err := tmuxOutput("display-message", "-p", "-t", "="+session+":", "-F", "#{window_index}")
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	return strings.TrimSpace(out)
 }
 
 // runOverride executes the layout script. Args: session name, home dir,
@@ -509,7 +533,7 @@ func (Tmux) Attach(name string) error {
 func (Tmux) Kill(name string) error {
 	// Killing a session that never existed makes tmux exit non-zero, which is
 	// not an error worth surfacing.
-	_ = exec.Command("tmux", "kill-session", "-t", "="+name).Run()
+	_ = tmuxRun("kill-session", "-t", "="+name)
 	return nil
 }
 
