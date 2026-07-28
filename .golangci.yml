@@ -1,0 +1,20 @@
+version: "2"
+
+# Three linters, chosen rather than inherited. staticcheck for correctness
+# findings the compiler and `go vet` do not make; errcheck because this codebase
+# shells out and writes files constantly, and an ignored error there is a silent
+# partial success; unused to stop dead code accumulating.
+linters:
+  default: none
+  enable:
+    - errcheck
+    - staticcheck
+    - unused
+
+issues:
+  # Report every finding, not a sample. The defaults cap repeated identical
+  # messages at 3, which is fine for failing a build but actively misleading
+  # when you are trying to fix them: successive runs show a different arbitrary
+  # 3 of N and the totals still agree, so it reads as non-determinism.
+  max-same-issues: 0
+  max-issues-per-linter: 0

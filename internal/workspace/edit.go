@@ -100,7 +100,7 @@ func AddLink(roots config.Roots, ws string, git gitx.Runner, rep Reporter,
 	if err := m.Write(ws); err != nil {
 		return err
 	}
-	if syncOpt.Bootstrap == false && m.Origins[target] != "" {
+	if !syncOpt.Bootstrap && m.Origins[target] != "" {
 		if _, err := os.Stat(filepath.Join(roots.Projects, target)); os.IsNotExist(err) {
 			syncOpt.Bootstrap = true // we know where it lives; fetch it
 		}

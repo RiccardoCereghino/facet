@@ -114,7 +114,7 @@ func TestCreateLock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first createLock: %v", err)
 	}
-	f.Close()
+	_ = f.Close()
 
 	// A second create of the same live path is contention, reported as IsExist.
 	if _, err := createLock(path); !os.IsExist(err) {
@@ -129,5 +129,5 @@ func TestCreateLock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("createLock after remove: %v", err)
 	}
-	f2.Close()
+	_ = f2.Close()
 }

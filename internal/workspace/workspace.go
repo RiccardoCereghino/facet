@@ -31,7 +31,7 @@ func (r Reporter) line(sym, format string, a ...any) {
 	if r.W == nil {
 		return
 	}
-	fmt.Fprintf(r.W, "  %s %s\n", sym, fmt.Sprintf(format, a...))
+	_, _ = fmt.Fprintf(r.W, "  %s %s\n", sym, fmt.Sprintf(format, a...))
 }
 func (r Reporter) Unchanged(f string, a ...any) { r.line("=", f, a...) }
 func (r Reporter) Created(f string, a ...any)   { r.line("+", f, a...) }
@@ -41,7 +41,7 @@ func (r Reporter) Warn(f string, a ...any)      { r.line("!", f, a...) }
 func (r Reporter) Note(f string, a ...any)      { r.line("~", f, a...) }
 func (r Reporter) Header(f string, a ...any) {
 	if r.W != nil {
-		fmt.Fprintf(r.W, "%s\n", fmt.Sprintf(f, a...))
+		_, _ = fmt.Fprintf(r.W, "%s\n", fmt.Sprintf(f, a...))
 	}
 }
 
