@@ -79,7 +79,7 @@ here and became mainstays — inferring an issue's repositories, and generating 
 `CLAUDE.md` that hands an agent everything it needs to start.
 
 ```sh
-facet spawn 67 --repo acme/platform
+facet spawn 67 --repo acme/platform --seat w-platform-67
 ```
 
 `spawn` reads the issue, works out which repositories it needs, **prints why each
@@ -87,6 +87,39 @@ one was chosen, and waits.** On confirmation it creates an issue-linked branch
 (`gh issue develop`), clones each repo, and writes a `CLAUDE.md` carrying the issue
 body and the durable hazards recorded for its `area/*` labels. Then it stops and
 tells you where to work — opening an editor or starting an agent is yours.
+
+### Who the workspace belongs to
+
+`--seat` is required, and names whoever the workspace is being created for. It
+goes in `.seat` at the workspace root, one line. The issues the workspace
+legitimately covers go in `.scope`, one `owner/repo#n` per line — the spawned
+issue always, plus any `--scope owner/repo#n` you pass, because one worker
+regularly carries a coherent group of issues rather than exactly one.
+
+Both are written **here**, by the thing creating the workspace, and never by
+whatever works in it afterwards. That is the entire point: an identity a thing
+asserts about itself is not evidence of anything, so attribution has to be
+derived from something the subject did not write. Be clear about the ceiling —
+this defeats accidents (a stale environment variable, a typo, a command pasted
+from another workspace) and it does not defeat deliberate tampering, because the
+agent runs as the same user and can rewrite the file. The step up is a per-seat
+credential, which composes with this rather than replacing it: the file becomes
+the claim, and the credential becomes the proof.
+
+Neither file is versioned — they are session state, not recipe — and **`facet
+sync` never touches either one**, on a workspace that already exists. They are
+facts about the moment of creation, and a workspace that confidently reports the
+wrong owner is worse than one that reports none.
+
+`facet scope list` prints both, found by walking **up** from the working
+directory so it works from inside a repository subdirectory. `facet scope add
+owner/repo#n` records an issue handed over after the workspace already existed;
+it is additive and safe to repeat.
+
+```sh
+facet spawn 67 --repo acme/platform --seat w-platform-67 \
+  --scope acme/platform#68 --scope acme/tools#12
+```
 
 With no pane to put it in, one agent launch is opt-in: a Remote Control session.
 With a `spawn` block in `.tools/routing.json` (`{"spawn": {"rc": true}}`), spawn

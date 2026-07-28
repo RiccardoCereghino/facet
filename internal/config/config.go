@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/RiccardoCereghino/facet/internal/manifest"
 )
 
 // Roots are the directories facet works within.
@@ -79,4 +81,35 @@ func ResolveWorkspace(path string) (string, error) {
 		return "", fmt.Errorf("not a directory: %s", abs)
 	}
 	return abs, nil
+}
+
+// FindWorkspace resolves the workspace *containing* a path, by walking up to the
+// nearest directory holding a manifest.
+//
+// It is separate from ResolveWorkspace, which reads the given directory and no
+// other, because the two answer different questions and the existing callers
+// want the strict one: `facet sync` acting on a parent directory because the one
+// you named has no manifest would be a surprise with consequences.
+//
+// Walking up is what the seat files need. Work happens inside a workspace's repo
+// subdirectory, so a command run from there must still find the workspace, and
+// the leaf of the working directory is not the answer -- it is the repository's
+// name, and two workspaces can hold repositories of the same name.
+func FindWorkspace(start string) (string, error) {
+	from, err := ResolveWorkspace(start)
+	if err != nil {
+		return "", err
+	}
+	dir := from
+	for {
+		if _, err := os.Stat(filepath.Join(dir, manifest.FileName)); err == nil {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", fmt.Errorf("no %s in %s or any parent directory, so there is no workspace here\n"+
+				"fix: run this from inside a workspace, or pass --path", manifest.FileName, from)
+		}
+		dir = parent
+	}
 }

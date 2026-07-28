@@ -54,7 +54,8 @@ func main() {
 	root.SetVersionTemplate("facet {{.Version}}\n")
 	root.AddCommand(newLsCmd(), newSyncCmd(), newRestoreCmd(), newSpawnCmd(),
 		newFileCmd(), newIssuesCmd(), newReapCmd(), newAttachCmd(),
-		newNewCmd(), newAddCmd(), newRmCmd(), newVersionCmd(), newPreflightCmd())
+		newNewCmd(), newAddCmd(), newRmCmd(), newVersionCmd(), newPreflightCmd(),
+		newScopeCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "facet:", err)

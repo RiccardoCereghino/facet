@@ -14,6 +14,8 @@ func newSpawnCmd() *cobra.Command {
 		clones      []string
 		addClones   []string
 		rmClones    []string
+		seatName    string
+		scope       []string
 		slug        string
 		base        string
 		yes         bool
@@ -33,6 +35,11 @@ func newSpawnCmd() *cobra.Command {
 			"waits. On confirmation it creates an issue-linked branch, clones each repo\n" +
 			"from the local mirror, and writes a CLAUDE.md carrying the issue body and the\n" +
 			"durable hazards recorded for its areas.\n\n" +
+			"It also records who the workspace belongs to. --seat is required and names\n" +
+			"the seat; the name goes in .seat, and the issues the workspace covers go in\n" +
+			".scope, one per line. Both are written here rather than by whatever works in\n" +
+			"the workspace afterwards, because an identity a thing asserts about itself is\n" +
+			"not evidence of anything. Neither file is versioned: they are session state.\n\n" +
 			"Labels alone cannot decide the repo set: the same topic label is used in\n" +
 			"several repos, and a cross-repo dependency lives in the issue body. So the\n" +
 			"inference is always shown and never silently trusted.\n\n" +
@@ -47,6 +54,7 @@ func newSpawnCmd() *cobra.Command {
 			}
 			return runSpawn(spawnOpts{
 				Number: number, Repo: repo, Clones: clones, Add: addClones, Remove: rmClones,
+				Seat: seatName, Scope: scope,
 				Slug: slug, Base: base, Yes: yes, NoBranch: noBranch, DryRun: dryRun,
 				Attach: attach, NoAttach: noAttach, OwnSession: ownSession, Mux: muxName,
 				NoWriteback: noWriteback, Agent: agent.resolve(cmd),
@@ -58,6 +66,8 @@ func newSpawnCmd() *cobra.Command {
 	f.StringSliceVar(&clones, "clone", nil, "replace the inferred repo set entirely")
 	f.StringSliceVar(&addClones, "add", nil, "add repos to the inferred set")
 	f.StringSliceVar(&rmClones, "rm", nil, "drop repos from the inferred set")
+	f.StringVar(&seatName, "seat", "", "name of the seat this workspace belongs to, written to .seat (required)")
+	f.StringSliceVar(&scope, "scope", nil, "another issue this workspace covers, as owner/repo#n; repeatable. The spawned issue is always included")
 	f.StringVar(&slug, "slug", "", "override the slug derived from the issue title")
 	f.StringVar(&base, "base", "main", "base branch for the issue branch")
 	f.BoolVarP(&yes, "yes", "y", false, "skip the confirmation prompt")
@@ -81,9 +91,14 @@ func muxFor(name string) mux.Launcher {
 }
 
 type spawnOpts struct {
-	Number                       int
-	Repo                         string
-	Clones, Add, Remove          []string
+	Number              int
+	Repo                string
+	Clones, Add, Remove []string
+	// Seat names the seat the workspace belongs to; Scope lists further issues
+	// it covers beyond the one being spawned for. Both are recorded on disk by
+	// the spawner, never by whatever works in the workspace afterwards.
+	Seat                         string
+	Scope                        []string
 	Slug, Base                   string
 	Yes, NoBranch, DryRun        bool
 	Attach, NoAttach, OwnSession bool

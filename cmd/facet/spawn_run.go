@@ -22,6 +22,7 @@ import (
 	"github.com/RiccardoCereghino/facet/internal/mux"
 	"github.com/RiccardoCereghino/facet/internal/render"
 	"github.com/RiccardoCereghino/facet/internal/routing"
+	"github.com/RiccardoCereghino/facet/internal/seat"
 	"github.com/RiccardoCereghino/facet/internal/workspace"
 )
 
@@ -29,6 +30,20 @@ func runSpawn(o spawnOpts) error {
 	if o.Repo == "" {
 		return fmt.Errorf("--repo is required (owner/name): more than one repo may host issues, and gh's notion of the current repo is not it")
 	}
+	// The seat and its scope are checked before anything else -- before the
+	// credential gate, before routing, before the issue is looked up. They cost
+	// nothing to check and a mistyped seat name should not be discovered after a
+	// branch has been created on the forge. There is deliberately no derived
+	// default: a name nobody chose is a name nobody can be held to.
+	if err := seat.ValidateName(o.Seat); err != nil {
+		return fmt.Errorf("--seat: %w", err)
+	}
+	extraScope, err := seat.ParseRefs(o.Scope)
+	if err != nil {
+		return fmt.Errorf("--scope: %w", err)
+	}
+	// The issue being spawned for always leads, whether or not --scope repeats it.
+	scopeRefs := seat.Dedupe(append([]seat.Ref{{Repo: o.Repo, Number: o.Number}}, extraScope...))
 	// Before routing, before the issue lookup, before anything is created on
 	// disk or on the forge. A spawn that gets halfway on a bad credential
 	// leaves a workspace whose branch was never linked, which is worse than a
@@ -77,7 +92,7 @@ func runSpawn(o spawnOpts) error {
 	fragNames := route.Fragments(iss.LabelNames())
 	frags, fragErrs := knowledge.LoadAll(roots.Knowledge, fragNames)
 
-	printPlan(ws, o.Repo, iss, sel, hints, route, branch, frags, fragErrs)
+	printPlan(ws, o.Repo, iss, sel, hints, route, branch, o.Seat, scopeRefs, frags, fragErrs)
 
 	if o.DryRun {
 		fmt.Println("\n--dry-run: nothing was created.")
@@ -130,6 +145,18 @@ func runSpawn(o spawnOpts) error {
 	}
 
 	rep := workspace.Reporter{W: os.Stdout}
+
+	// Identity is written as soon as the directory exists and before anything is
+	// cloned into it, so a spawn that fails partway still leaves a workspace that
+	// says whose it is. Unlike the board move and the issue write-back further
+	// down, a failure here is fatal: those depend on a network and a token, this
+	// is a handful of bytes to a directory just created, and a workspace with no
+	// recorded owner is the state this exists to prevent.
+	if err := seat.Write(ws, o.Seat, scopeRefs); err != nil {
+		return err
+	}
+	rep.Created("%s: %s", seat.NameFile, o.Seat)
+	rep.Created("%s: %s", seat.ScopeFile, seat.Join(scopeRefs))
 	if err := workspace.Sync(roots, ws, git, rep, workspace.SyncOptions{Source: sourceFor(true, rep)}); err != nil {
 		return err
 	}
@@ -298,7 +325,8 @@ func applyOverrides(sel []routing.Selection, route *routing.Routing, homeKey str
 }
 
 func printPlan(ws, repo string, iss *ghx.Issue, sel []routing.Selection, hints []routing.Hint,
-	route *routing.Routing, branch string, frags []knowledge.Fragment, fragErrs []error) {
+	route *routing.Routing, branch, seatName string, scope []seat.Ref,
+	frags []knowledge.Fragment, fragErrs []error) {
 
 	fmt.Printf("%s#%d  %s\n", repo, iss.Number, iss.Title)
 	fmt.Printf("  %s\n", iss.URL)
@@ -311,6 +339,8 @@ func printPlan(ws, repo string, iss *ghx.Issue, sel []routing.Selection, hints [
 	} else {
 		fmt.Printf("branch:    none (--no-branch)\n")
 	}
+	fmt.Printf("seat:      %s\n", seatName)
+	fmt.Printf("scope:     %s\n", seat.Join(scope))
 	if t, ok := route.Target(); ok {
 		fmt.Printf("board:     %s/%d, %s = %s\n", t.Owner, t.Number, t.Field, t.Option)
 	}
