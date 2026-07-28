@@ -6,10 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/RiccardoCereghino/facet/internal/ghx"
 	"github.com/RiccardoCereghino/facet/internal/gitx"
+	"github.com/RiccardoCereghino/facet/internal/gitx/gitxtest"
 	"github.com/RiccardoCereghino/facet/internal/manifest"
 )
 
@@ -26,33 +26,25 @@ func (fakePRErr) ViewPR(string, string) (*ghx.PR, error) {
 
 // failGit fails every command, standing in for a repo whose state cannot be read
 // (a held index.lock, a corrupt object store).
-type failGit struct{}
-
-func (failGit) Run(string, []string, ...string) (string, error) {
-	return "", errors.New("git unavailable")
+func failGit() *gitxtest.Runner {
+	return &gitxtest.Runner{
+		Fail: func([]string) bool { return true },
+		Err:  errors.New("git unavailable"),
+	}
 }
 
 // fetchFailGit delegates to the real git for everything except `fetch`, which
 // always errors -- models an unreachable origin (offline clone, DNS failure,
-// revoked credentials) without touching any other probe.
-//
-// RunTimeout is overridden too, not just Run: fetchFailGit embeds gitx.Git,
-// so without this override inspectClone's type assertion to timeoutRunner
-// would find the real, promoted RunTimeout and bypass the fake entirely.
-type fetchFailGit struct{ gitx.Git }
-
-func (f fetchFailGit) Run(dir string, env []string, args ...string) (string, error) {
-	if len(args) > 0 && args[0] == "fetch" {
-		return "", errors.New("could not resolve host: origin")
+// revoked credentials) without touching any other probe. Real is set so both
+// Run and RunTimeout fall through to gitx.Git for every other command;
+// inspectClone's type assertion to timeoutRunner finds gitxtest.Runner's own
+// RunTimeout, which is what makes the `fetch` interception apply there too.
+func fetchFailGit() *gitxtest.Runner {
+	return &gitxtest.Runner{
+		Real: gitx.Git{},
+		Fail: func(args []string) bool { return len(args) > 0 && args[0] == "fetch" },
+		Err:  errors.New("could not resolve host: origin"),
 	}
-	return f.Git.Run(dir, env, args...)
-}
-
-func (f fetchFailGit) RunTimeout(dir string, env []string, timeout time.Duration, args ...string) (string, error) {
-	if len(args) > 0 && args[0] == "fetch" {
-		return "", errors.New("could not resolve host: origin")
-	}
-	return f.Git.RunTimeout(dir, env, timeout, args...)
 }
 
 // fakeLive stands in for a multiplexer that reports the queried session as live.
@@ -222,7 +214,7 @@ func TestStaleRemoteRefButCommitAlreadyUpstreamReapsClean(t *testing.T) {
 // into a hard block on a clean clone; that would make reap useless offline.
 func TestFetchFailureIsStalenessDisclaimerNotBlocker(t *testing.T) {
 	ws, _ := issueWorkspace(t)
-	st, err := InspectIssue(ws, fetchFailGit{}, nil, nil)
+	st, err := InspectIssue(ws, fetchFailGit(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +240,7 @@ func TestFetchFailureDisclaimerOnGenuinelyUnpushedWork(t *testing.T) {
 	if _, err := g.Run(clone, nil, "commit", "-qm", "precious"); err != nil {
 		t.Fatal(err)
 	}
-	st, err := InspectIssue(ws, fetchFailGit{}, nil, nil)
+	st, err := InspectIssue(ws, fetchFailGit(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +277,7 @@ func TestOpenPRBlocksReapButMergedDoesNot(t *testing.T) {
 // non-zero, and the old code left Dirty=false.
 func TestGitProbeFailureBlocksReap(t *testing.T) {
 	ws, _ := issueWorkspace(t)
-	st, err := InspectIssue(ws, failGit{}, nil, nil)
+	st, err := InspectIssue(ws, failGit(), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

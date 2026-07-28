@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/RiccardoCereghino/facet/internal/gitx"
+	"github.com/RiccardoCereghino/facet/internal/gitx/gitxtest"
 )
 
 func TestPathFor(t *testing.T) {
@@ -329,50 +330,45 @@ func TestHeartbeatKeepsLockFresh(t *testing.T) {
 	}
 }
 
-// fakeGit records the argv of every git invocation and pretends to succeed,
-// creating whatever HEAD/stamp files the code under test looks for.
-type fakeGit struct {
-	calls [][]string
-	// onClone, if set, runs when a `clone --mirror` is seen (to fabricate a repo).
-	onClone func(dst string)
-	// cloneErr, if set, is returned from a `clone --mirror` after onClone runs, to
-	// model a clone that died partway.
-	cloneErr error
+// mirrorFake returns a gitxtest.Runner standing in for a `git clone --mirror`:
+// onClone fabricates whatever files a real clone would have written, and the
+// returned Runner's Err field controls whether that clone then appears to
+// have died partway (nil, the default, means it succeeded).
+func mirrorFake(onClone func(dst string)) *gitxtest.Runner {
+	return &gitxtest.Runner{
+		OnCall: func(_ string, args []string) {
+			for _, a := range args {
+				if a == "--mirror" && onClone != nil {
+					onClone(args[len(args)-1])
+				}
+			}
+		},
+		Fail: func(args []string) bool {
+			for _, a := range args {
+				if a == "--mirror" {
+					return true
+				}
+			}
+			return false
+		},
+	}
 }
 
-func (f *fakeGit) Run(dir string, env []string, args ...string) (string, error) {
-	f.calls = append(f.calls, args)
-	for _, a := range args {
-		if a == "--mirror" {
-			if f.onClone != nil {
-				f.onClone(args[len(args)-1])
-			}
-			if f.cloneErr != nil {
-				return "", f.cloneErr
+func sawClone(fg *gitxtest.Runner) []string {
+	return fg.Call(func(a []string) bool {
+		for _, x := range a {
+			if x == "clone" {
+				return true
 			}
 		}
-	}
-	return "", nil
+		return false
+	})
 }
 
-func (f *fakeGit) sawClone() []string {
-	for _, c := range f.calls {
-		for _, a := range c {
-			if a == "clone" {
-				return c
-			}
-		}
-	}
-	return nil
-}
-
-func (f *fakeGit) sawFetch() bool {
-	for _, c := range f.calls {
-		if len(c) >= 2 && c[0] == "remote" && c[1] == "update" {
-			return true
-		}
-	}
-	return false
+func sawFetch(fg *gitxtest.Runner) bool {
+	return fg.Call(func(a []string) bool {
+		return len(a) >= 2 && a[0] == "remote" && a[1] == "update"
+	}) != nil
 }
 
 // Regression: `remote update` inside a deep mirror fails with "Filename too
@@ -380,15 +376,15 @@ func (f *fakeGit) sawFetch() bool {
 // command-level -c does not survive the clone.
 func TestMirrorClonePersistsLongPaths(t *testing.T) {
 	root := t.TempDir()
-	fg := &fakeGit{onClone: func(dst string) {
+	fg := mirrorFake(func(dst string) {
 		os.MkdirAll(dst, 0o777)
 		os.WriteFile(filepath.Join(dst, "HEAD"), []byte("ref: refs/heads/main\n"), 0o666)
-	}}
+	})
 	s := &Store{Root: root, Git: fg}
 	if _, err := s.Update("https://example.com/o/r.git"); err != nil {
 		t.Fatal(err)
 	}
-	clone := fg.sawClone()
+	clone := sawClone(fg)
 	if clone == nil {
 		t.Fatal("no clone issued")
 	}
@@ -412,14 +408,12 @@ func TestMirrorClonePersistsLongPaths(t *testing.T) {
 // re-clones cleanly rather than hardlinking from a half-written object store.
 func TestInterruptedCloneIsNotAdopted(t *testing.T) {
 	root := t.TempDir()
-	fg := &fakeGit{
-		onClone: func(dst string) {
-			// A clone that wrote HEAD into its (temp) destination, then died.
-			os.MkdirAll(dst, 0o777)
-			os.WriteFile(filepath.Join(dst, "HEAD"), []byte("ref: refs/heads/main\n"), 0o666)
-		},
-		cloneErr: errors.New("killed mid-clone"),
-	}
+	fg := mirrorFake(func(dst string) {
+		// A clone that wrote HEAD into its (temp) destination, then died.
+		os.MkdirAll(dst, 0o777)
+		os.WriteFile(filepath.Join(dst, "HEAD"), []byte("ref: refs/heads/main\n"), 0o666)
+	})
+	fg.Err = errors.New("killed mid-clone")
 	s := &Store{Root: root, Git: fg}
 	url := "https://example.com/o/r.git"
 
@@ -435,7 +429,7 @@ func TestInterruptedCloneIsNotAdopted(t *testing.T) {
 	}
 
 	// A subsequent successful Update must create the mirror cleanly.
-	fg.cloneErr = nil
+	fg.Err = nil
 	if _, err := s.Update(url); err != nil {
 		t.Fatalf("retry after a failed clone: %v", err)
 	}
@@ -448,24 +442,24 @@ func TestInterruptedCloneIsNotAdopted(t *testing.T) {
 // FETCH_HEAD, so an implementation keyed on that re-fetches on the next sync.
 func TestFreshMirrorIsNotRefetched(t *testing.T) {
 	root := t.TempDir()
-	fg := &fakeGit{onClone: func(dst string) {
+	fg := mirrorFake(func(dst string) {
 		os.MkdirAll(dst, 0o777)
 		os.WriteFile(filepath.Join(dst, "HEAD"), []byte("ref: refs/heads/main\n"), 0o666)
-	}}
+	})
 	s := &Store{Root: root, Git: fg}
 	url := "https://example.com/o/r.git"
 	if _, err := s.Update(url); err != nil {
 		t.Fatal(err)
 	}
-	if fg.sawFetch() {
+	if sawFetch(fg) {
 		t.Fatal("fetched immediately after creating the mirror")
 	}
 	// A second Update within MaxAge must not fetch either.
-	fg.calls = nil
+	fg.Calls = nil
 	if _, err := s.Update(url); err != nil {
 		t.Fatal(err)
 	}
-	if fg.sawFetch() {
+	if sawFetch(fg) {
 		t.Error("re-fetched a mirror younger than MaxAge")
 	}
 
@@ -475,11 +469,11 @@ func TestFreshMirrorIsNotRefetched(t *testing.T) {
 	if err := os.Chtimes(filepath.Join(path, stampFile), old, old); err != nil {
 		t.Fatal(err)
 	}
-	fg.calls = nil
+	fg.Calls = nil
 	if _, err := s.Update(url); err != nil {
 		t.Fatal(err)
 	}
-	if !fg.sawFetch() {
+	if !sawFetch(fg) {
 		t.Error("did not fetch a mirror older than MaxAge")
 	}
 }
