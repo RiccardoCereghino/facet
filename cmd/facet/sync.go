@@ -24,7 +24,7 @@ func newSyncCmd() *cobra.Command {
 			"An existing clone is never touched -- no pull, no reset, no clean -- because\n" +
 			"it may hold the only copy of unpushed work. --prune deletes only links.",
 		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		RunE: func(_ *cobra.Command, _ []string) error {
 			ws, err := config.ResolveWorkspace(path)
 			if err != nil {
 				return err
@@ -65,7 +65,7 @@ func newRestoreCmd() *cobra.Command {
 		Long: "Runs `sync --bootstrap` over every workspace under the workspaces root.\n" +
 			"Ephemeral issue workspaces are skipped: they are gitignored by design.",
 		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		RunE: func(_ *cobra.Command, _ []string) error {
 			dirs, err := workspace.Dirs(roots.Workspaces, false)
 			if err != nil {
 				return err

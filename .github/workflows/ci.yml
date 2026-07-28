@@ -31,6 +31,17 @@ env:
   # closed, which is the guard behaving correctly and the workflow being wrong.
   FACET_DENYLIST: ${{ secrets.FACET_DENYLIST }}
 
+# Third-party actions are pinned to full-length commit SHAs, per GitHub's
+# hardening guidance. A tag is mutable: `@v4` is a promise the upstream owner
+# can rewrite at any time, and it runs with a checkout of this repository. The
+# trailing comment is the human-readable version; the SHA is what actually runs.
+# Bump both together.
+#
+# The linter and govulncheck are no longer actions at all. They are `go run`
+# pins in the Makefile, so `make lint` on a laptop and `make lint` here are the
+# same version by construction rather than by two files agreeing -- which they
+# had stopped doing: the workflow pinned a linter release several versions
+# behind, and govulncheck ran as `@latest`, which is not a pin.
 jobs:
   # Tier 1 -- Linux, the cheap gate. Runs every check, on every push and every
   # pull request including drafts. This leg should catch essentially all
@@ -40,8 +51,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           # The major.minor series, not go.mod's exact `go 1.25.0`, plus
           # check-latest: setup-go would otherwise install exactly 1.25.0, and
@@ -51,31 +62,17 @@ jobs:
           go-version: '1.25'
           check-latest: true
 
-      - name: gofmt
-        run: |
-          unformatted=$(gofmt -l .)
-          if [ -n "$unformatted" ]; then
-            echo "these files need gofmt:"
-            echo "$unformatted"
-            exit 1
-          fi
-
-      - run: go build ./...
-      - run: go vet ./...
-
-      # staticcheck, errcheck and unused, configured in .golangci.yml. Run via
-      # the action rather than a go.mod tool directive: the directive would drag
-      # golangci-lint's whole dependency tree into this module's go.sum, which
-      # for a module with two direct dependencies is a poor trade.
-      - name: lint
-        uses: golangci/golangci-lint-action@v8
-        with:
-          version: v2.6.2
-
-      - name: govulncheck
-        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
-
-      - run: go test -race ./...
+      # One step per gate: `make check` locally, split here so a red run names
+      # the gate in the UI instead of collapsing to "make failed". The commands
+      # and the tool versions live only in the Makefile, so CI and a developer
+      # machine cannot disagree about what passing means.
+      - run: make build
+      - run: make fmt
+      - run: make vet
+      - run: make lint
+      - run: make test
+      - run: make tidy
+      - run: make vuln
 
   # Tier 2 -- the other platforms, deliberately gated behind Linux and
   # deliberately narrower.
@@ -104,7 +101,7 @@ jobs:
   #
   # `windows` is named as its own job so a secondary platform's red is still
   # reported as a distinct result. What that red means for what may be merged is
-  # the platform policy in CONTRIBUTING.md.
+  # the platform policy in docs/CODE.md.
   #
   # Never add a tolerance construct (continue-on-error, if: always(), || true)
   # to any job here. The tiering is about when a check runs, never about whether
@@ -116,13 +113,13 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: '1.25' # newest patch of the series; see the linux job
           check-latest: true
-      - run: go build ./...
-      - run: go test -race ./...
+      - run: make build
+      - run: make test
 
   windows:
     name: windows
@@ -131,10 +128,10 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: '1.25' # newest patch of the series; see the linux job
           check-latest: true
-      - run: go build ./...
-      - run: go test -race ./...
+      - run: make build
+      - run: make test

@@ -121,7 +121,7 @@ type RemoveResult struct {
 // A link loses its reparse point; the real project under ProjectsRoot is
 // untouched. A clone loses only its manifest entry -- the checkout stays on
 // disk, because it may hold the only copy of unpushed work. Delete it yourself.
-func Remove(ws string, name string, rep Reporter) (*RemoveResult, error) {
+func Remove(ws string, name string, _ Reporter) (*RemoveResult, error) {
 	m, err := manifest.Read(ws)
 	if err != nil {
 		return nil, err

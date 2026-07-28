@@ -433,7 +433,7 @@ func TestReapDeletesReadOnlyGitObjects(t *testing.T) {
 	ws, clone := issueWorkspace(t)
 	// Confirm the fixture really has read-only objects to trip over.
 	var sawReadOnly bool
-	_ = filepath.Walk(filepath.Join(clone, ".git", "objects"), func(p string, fi os.FileInfo, err error) error {
+	_ = filepath.Walk(filepath.Join(clone, ".git", "objects"), func(_ string, fi os.FileInfo, err error) error {
 		if err == nil && fi != nil && !fi.IsDir() && fi.Mode().Perm()&0o200 == 0 {
 			sawReadOnly = true
 		}

@@ -19,7 +19,7 @@ func newLsCmd() *cobra.Command {
 		Use:   "ls",
 		Short: "List a workspace's entries and their state on disk, or every workspace at a workspaces root",
 		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		RunE: func(_ *cobra.Command, _ []string) error {
 			ws, err := config.ResolveWorkspace(path)
 			if err != nil {
 				return err

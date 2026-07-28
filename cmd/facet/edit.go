@@ -39,7 +39,7 @@ func newNewCmd() *cobra.Command {
 			"a junction into a shared repo under the projects root, whose working tree every\n" +
 			"linking workspace sees at once.",
 		Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			cl, err := pairs("clone", clones)
 			if err != nil {
 				return err
@@ -87,7 +87,7 @@ func newAddCloneCmd() *cobra.Command {
 		Use:   "clone <dir> <giturl>",
 		Short: "Add a checkout the workspace owns outright",
 		Args:  cobra.ExactArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			ws, err := config.ResolveWorkspace(path)
 			if err != nil {
 				return err
@@ -127,7 +127,7 @@ func newAddLinkCmd() *cobra.Command {
 		Long: "Every workspace linking a project sees one working tree: one branch, one\n" +
 			"dirty index. Use a clone when a workspace must not share.",
 		Args: cobra.ExactArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			ws, err := config.ResolveWorkspace(path)
 			if err != nil {
 				return err
@@ -153,7 +153,7 @@ func newRmCmd() *cobra.Command {
 			"A clone loses only its manifest entry. Its checkout stays on disk, because it\n" +
 			"may hold the only copy of unpushed work -- delete it yourself, after pushing.",
 		Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, args []string) error {
 			ws, err := config.ResolveWorkspace(path)
 			if err != nil {
 				return err

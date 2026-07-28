@@ -8,6 +8,7 @@ package gitx
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -89,20 +90,12 @@ func run(ctx context.Context, dir string, env []string, args ...string) (string,
 	if err := cmd.Run(); err != nil {
 		code := -1
 		var ee *exec.ExitError
-		if ok := asExitError(err, &ee); ok {
+		if errors.As(err, &ee) {
 			code = ee.ExitCode()
 		}
 		return strings.TrimSpace(stdout.String()), &Error{Args: args, ExitCode: code, Stderr: stderr.String()}
 	}
 	return strings.TrimSpace(stdout.String()), nil
-}
-
-func asExitError(err error, target **exec.ExitError) bool {
-	ee, ok := err.(*exec.ExitError)
-	if ok {
-		*target = ee
-	}
-	return ok
 }
 
 // IsRepo reports whether dir contains a git repository.

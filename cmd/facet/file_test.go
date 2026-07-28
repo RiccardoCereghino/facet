@@ -47,16 +47,16 @@ func (f *fakeGH) key(repo string, number int) string {
 	return repo + "#" + strconv.Itoa(number)
 }
 
-func (f *fakeGH) ViewIssue(repo string, number int) (*ghx.Issue, error) { return nil, nil }
-func (f *fakeGH) DevelopBranch(repo string, number int, base, name string) (string, error) {
+func (f *fakeGH) ViewIssue(_ string, _ int) (*ghx.Issue, error) { return nil, nil }
+func (f *fakeGH) DevelopBranch(_ string, _ int, _, _ string) (string, error) {
 	return "", nil
 }
-func (f *fakeGH) BranchesFor(repo string, number int) ([]string, error)          { return nil, nil }
-func (f *fakeGH) ViewPR(repo, branch string) (*ghx.PR, error)                    { return nil, nil }
-func (f *fakeGH) SetIssueStatus(target ghx.ProjectTarget, issueURL string) error { return nil }
-func (f *fakeGH) SetIssueBody(repo string, number int, body string) error        { return nil }
-func (f *fakeGH) SearchIssues(repo, terms string) ([]ghx.Issue, error)           { return nil, nil }
-func (f *fakeGH) CreateIssue(repo, title, body string, labels []string) (string, error) {
+func (f *fakeGH) BranchesFor(_ string, _ int) ([]string, error)      { return nil, nil }
+func (f *fakeGH) ViewPR(_, _ string) (*ghx.PR, error)                { return nil, nil }
+func (f *fakeGH) SetIssueStatus(_ ghx.ProjectTarget, _ string) error { return nil }
+func (f *fakeGH) SetIssueBody(_ string, _ int, _ string) error       { return nil }
+func (f *fakeGH) SearchIssues(_, _ string) ([]ghx.Issue, error)      { return nil, nil }
+func (f *fakeGH) CreateIssue(_, _, _ string, _ []string) (string, error) {
 	return f.createURL, nil
 }
 

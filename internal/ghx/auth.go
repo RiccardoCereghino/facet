@@ -35,13 +35,13 @@ import (
 type CredentialState int
 
 const (
-	// StateUnconfirmed: a credential may well be configured and gh could not
+	// StateUnconfirmed means a credential may well be configured and gh could not
 	// confirm it -- or gh said something this code does not recognise. Either
 	// way the credential must not be assumed missing.
 	StateUnconfirmed CredentialState = iota
-	// StateConfirmed: gh checked the credential with the forge and it is good.
+	// StateConfirmed means gh checked the credential with the forge and it is good.
 	StateConfirmed
-	// StateAbsent: gh positively reported that there is no credential.
+	// StateAbsent means gh positively reported that there is no credential.
 	StateAbsent
 )
 
@@ -234,8 +234,8 @@ func parseLoginLine(line string) (host, account, source string) {
 		}
 	}
 	if open := strings.LastIndex(line, "("); open != -1 {
-		if close := strings.LastIndex(line, ")"); close > open {
-			source = line[open+1 : close]
+		if shut := strings.LastIndex(line, ")"); shut > open {
+			source = line[open+1 : shut]
 		}
 	}
 	return host, account, source

@@ -45,7 +45,7 @@ func main() {
 		Version:       buildVersion(),
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
 			var err error
 			roots, err = config.Load()
 			return err
