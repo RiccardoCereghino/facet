@@ -81,6 +81,7 @@ func run(ctx context.Context, dir string, env []string, args ...string) (string,
 	}
 	if _, ok := ctx.Deadline(); ok {
 		cmd.WaitDelay = waitDelay
+		configureCancel(cmd)
 	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
