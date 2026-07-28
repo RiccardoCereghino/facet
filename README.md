@@ -260,9 +260,10 @@ directory out from under something still running in it.
 
 ## The credential preflight
 
-Everything facet does on the forge rides one `gh` credential, and so does
-everything prism and every agent session does. On 2026-07-27 that credential was
-invalidated with no announcement, and the fleet found out mid-operation.
+Everything facet does on the forge rides one `gh` credential, shared with
+every other tool and agent session on the machine. That credential has been
+invalidated before with no announcement, and the fault was found mid-operation
+rather than up front.
 
 `facet preflight` checks the credential surface before it is needed:
 

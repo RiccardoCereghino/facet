@@ -5,8 +5,8 @@ import (
 	"testing"
 )
 
-// healthy is the real `gh auth status` output from the mini on 2026-07-27,
-// after the sculptor's swap to a classic PAT. gh masks the token itself.
+// healthy is real `gh auth status` output using a classic PAT. gh masks the
+// token itself.
 const healthy = `github.com
   ✓ Logged in to github.com account RiccardoCereghino (/Users/cerre/.config/gh/hosts.yml)
   - Active account: true

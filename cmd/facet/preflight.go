@@ -9,7 +9,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newPreflightCmd checks the credential surface the whole fleet shares.
+// newPreflightCmd checks the credential surface every command here shares.
 //
 // Like newVersionCmd it overrides the root's config-loading pre-run with a
 // no-op. A credential check must work anywhere -- outside a workspaces root,
@@ -18,10 +18,10 @@ import (
 func newPreflightCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "preflight",
-		Short: "Check the GitHub credential the fleet depends on",
+		Short: "Check the GitHub credential facet depends on",
 		Long: "Reports whether this machine holds a usable GitHub credential: logged in and\n" +
 			"active, the right account, a token type that cannot be rotated out from under\n" +
-			"us, the scopes the fleet actually calls, git talking SSH, and the push key\n" +
+			"us, the scopes facet actually calls, git talking SSH, and the push key\n" +
 			"present.\n\n" +
 			"It reads `gh auth status` and nothing else. That is the point: gh reports a\n" +
 			"credential as invalid WITHOUT a valid credential, so this check does not go\n" +
@@ -38,7 +38,7 @@ func newPreflightCmd() *cobra.Command {
 
 // runPreflight prints one line per check and fails if any problem was found.
 func runPreflight(w io.Writer) error {
-	req := ghx.FleetRequirements()
+	req := ghx.DefaultRequirements()
 	probs, notes, st, err := preflight(req)
 	if err != nil {
 		return err
@@ -120,7 +120,7 @@ func preflight(req ghx.Requirements) (probs []ghx.Problem, notes []string, st *g
 // before doing anything else. It fails loudly and names the command, so the
 // refusal is legible at the point of use rather than three calls deeper.
 func requirePreflight(w io.Writer, what string) error {
-	probs, notes, _, err := preflight(ghx.FleetRequirements())
+	probs, notes, _, err := preflight(ghx.DefaultRequirements())
 	if err != nil {
 		return err
 	}

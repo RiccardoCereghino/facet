@@ -168,9 +168,9 @@ func TestUnpushedCommitsOnBranchWithNoUpstreamBlockReap(t *testing.T) {
 
 // A clone that has never re-fetched since a PR branch was merged and deleted
 // upstream must not judge that commit as unpushed just because its own
-// origin/* refs are stale -- reap must fetch first. This reproduces the
-// mandate-3 teardown bug: the commit is landed on origin under a different
-// branch name (never the checked-out default -- pushing onto that trips
+// origin/* refs are stale -- reap must fetch first. This reproduces a real
+// teardown bug found in practice: the commit is landed on origin under a
+// different branch name (never the checked-out default -- pushing onto that trips
 // git's receive.denyCurrentBranch on the non-bare origin fixture) while the
 // workspace clone's own remote-tracking refs are left exactly as they were
 // at Sync time.

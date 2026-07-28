@@ -8,8 +8,8 @@ import (
 	"strings"
 )
 
-// Requirements is what the fleet needs to be true of its GitHub credential
-// before any command that depends on it runs.
+// Requirements is what must be true of a GitHub credential before any
+// command that depends on it runs.
 type Requirements struct {
 	// Scopes must all be present.
 	Scopes []string
@@ -29,7 +29,7 @@ type Requirements struct {
 // a check whose reason is not written down is a check the next operator deletes.
 type Problem struct {
 	Check string // what was checked
-	Want  string // what the fleet requires
+	Want  string // what is required
 	Got   string // what is actually there
 	Why   string // the incident or invariant the check exists for
 }
@@ -38,9 +38,9 @@ func (p Problem) String() string {
 	return fmt.Sprintf("%s: want %s, got %s\n    why: %s", p.Check, p.Want, p.Got, p.Why)
 }
 
-// FleetRequirements is the standing requirement set for this fleet, as ruled on
-// stele#55. Each entry's reasoning is carried in the Problem it produces.
-func FleetRequirements() Requirements {
+// DefaultRequirements is the standing requirement set this preflight checks
+// against. Each entry's reasoning is carried in the Problem it produces.
+func DefaultRequirements() Requirements {
 	return Requirements{
 		Scopes:              []string{"repo", "read:org", "workflow"},
 		GitProtocol:         "ssh",
@@ -50,7 +50,7 @@ func FleetRequirements() Requirements {
 	}
 }
 
-// DefaultSSHKey is the key every push the fleet makes authenticates with. It
+// DefaultSSHKey is the key every push authenticates with. It
 // returns "" when the home directory cannot be determined, which skips the
 // check rather than inventing a path.
 func DefaultSSHKey() string {
@@ -78,8 +78,8 @@ func Check(st *AuthStatus, req Requirements) []Problem {
 	// nothing at all, so it takes the cautious branch with the rest.
 	if st != nil && st.State == StateAbsent {
 		add("logged in", "a credential for github.com", "none",
-			"this is the fault itself: on 2026-07-27 the fleet lost GitHub access "+
-				"mid-teardown and found out by trying to use it. gh reports this "+
+			"this is the fault itself: this machine has lost GitHub access "+
+				"mid-operation before and found out by trying to use it. gh reports this "+
 				"without needing a working token, so it can be checked first.")
 		// Everything below reads fields that are meaningless when logged out.
 		return probs
@@ -98,9 +98,9 @@ func Check(st *AuthStatus, req Requirements) []Problem {
 				"neither can this check. Your credential may be perfectly fine. "+
 				"gh's own advice here ('To re-authenticate, run: gh auth login' / "+
 				"'To forget about this account, run: gh auth logout') will DESTROY a "+
-				"working credential if the real problem is the network, and this "+
-				"fleet has already had a ~72-second no-credential window from "+
-				"exactly that move (stele#55). Check connectivity FIRST -- `curl -sS "+
+				"working credential if the real problem is the network, and this has "+
+				"already caused a ~72-second no-credential window from exactly that "+
+				"move. Check connectivity FIRST -- `curl -sS "+
 				"-o /dev/null -w '%{http_code}' https://api.github.com` -- and only "+
 				"reissue if the network is fine.")
 		// The X-shaped output carries no Token or scopes lines at all, so every
@@ -129,7 +129,7 @@ func Check(st *AuthStatus, req Requirements) []Problem {
 					"container, a Codespace -- silently invalidates this one. That is "+
 					"the root cause of the 2026-07-27 outage. A classic or fine-grained "+
 					"PAT is a distinct credential and cannot be rotated out from under "+
-					"the fleet by someone else's login.")
+					"this one by someone else's login.")
 		}
 	}
 	if st.TokenType == "" {
@@ -142,8 +142,8 @@ func Check(st *AuthStatus, req Requirements) []Problem {
 		add("token scopes", strings.Join(req.Scopes, ", "), scopesGot(st.Scopes),
 			"missing: "+strings.Join(missing, ", ")+". read:org is REQUIRED by "+
 				"`gh auth login --with-token` on a classic token, not an optional "+
-				"grant. repo carries every issue, PR and search call facet and prism "+
-				"make. workflow is needed for any gh-mediated workflow-file operation; "+
+				"grant. repo carries every issue, PR and search call this credential "+
+				"is used for. workflow is needed for any gh-mediated workflow-file operation; "+
 				"pushes are SSH so they never surfaced the gap. A valid but "+
 				"scope-short token is the hardest failure to attribute, because "+
 				"everything else looks green.")
@@ -164,8 +164,8 @@ func Check(st *AuthStatus, req Requirements) []Problem {
 
 // sshKeyWhy is the reason attached to every SSH-key problem.
 const sshKeyWhy = "the token authenticates the API; this key authenticates every push " +
-	"the fleet makes. Nothing checked it before stele#55, so half the credential " +
-	"surface was unmonitored. SSH cannot replace the token -- GitHub's API does " +
+	"made with it. Until this preflight existed, nothing checked it, so half the " +
+	"credential surface was unmonitored. SSH cannot replace the token -- GitHub's API does " +
 	"not accept SSH authentication -- so both must hold, independently."
 
 // CheckSSHKey reports whether the key git actually pushes with is present and
@@ -189,7 +189,7 @@ const sshKeyWhy = "the token authenticates the API; this key authenticates every
 // can actually read the file. Win32-OpenSSH does enforce an ACL rule of its
 // own, so a real check IS expressible there; it needs DACL enumeration via
 // golang.org/x/sys/windows, which is a new dependency and a body of code that
-// cannot be exercised on the machine this fleet runs on. Rather than ship a
+// cannot be exercised on any machine this project currently runs on. Rather than ship a
 // mode test that is meaningless on Windows, or drop the check to get a green
 // tick, the permission half declares itself not applicable and says why. See
 // keyPermission, which has one implementation per platform.
