@@ -157,19 +157,10 @@ listing.
 
 ## CI
 
-`.github/workflows/ci.yml` runs in two tiers:
-
-1. **Linux**, on every push and every pull request including drafts: formatting,
-   build, vet, race tests, lint, vulnerability check, and the privacy guard.
-2. **macOS and Windows**, gated behind Linux passing, and skipped on draft pull
-   requests and on pull requests not targeting `main`. Build and test only — every
-   other gate is platform-independent by construction, so running it three times
-   buys nothing.
-
-The tiering is for feedback quality, not billing: this is a public repository, so
-GitHub-hosted runners cost nothing on any OS. A formatting slip should fail in
-under a minute rather than after three platform runs finish in parallel, and work
-in progress should not queue three runners to learn the same thing twice.
+`.github/workflows/ci.yml` covers Linux and macOS; `ci-windows.yml` covers
+Windows in a workflow of its own, so that a secondary platform's red is reported
+as a distinct result rather than folded into the primary one. Between them they
+run formatting, build, vet, race tests, and the privacy guard.
 
 **Any new gate must be demonstrated failing on a deliberate violation, then
 green,** with both runs linked from the pull request that adds it. A gate never
@@ -183,8 +174,8 @@ comments, commit messages, pull request bodies.
 - **No private repository names, no foreign issue references, no
   employer-internal terms** — in source, docs, workflows, or commit messages.
 - A bare `#123` is an issue in *this* repository and is fine. A qualified
-  `something#123` or `owner/repo#123` is a coordinate in somewhere else, means
-  nothing to an outside reader, and must not appear.
+  reference — a project name followed by `#` and a number, or an `owner/repo#`
+  form — points somewhere an outside reader cannot follow, and must not appear.
 - **Keep the reasoning, drop the coordinate.** A comment explaining *why* a check
   exists is valuable; the ticket number it came from is not, outside the tracker
   that holds it. Rewrite it as a self-contained explanation.
@@ -194,17 +185,16 @@ comments, commit messages, pull request bodies.
   particular force to test fixtures for the guards below: use synthetic examples,
   built so the fixture cannot trip the repo-wide scan it lives beside.
 
-Two guards in `internal/privacy` enforce this mechanically, each failing
-distinctly so a red build says what it caught:
+`internal/privacy` enforces the first of these mechanically: an
+organisation-name scan whose word list is supplied out of band (a
+`FACET_DENYLIST` secret, or a gitignored `.denylist`) because committing the
+list of forbidden names would be the disclosure it prevents. It fails rather
+than skips in CI when unconfigured — a guard that passes having checked nothing
+is a hole, not a pass.
 
-- an organisation-name scan, whose word list is supplied out of band (a
-  `FACET_DENYLIST` secret or a gitignored `.denylist`) because committing the
-  list of forbidden names would be the disclosure it prevents. It fails rather
-  than skips in CI when unconfigured: a guard that passes having checked nothing
-  is a hole.
-- a pattern scan for the qualified-issue-reference shape above, which the word
-  list structurally cannot catch because it is a pattern rather than a fixed word.
-  It needs no secret, so it also runs for an outside contributor.
+The qualified-reference rule is not yet mechanised: a fixed word list
+structurally cannot catch a *pattern*. Until it is, that one is on the author
+and the reviewer.
 
 ## Working on a change
 
@@ -212,8 +202,7 @@ distinctly so a red build says what it caught:
 go build ./... && go vet ./... && gofmt -l . && go test -race ./...
 ```
 
-Then the linter, pinned to the version CI uses — see the `golangci-lint-action`
-step in `.github/workflows/ci.yml`.
+That is what CI runs, so a green run locally means a green run there.
 
 **Keep behaviour changes out of refactors.** A diff that both moves code and
 changes what it does cannot be reviewed as either. If a refactor turns up a
