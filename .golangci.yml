@@ -1,20 +1,56 @@
 version: "2"
 
-# Three linters, chosen rather than inherited. staticcheck for correctness
-# findings the compiler and `go vet` do not make; errcheck because this codebase
-# shells out and writes files constantly, and an ignored error there is a silent
-# partial success; unused to stop dead code accumulating.
+# Chosen rather than inherited, and converged with the other Go repositories in
+# this fleet onto one shared baseline.
+#
+# `default: standard` is golangci-lint's own recommended set — errcheck, govet,
+# ineffassign, staticcheck, unused. This file used to say `default: none` plus
+# three of those five, which reads as the stricter choice and was the looser
+# one: govet ran only because CI invoked it separately, and ineffassign did not
+# run at all. It reported nothing when finally switched on, which is the reason
+# to keep it rather than a reason it was not needed.
 linters:
-  default: none
+  default: standard
   enable:
-    - errcheck
-    - staticcheck
-    - unused
+    - bodyclose # a leaked response body is an fd held for the process's life
+    - errorlint # a type assertion or == on an error stops matching once wrapped
+    - misspell
+    - revive # doc comments on exported identifiers; unused params
+
+  settings:
+    misspell:
+      # `hardlinked` is a correct technical term here, and misspell reports it
+      # as a misspelling of `hardline` in four files. Across every Go repository
+      # in this fleet misspell has never reported a real misspelling, so this
+      # entry is the linter's entire cost — written down once rather than
+      # rediscovered and argued about.
+      #
+      # The key is `ignore-rules`; `ignore-words` fails `config verify` on v2.
+      ignore-rules:
+        - hardlinked
+
+# errcheck deliberately runs with **no exclusions at all**, and this repository
+# has none to report. Worth keeping and worth stating: an exclusion list hides a
+# category, and categories acquire new members without anyone deciding. Where an
+# error genuinely has no caller left to inform, the discard is written `_ =` at
+# the call site — which errcheck accepts as an explicit decision, and which a
+# reader can see.
 
 issues:
   # Report every finding, not a sample. The defaults cap repeated identical
-  # messages at 3, which is fine for failing a build but actively misleading
-  # when you are trying to fix them: successive runs show a different arbitrary
-  # 3 of N and the totals still agree, so it reads as non-determinism.
+  # messages at 3 and findings per linter at 50, which is fine for failing a
+  # build but actively misleading when you are trying to fix them: successive
+  # runs show a different arbitrary 3 of N and the totals still agree, so it
+  # reads as non-determinism rather than as truncation.
   max-same-issues: 0
   max-issues-per-linter: 0
+
+formatters:
+  enable:
+    - gofmt
+  settings:
+    gofmt:
+      # -s as well as plain formatting: it catches redundant composite-literal
+      # types and slice expressions that plain gofmt accepts. Free, and this
+      # tree is already clean under it.
+      simplify: true

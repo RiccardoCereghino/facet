@@ -281,6 +281,7 @@ func tmuxOutput(args ...string) (string, error) {
 	return string(out), err
 }
 
+// Name identifies this launcher in diagnostics and in the manifest.
 func (Tmux) Name() string { return "tmux" }
 
 // Available reports whether tmux is installed. Native Windows has no tmux;
@@ -526,10 +527,14 @@ func LayoutOverride(workspacesRoot string) string {
 	return filepath.Join(workspacesRoot, ".tools", "issue-layout.sh")
 }
 
+// Attach replaces the current process with a tmux client attached to name.
+// The `=` prefix makes the target an exact match rather than a prefix, so a
+// session whose name is a prefix of another cannot be attached by accident.
 func (Tmux) Attach(name string) error {
 	return passthrough("tmux", "attach-session", "-t", "="+name)
 }
 
+// Kill ends the session, and reports success when there was nothing to kill.
 func (Tmux) Kill(name string) error {
 	// Killing a session that never existed makes tmux exit non-zero, which is
 	// not an error worth surfacing.
@@ -537,6 +542,7 @@ func (Tmux) Kill(name string) error {
 	return nil
 }
 
+// AttachCommand is the command a human can paste to attach themselves.
 func (Tmux) AttachCommand(name string) string { return "tmux attach -t =" + name }
 
 // -----------------------------------------------------------------------------
@@ -546,8 +552,10 @@ func (Tmux) AttachCommand(name string) string { return "tmux attach -t =" + name
 // so this is a degraded mode, not an equal one.
 type WindowsTerminal struct{}
 
+// Name identifies this launcher in diagnostics and in the manifest.
 func (WindowsTerminal) Name() string { return "windows-terminal" }
 
+// Available reports whether the Windows Terminal executable is on PATH.
 func (WindowsTerminal) Available() bool {
 	_, err := exec.LookPath("wt")
 	return err == nil
@@ -567,12 +575,17 @@ func (WindowsTerminal) Start(s Session) (string, error) {
 	return "", exec.Command("wt", args...).Start()
 }
 
+// Attach always fails: see the type doc. A closed tab is gone, so there is
+// nothing to attach to and pretending otherwise would hide the degradation.
 func (WindowsTerminal) Attach(string) error {
 	return fmt.Errorf("windows-terminal tabs cannot be re-attached once closed")
 }
 
+// Kill is a no-op: facet holds no handle to a tab, so it cannot close one.
 func (WindowsTerminal) Kill(string) error { return nil }
 
+// AttachCommand explains, rather than instructs, because there is no command
+// that would work.
 func (WindowsTerminal) AttachCommand(string) string {
 	return "(windows-terminal: reopen manually; tabs cannot be re-attached)"
 }

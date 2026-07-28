@@ -33,12 +33,31 @@ func (r Reporter) line(sym, format string, a ...any) {
 	}
 	_, _ = fmt.Fprintf(r.W, "  %s %s\n", sym, fmt.Sprintf(format, a...))
 }
+
+// The reporting verbs below each prefix one line with a symbol, so a sync's
+// output can be skimmed for what actually changed. They are separate methods
+// rather than one taking a symbol because the call sites read as sentences and
+// the symbol vocabulary stays in one place.
+
+// Unchanged reports an entry that was already correct.
 func (r Reporter) Unchanged(f string, a ...any) { r.line("=", f, a...) }
-func (r Reporter) Created(f string, a ...any)   { r.line("+", f, a...) }
-func (r Reporter) Working(f string, a ...any)   { r.line("v", f, a...) }
-func (r Reporter) Pruned(f string, a ...any)    { r.line("-", f, a...) }
-func (r Reporter) Warn(f string, a ...any)      { r.line("!", f, a...) }
-func (r Reporter) Note(f string, a ...any)      { r.line("~", f, a...) }
+
+// Created reports an entry brought into existence.
+func (r Reporter) Created(f string, a ...any) { r.line("+", f, a...) }
+
+// Working reports an entry that is being acted on.
+func (r Reporter) Working(f string, a ...any) { r.line("v", f, a...) }
+
+// Pruned reports an entry removed because the manifest no longer names it.
+func (r Reporter) Pruned(f string, a ...any) { r.line("-", f, a...) }
+
+// Warn reports something the operator should look at, without failing.
+func (r Reporter) Warn(f string, a ...any) { r.line("!", f, a...) }
+
+// Note reports incidental detail.
+func (r Reporter) Note(f string, a ...any) { r.line("~", f, a...) }
+
+// Header writes an unindented, unprefixed line introducing a group.
 func (r Reporter) Header(f string, a ...any) {
 	if r.W != nil {
 		_, _ = fmt.Fprintf(r.W, "%s\n", fmt.Sprintf(f, a...))
@@ -57,6 +76,8 @@ type SourceResolver interface {
 // DirectSource clones straight from the canonical URL.
 type DirectSource struct{}
 
+// Resolve returns the canonical URL unchanged: a direct clone needs no
+// rewriting of origin afterwards.
 func (DirectSource) Resolve(url string) (string, string, error) { return url, "", nil }
 
 // SyncOptions controls Sync.

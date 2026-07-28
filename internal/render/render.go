@@ -211,7 +211,7 @@ func sanitizeInline(s string) string {
 }
 
 // Slug turns an issue title into a short, filesystem-safe branch component.
-func Slug(title string, max int) string {
+func Slug(title string, limit int) string {
 	var b strings.Builder
 	lastDash := true // suppress a leading dash
 	for _, r := range strings.ToLower(title) {
@@ -227,10 +227,10 @@ func Slug(title string, max int) string {
 		}
 	}
 	s := strings.Trim(b.String(), "-")
-	if max > 0 && len(s) > max {
-		s = s[:max]
+	if limit > 0 && len(s) > limit {
+		s = s[:limit]
 		// Do not end mid-word.
-		if i := strings.LastIndexByte(s, '-'); i > max/2 {
+		if i := strings.LastIndexByte(s, '-'); i > limit/2 {
 			s = s[:i]
 		}
 		s = strings.Trim(s, "-")

@@ -244,7 +244,7 @@ func TestUpdateIsIdempotentAndLocked(t *testing.T) {
 func TestStaleLockIsBroken(t *testing.T) {
 	root := t.TempDir()
 	var warnings []string
-	store := &Store{Root: root, Git: gitx.Git{}, Warn: func(f string, a ...any) { warnings = append(warnings, f) }}
+	store := &Store{Root: root, Git: gitx.Git{}, Warn: func(f string, _ ...any) { warnings = append(warnings, f) }}
 	target := filepath.Join(root, "probe.git")
 	lock := target + ".lock"
 	if err := os.WriteFile(lock, []byte("pid 1\n"), 0o644); err != nil {
@@ -507,7 +507,7 @@ func TestWarnOnStaleFetchIsNotFatal(t *testing.T) {
 	var warnings []string
 	store := &Store{
 		Root: filepath.Join(root, "mirrors"), Git: gitx.Git{}, MaxAge: -1, // always stale
-		Warn: func(f string, a ...any) { warnings = append(warnings, f) },
+		Warn: func(f string, _ ...any) { warnings = append(warnings, f) },
 	}
 	got, err := store.Update("https://example.com/o/r.git")
 	if err != nil {

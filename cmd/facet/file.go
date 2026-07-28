@@ -33,7 +33,7 @@ func newFileCmd() *cobra.Command {
 			"Do not pass a `bug` or `enhancement` label expecting a type: apply the label and\n" +
 			"let the intake workflow convert it. `gh` has no --type flag to give us.",
 		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(_ *cobra.Command, _ []string) error {
 			return runFile(fileOpts{
 				Repo: repo, Title: title, Body: body, BodyFile: bodyFile,
 				Labels: labels, Repos: repos, Force: force, DryRun: dryRun,

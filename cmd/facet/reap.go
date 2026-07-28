@@ -19,7 +19,7 @@ func newIssuesCmd() *cobra.Command {
 		Use:   "issues",
 		Short: "List every ephemeral issue workspace and whether it can be reaped",
 		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		RunE: func(_ *cobra.Command, _ []string) error {
 			var pr workspace.PRLookup
 			if !offline {
 				pr = gh
@@ -83,7 +83,7 @@ func newReapCmd() *cobra.Command {
 			"The shared mirror is never touched: a clone's objects are hardlinks, so\n" +
 			"deleting the workspace drops those names and leaves the mirror's own intact.",
 		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		RunE: func(_ *cobra.Command, _ []string) error {
 			ws, err := config.ResolveWorkspace(path)
 			if err != nil {
 				return err
