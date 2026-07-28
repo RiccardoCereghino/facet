@@ -1,12 +1,12 @@
 name: CI Windows
 
-# Windows is split from the primary `CI` workflow deliberately: it runs the
-# same tests, but its red does not gate merges the way a Linux/macOS red
-# does -- a secondary platform's failure blocks new features, not existing
-# merges. Do not move Windows back into ci.yml's matrix, and do not add any
-# tolerance construct (continue-on-error, if: always(), || true) here or in
-# ci.yml -- the carve-out is which workflow reports the result, not whether
-# the result is checked.
+# Windows is split from the primary `CI` workflow deliberately, so that a
+# secondary platform's red is reported as its own result. What that red means
+# for what may be merged is the platform policy in CONTRIBUTING.md.
+#
+# Never add a tolerance construct (continue-on-error, if: always(), || true)
+# here or in ci.yml. The carve-out is which workflow reports the result, not
+# whether the result is checked.
 
 on:
   push:
