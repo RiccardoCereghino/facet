@@ -68,7 +68,7 @@ func lsRoot(root string, dirs []string) error {
 	fmt.Printf("%s -- workspaces root\n\n", root)
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "WORKSPACE\tENTRIES\tHEALTH")
+	_, _ = fmt.Fprintln(w, "WORKSPACE\tENTRIES\tHEALTH")
 	for _, dir := range dirs {
 		name := filepath.Base(dir)
 		_, entries, err := workspace.List(roots, dir, git)
