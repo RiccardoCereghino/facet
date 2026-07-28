@@ -8,6 +8,43 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`spawn` records who a workspace belongs to, in `.seat` and `.scope`.**
+  `--seat` is now required and names the seat the workspace is created for; it
+  is written to `.seat` at the workspace root, one line. `.scope` lists the
+  issues the workspace legitimately covers, one `owner/repo#n` per line — the
+  spawned issue always, plus any `--scope owner/repo#n` given, because one
+  worker regularly carries a coherent group of issues rather than exactly one,
+  which neither the manifest's single issue number nor the branch name can
+  express.
+
+  Both files are written by the command that *creates* the workspace and never
+  by whatever works in it afterwards, which is the whole property: an identity a
+  thing asserts about itself is not evidence of anything. The mechanism this
+  replaces was an environment variable that every session could set to any
+  value. The honest ceiling, stated because it should not be oversold: files on
+  disk defeat accidents — a stale export, a typo, a command pasted from
+  elsewhere — and do not defeat deliberate tampering, since the agent runs as
+  the same user. A per-seat credential is the step up and composes with this
+  rather than replacing it.
+
+  Both are written and then **read back**, because a write that reports success
+  and does not land is this project's most repeated failure mode.
+
+  `facet scope list` prints them and `facet scope add owner/repo#n` extends the
+  scope, both resolving the workspace by walking **up** from the working
+  directory: the work happens inside a repository subdirectory, and the leaf of
+  that path is the repository's name rather than the workspace's.
+
+  A seat name containing `.` is refused with the fix printed. A multiplexer
+  target address uses `.` as the pane separator, so such a name addresses a pane
+  of a differently-named session and every command aimed at it lands somewhere
+  else. This had already been worked around by hand, by renaming a seat.
+
+  Neither file is versioned — they are session state, not recipe — and `facet
+  sync` does not touch either one on a workspace that already exists. There is a
+  test whose only job is to keep it that way: a workspace that confidently
+  reports the wrong owner is worse than one that reports none.
+
 - **`facet preflight`, and a credential gate on `spawn`**: every tool and agent
   session on this machine shares one GitHub credential, and it has been
   invalidated silently before — the failure was found mid-operation, by trying
@@ -54,6 +91,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   above is not: a pane costs nothing to give away.
 
 ### Changed
+
+- **BREAKING: `facet spawn` now requires `--seat`.** Every existing invocation
+  without it fails, with the reason and the fix printed. Nothing is derived as a
+  fallback, deliberately: a workspace's owner is a decision somebody makes, and
+  a name nobody chose is a name nobody can be held to. Deriving one from the
+  workspace name was considered and dropped — the obvious derivation emits a
+  dotted name for any repository whose name contains a dot, which the same
+  change refuses, so the fallback would have been a refusal of the tool's own
+  output.
 
 - **A pane outlives its agent.** Panes run `<agent>; exec $SHELL -il`, so
   quitting the agent drops you into a login shell in the same directory instead
