@@ -8,15 +8,15 @@ import (
 	"testing"
 )
 
-// req is FleetRequirements without the SSH key, which CheckSSHKey covers
+// req is DefaultRequirements without the SSH key, which CheckSSHKey covers
 // separately and which would otherwise make these tests depend on the machine.
 func req() Requirements {
-	r := FleetRequirements()
+	r := DefaultRequirements()
 	r.SSHKey = ""
 	return r
 }
 
-// checkFixture parses gh output and runs the fleet requirements over it.
+// checkFixture parses gh output and runs the default requirements over it.
 func checkFixture(t *testing.T, out string) []Problem {
 	t.Helper()
 	st, err := parseAuthStatus(out)
@@ -55,14 +55,15 @@ func TestCheckLoggedOut(t *testing.T) {
 
 // TestCheckUnconfirmedIsFatalButBlamesTheRightThing.
 //
-// Still fatal -- the foreman's all-fatal ruling stands, and if github.com is
-// unreachable then spawn cannot clone or fetch either, so refusing is correct.
-// What is asserted here is the MESSAGE, because a gate that fires on the right
-// condition for the wrong stated reason is a broken gate, not a strict one.
+// Still fatal -- an unreachable github.com means spawn cannot clone or fetch
+// either, so refusing is correct. What is asserted here is the MESSAGE,
+// because a gate that fires on the right condition for the wrong stated
+// reason is a broken gate, not a strict one.
 //
 // The hazard is concrete: told "you have no credential", a reasonable operator
-// regenerates the token -- a `gh auth logout`, which is precisely how this fleet
-// got a ~72-second no-credential window. gh's own printed advice says to do it.
+// regenerates the token -- a `gh auth logout`, which is precisely how this
+// credential once got a ~72-second no-credential window. gh's own printed
+// advice says to do it.
 func TestCheckUnconfirmedIsFatalButBlamesTheRightThing(t *testing.T) {
 	probs := checkFixture(t, unconfirmed)
 

@@ -11,6 +11,8 @@ import (
 	"os"
 	"runtime"
 	"time"
+
+	"github.com/RiccardoCereghino/facet/internal/wait"
 )
 
 const (
@@ -75,41 +77,54 @@ func With(path string, opt Options, fn func() error) error {
 	return fn()
 }
 
+// acquire polls at opt.Poll until it takes the lock, a fatal error rules it
+// out, or opt.MaxWait passes. The immediate-retry paths (a released lock
+// racing our stat, a just-broken stale lock) loop inside the attempt itself
+// rather than through wait.Until's sleep, so they cost no wait at all -- only
+// genuine contention pays the poll interval.
 func acquire(path string, opt Options) (*os.File, error) {
-	deadline := time.Now().Add(opt.MaxWait)
-	for {
-		f, err := createLock(path)
-		if err == nil {
-			fmt.Fprintf(f, "pid %d\n", os.Getpid()) // for a human debugging a stuck lock
-			return f, nil
-		}
-		if !os.IsExist(err) {
-			return nil, err
-		}
-		fi, statErr := os.Stat(path)
-		if os.IsNotExist(statErr) {
-			continue // released between our create and stat; try again at once
-		}
-		if statErr != nil {
-			return nil, statErr
-		}
-		if time.Since(fi.ModTime()) > opt.StaleAge {
-			// Presumed abandoned. Re-check the mtime immediately before removing,
-			// so a lock just re-created (and thus fresh) by someone else is left
-			// alone rather than clobbered -- narrowing the check-then-remove race.
-			if again, err := os.Stat(path); err == nil && time.Since(again.ModTime()) > opt.StaleAge {
-				if opt.Warn != nil {
-					opt.Warn("breaking stale lock %s (untouched for over %s)", path, opt.StaleAge)
-				}
-				os.Remove(path)
+	var f *os.File
+	var ferr error
+	ok := wait.Until(time.Now().Add(opt.MaxWait), opt.Poll, func() bool {
+		for {
+			var err error
+			f, err = createLock(path)
+			if err == nil {
+				fmt.Fprintf(f, "pid %d\n", os.Getpid()) // for a human debugging a stuck lock
+				ferr = nil
+				return true
 			}
-			continue
+			if !os.IsExist(err) {
+				ferr = err
+				return true
+			}
+			fi, statErr := os.Stat(path)
+			if os.IsNotExist(statErr) {
+				continue // released between our create and stat; try again at once
+			}
+			if statErr != nil {
+				ferr = statErr
+				return true
+			}
+			if time.Since(fi.ModTime()) > opt.StaleAge {
+				// Presumed abandoned. Re-check the mtime immediately before removing,
+				// so a lock just re-created (and thus fresh) by someone else is left
+				// alone rather than clobbered -- narrowing the check-then-remove race.
+				if again, err := os.Stat(path); err == nil && time.Since(again.ModTime()) > opt.StaleAge {
+					if opt.Warn != nil {
+						opt.Warn("breaking stale lock %s (untouched for over %s)", path, opt.StaleAge)
+					}
+					os.Remove(path)
+				}
+				continue
+			}
+			return false // genuine contention; let wait.Until sleep and recheck the deadline
 		}
-		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("could not acquire lock %s within %s", path, opt.MaxWait)
-		}
-		time.Sleep(opt.Poll)
+	})
+	if !ok {
+		return nil, fmt.Errorf("could not acquire lock %s within %s", path, opt.MaxWait)
 	}
+	return f, ferr
 }
 
 // createLock does the O_CREATE|O_EXCL open that claims the lock. It exists to

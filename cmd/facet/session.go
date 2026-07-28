@@ -9,6 +9,7 @@ import (
 
 	"github.com/RiccardoCereghino/facet/internal/claudex"
 	"github.com/RiccardoCereghino/facet/internal/mux"
+	"github.com/RiccardoCereghino/facet/internal/wait"
 	"github.com/spf13/cobra"
 )
 
@@ -190,17 +191,16 @@ func reportRCURL(l mux.Launcher, target string, agent agentOpts) {
 	if !ok {
 		return
 	}
-	deadline := time.Now().Add(rcURLWait)
-	for {
-		if out, err := r.CapturePane(target, 200); err == nil {
-			if u := claudex.FindSessionURL(out); u != "" {
-				fmt.Printf("\nremote:     %s\n", u)
-				return
-			}
+	var url string
+	wait.Until(time.Now().Add(rcURLWait), 500*time.Millisecond, func() bool {
+		out, err := r.CapturePane(target, 200)
+		if err != nil {
+			return false
 		}
-		if !time.Now().Before(deadline) {
-			return
-		}
-		time.Sleep(500 * time.Millisecond)
+		url = claudex.FindSessionURL(out)
+		return url != ""
+	})
+	if url != "" {
+		fmt.Printf("\nremote:     %s\n", url)
 	}
 }
