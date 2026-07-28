@@ -40,7 +40,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          # The major.minor series, not go.mod's exact `go 1.25.0`, plus
+          # check-latest: setup-go would otherwise install exactly 1.25.0, and
+          # govulncheck rightly fails a toolchain with known stdlib
+          # vulnerabilities. CI should build with the newest patch of the series
+          # the module targets.
+          go-version: '1.25'
           check-latest: true
 
       - name: gofmt
@@ -111,7 +116,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: '1.25' # newest patch of the series; see the linux job
           check-latest: true
       - run: go build ./...
       - run: go test -race ./...
@@ -126,7 +131,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: '1.25' # newest patch of the series; see the linux job
           check-latest: true
       - run: go build ./...
       - run: go test -race ./...
