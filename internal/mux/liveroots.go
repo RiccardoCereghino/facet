@@ -38,14 +38,14 @@ func tmuxPanesUnder(dir, socket string) []string {
 	if socket != "" {
 		argv = append([]string{"-L", socket}, argv...)
 	}
-	raw, err := exec.Command("tmux", argv...).Output()
+	raw, err := tmuxOutput(argv...)
 	if err != nil && len(raw) == 0 {
 		// No server running exits non-zero with nothing on stdout -- that is
 		// "no panes", not a failure worth surfacing.
 		return nil
 	}
 	var live []string
-	for _, line := range strings.Split(strings.TrimRight(string(raw), "\n"), "\n") {
+	for _, line := range strings.Split(strings.TrimRight(raw, "\n"), "\n") {
 		if line == "" {
 			continue
 		}
