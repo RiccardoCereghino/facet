@@ -120,18 +120,17 @@ jobs:
           check-latest: true
       - run: make build
       - run: make test
-
-  windows:
-    name: windows
-    needs: linux
-    if: github.event_name != 'pull_request' || (github.event.pull_request.draft == false && github.event.pull_request.base.ref == 'main')
-    runs-on: windows-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
-        with:
-          go-version: '1.25' # newest patch of the series; see the linux job
-          check-latest: true
-      - run: make build
-      - run: make test
+  # The Windows tier is REMOVED, not disabled -- facet#72, 2026-07-29.
+  #
+  # Measured: facet is the fleet's most expensive CI ($6.93 in one month
+  # across ~88 runs, three legs) against stele's $0.64 for 100 linux-only
+  # runs; 2,158 of 3,000 included minutes went in the first 72 hours on Pro.
+  # Windows bills at 2x on a private repo. The sculptor ruled the leg
+  # momentary until it is needed.
+  #
+  # This does NOT retreat from PR facet#52, which fixed the RunTimeout
+  # transport-helper leak that held Windows file locks and unfroze this repo
+  # from patch-only. The fix stays; what stops is re-proving it on every
+  # push at 2x. facet#59 asks whether Windows should be required at all --
+  # restore this tier when that is answered yes, or when a self-hosted
+  # runner makes it free.
