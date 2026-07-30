@@ -280,6 +280,78 @@ func TestSquashMergedBranchWithDeletedRemoteReapsClean(t *testing.T) {
 	}
 }
 
+// Audit finding on facet!76: a sibling local branch that is fully pushed to
+// its *own* remote branch (never merged to main -- an open PR on a second
+// issue, say) has commits that are not on the default branch either, so a
+// naive per-branch `git cherry <default> <branch>` marks them "+" exactly
+// like a genuinely unpushed commit. Trusting that output directly inflated
+// one real squash-landed commit into three. The fix intersects cherry's "+"
+// output against the exact candidate set rev-list already flagged; this
+// sibling branch's commits are not in that set (they're already reachable
+// from a remote, just not `def`) and must not resurface as unpushed.
+func TestSquashLandedBranchWithSiblingPushedElsewhereReapsClean(t *testing.T) {
+	ws, clone := issueWorkspace(t)
+	m, err := manifest.Read(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin := m.Clones["repo"]
+	g := gitx.Git{}
+
+	if _, err := g.Run(clone, nil, "checkout", "-qb", "1-x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clone, "landed.txt"), []byte("landed\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "commit", "-qm", "feature work"); err != nil {
+		t.Fatal(err)
+	}
+	patch, err := g.Run(clone, nil, "format-patch", "-1", "1-x", "--stdout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	patchFile := filepath.Join(t.TempDir(), "squash.patch")
+	if err := os.WriteFile(patchFile, []byte(patch+"\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(origin, nil, "am", patchFile); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(origin, nil, "commit", "--amend", "-qm", "feature work (squash-merged, #1)"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The sibling: a second local branch, pushed to its own remote branch,
+	// never merged into main.
+	if _, err := g.Run(clone, nil, "checkout", "-qb", "other", "main"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clone, "other.txt"), []byte("other work\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "commit", "-qm", "unrelated open PR work"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "push", "-q", "origin", "other"); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := InspectIssue(ws, g, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := st.Blockers(); len(b) != 0 {
+		t.Errorf("the squash-landed branch must still reap clean with an unrelated pushed sibling present, got %v", b)
+	}
+}
+
 // The sibling of the test above: a branch whose remote is gone but whose
 // content never landed anywhere must still refuse. Squash-merge detection
 // must not become "an absent remote ref is safe" -- that is exactly the case

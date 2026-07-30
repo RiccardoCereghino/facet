@@ -294,6 +294,33 @@ func unpushedNotLanded(git gitx.Runner, dir string, unpushed int) int {
 	if def == "" {
 		return unpushed
 	}
+
+	// The exact set rev-list already flagged as unpushed. This is the set
+	// unpushedNotLanded is allowed to narrow -- nothing else. `git cherry`
+	// below is only ever asked "which of these are patch-landed", never
+	// trusted wholesale, because it compares against `def` alone: a local
+	// branch that is fully pushed to some *other* remote branch (an open PR
+	// on a second issue, say) has commits not on `def` either, and cherry
+	// marks those "+" same as a genuinely unpushed one. Running cherry per
+	// branch and trusting its output directly reintroduces exactly the
+	// commits rev-list had already ruled safe -- an audited defect that
+	// inflated one real unpushed commit into three by picking up an unrelated
+	// pushed sibling branch's commits.
+	candOut, err := git.Run(dir, nil, "rev-list", "HEAD", "--branches", "--not", "--remotes")
+	if err != nil {
+		return unpushed
+	}
+	candidates := map[string]bool{}
+	for _, sha := range strings.Fields(candOut) {
+		candidates[sha] = true
+	}
+	if len(candidates) != unpushed {
+		// The count and the list disagree -- e.g. a commit landed between
+		// the two invocations. Trust the count already taken rather than
+		// reason from a list that may no longer match it.
+		return unpushed
+	}
+
 	refsOut, err := git.Run(dir, nil, "for-each-ref", "--format=%(refname:short)", "refs/heads")
 	if err != nil {
 		return unpushed
@@ -306,7 +333,11 @@ func unpushedNotLanded(git gitx.Runner, dir string, unpushed int) int {
 		// git cherry <upstream> <head> partitions commits reachable from head
 		// but not from upstream by sha into "+" (no equivalent patch found
 		// upstream) and "-" (an equivalent patch already exists upstream,
-		// under some other sha) -- exactly the squash-merge shape.
+		// under some other sha) -- exactly the squash-merge shape. Its
+		// traversal is bounded by `def` only, so anything it marks "+" that
+		// is not also in `candidates` is a commit rev-list had already
+		// cleared some other way (pushed to a different remote branch) and
+		// must not be added back in.
 		out, err := git.Run(dir, nil, "cherry", def, ref)
 		if err != nil {
 			// Can't verify this ref's commits patch-wise (e.g. no common
@@ -316,10 +347,10 @@ func unpushedNotLanded(git gitx.Runner, dir string, unpushed int) int {
 		}
 		for _, line := range strings.Split(out, "\n") {
 			fields := strings.Fields(line)
-			if len(fields) < 2 {
+			if len(fields) < 2 || fields[0] != "+" {
 				continue
 			}
-			if fields[0] == "+" {
+			if candidates[fields[1]] {
 				notLanded[fields[1]] = true
 			}
 		}
