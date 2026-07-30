@@ -346,6 +346,39 @@ Both are also true of the failure path, and `preflight` works with no workspaces
 root and a broken config: the thing you reach for when the lab is wrong cannot
 require the lab to be right.
 
+## Timestamps
+
+`facet date` is the fleet's one canonical timestamp source (facet#71). Two
+real incidents came from hand-rolling one: a two-minute gap between an
+escalation and its answer was misread as two hours (a UTC timestamp compared
+against a local clock reading), and an L3 escalation watch was left dead for
+74 minutes by a watermark built from a local time and silently 74 minutes
+ahead of the real clock -- a check that can never fire reads exactly like one
+that found nothing.
+
+```
+$ facet date
+2026-07-30T15:00:00Z
+
+$ facet date --local
+2026-07-30T17:00:00+02:00
+
+$ facet date --check 2026-07-30T16:14:00Z
+facet: 2026-07-30T16:14:00Z is 1h14m0s in the future (now is 2026-07-30T15:00:00Z) -- refusing a timestamp this far ahead of now
+```
+
+The default is RFC 3339 in UTC -- the format GitHub's API returns and compares
+against, so the output can be piped straight into a `jq` comparison against
+`createdAt`/`mergedAt` with no conversion. `--local` renders the same instant
+with its local offset, for a human. **Every rendering carries an explicit UTC
+or offset marker**; there is no mode that produces a bare local time with no
+offset, because that bare shape is exactly what caused both incidents above.
+
+`--check <timestamp>` answers the second incident directly: it refuses (exit
+1) a timestamp unexpectedly still ahead of now, past a few seconds of ordinary
+clock skew, and reports by how much. A watch built with this before trusting
+its own watermark would have refused rather than gone dark.
+
 ## Mirrors make the clones cheap
 
 `facet sync --via-mirror`, and every `facet spawn`, clones from a bare mirror under

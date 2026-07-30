@@ -55,7 +55,7 @@ func main() {
 	root.AddCommand(newLsCmd(), newSyncCmd(), newRestoreCmd(), newSpawnCmd(),
 		newFileCmd(), newIssuesCmd(), newReapCmd(), newAttachCmd(),
 		newNewCmd(), newAddCmd(), newRmCmd(), newVersionCmd(), newPreflightCmd(),
-		newScopeCmd())
+		newScopeCmd(), newDateCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "facet:", err)
