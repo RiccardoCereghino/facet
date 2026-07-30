@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -22,9 +23,20 @@ type CloneState struct {
 	// Dirty means uncommitted changes or untracked files.
 	Dirty bool
 	// Unpushed counts commits reachable from HEAD or any local branch that no
-	// remote has. This deliberately covers branches with no upstream at all, and
-	// commits made on a detached HEAD: those are the ones most easily lost.
+	// remote has *and* whose content is not proven to have already landed on
+	// the remote's default branch (see proofLanded). This deliberately covers
+	// branches with no upstream at all, and commits made on a detached HEAD:
+	// those are the ones most easily lost. The landing proof is what keeps a
+	// squash-merged, auto-deleted branch from being counted here: squash
+	// rewrites the sha, so a sha-only reachability test can never see it.
 	Unpushed int
+	// SquashLanded counts commits that failed the sha-based check above --
+	// Unpushed would otherwise have included them -- but were proven, by
+	// proofLanded, to already be on the remote's default branch under a
+	// different sha. Purely informational: these are excluded from Unpushed
+	// and never block reap, but staying silent about them is what taught
+	// operators to reach for --force (facet#66).
+	SquashLanded int
 	// FetchStale is set when `git fetch --prune origin` failed, or did not
 	// finish within fetchTimeout, before Unpushed was computed. The count above
 	// is still computed and used against whatever refs are on disk -- refusing
@@ -110,6 +122,22 @@ func (s *IssueState) Blockers() []string {
 	return out
 }
 
+// Notes lists non-blocking information about a workspace's state -- things
+// worth saying so an operator does not read silence as "nothing to report"
+// (facet#66). Nothing here belongs in Blockers(): every entry is something
+// that does *not* hold the workspace.
+func (s *IssueState) Notes() []string {
+	var out []string
+	for _, c := range s.Clone {
+		if c.SquashLanded > 0 {
+			out = append(out, fmt.Sprintf(
+				"%s: %d local commit(s) already landed upstream under a different sha (squash-merged) -- not held",
+				c.Dir, c.SquashLanded))
+		}
+	}
+	return out
+}
+
 // LiveChecker reports whether a multiplexer session is running. It is an
 // interface so the reap logic is testable without a multiplexer.
 type LiveChecker interface{ Live(session string) bool }
@@ -128,6 +156,16 @@ type LiveRootChecker interface {
 // PRLookup finds the pull request for a branch. Nil means do not look.
 type PRLookup interface {
 	ViewPR(repo, branch string) (*ghx.PR, error)
+}
+
+// CommitPRLookup finds the merged pull request that had a specific commit sha,
+// directly -- unlike PRLookup, which resolves by branch name and goes blind
+// the moment GitHub deletes the branch on merge. Optional on whatever PRLookup
+// is passed to InspectIssue: a lookup that does not implement it is simply not
+// asked, and the squash-merge landing proof falls back to the ancestor check
+// alone (see proofLanded).
+type CommitPRLookup interface {
+	MergedPRForSHA(repo, sha string) (*ghx.PRForCommit, error)
 }
 
 // timeoutRunner is implemented by gitx.Git for operations that must not hang
@@ -170,7 +208,7 @@ func InspectIssue(ws string, git gitx.Runner, pr PRLookup, mux LiveChecker) (*Is
 			}
 			continue
 		}
-		st.Clone = append(st.Clone, inspectClone(git, dir, p))
+		st.Clone = append(st.Clone, inspectClone(git, dir, p, m.Issue.Repo, pr))
 	}
 
 	if pr != nil && m.Issue.Branch != "" {
@@ -197,8 +235,10 @@ func InspectIssue(ws string, git gitx.Runner, pr PRLookup, mux LiveChecker) (*Is
 
 // inspectClone reads one clone's state. Every git probe that fails is recorded
 // as an Unverifiable reason rather than dropped: a git error must block the reap,
-// not masquerade as a clean, empty tree.
-func inspectClone(git gitx.Runner, dir, p string) CloneState {
+// not masquerade as a clean, empty tree. repo is the issue's home repo
+// ("owner/name"), used for the squash-merge landing proof's PR lookup; pr may
+// be nil to skip that lookup (the ancestor check alone still runs).
+func inspectClone(git gitx.Runner, dir, p, repo string, pr PRLookup) CloneState {
 	c := CloneState{Dir: dir}
 
 	if out, err := git.Run(p, nil, "status", "--porcelain"); err != nil {
@@ -232,13 +272,27 @@ func inspectClone(git gitx.Runner, dir, p string) CloneState {
 	// Commits reachable from HEAD or any local branch but from no remote-tracking
 	// branch. HEAD is named explicitly so a commit made on a detached HEAD -- on
 	// no branch at all -- is counted too; a branch that was never pushed has all
-	// of its commits counted.
+	// of its commits counted. This is a cheap fast-path check: the common case
+	// is 0, and only then is the more expensive per-ref landing proof run.
 	if out, err := git.Run(p, nil, "rev-list", "--count", "HEAD", "--branches", "--not", "--remotes"); err != nil {
 		c.Unverifiable = append(c.Unverifiable, fmt.Sprintf("git rev-list failed: %v", err))
-	} else if n, err := strconv.Atoi(strings.TrimSpace(out)); err != nil {
+	} else if _, err := strconv.Atoi(strings.TrimSpace(out)); err != nil {
 		c.Unverifiable = append(c.Unverifiable, fmt.Sprintf("could not read the unpushed-commit count: %v", err))
-	} else {
-		c.Unpushed = n
+	} else if strings.TrimSpace(out) != "0" {
+		// A sha not reachable from any remote is not the same question as
+		// "is this content already upstream": squash-merge rewrites the sha,
+		// and GitHub's auto-delete-on-merge then removes the only ref that
+		// could have proven it by name. Prove landing per ref instead.
+		var commitPR CommitPRLookup
+		if pr != nil {
+			commitPR, _ = pr.(CommitPRLookup)
+		}
+		if unpushed, landed, err := unpushedLanding(git, p, repo, commitPR); err != nil {
+			c.Unverifiable = append(c.Unverifiable, fmt.Sprintf("could not verify unpushed commits: %v", err))
+		} else {
+			c.Unpushed = unpushed
+			c.SquashLanded = landed
+		}
 	}
 
 	if out, err := git.Run(p, nil, "stash", "list"); err != nil {
@@ -248,6 +302,151 @@ func inspectClone(git gitx.Runner, dir, p string) CloneState {
 	}
 
 	return c
+}
+
+// unpushedLanding walks every local ref -- each branch tip, plus a detached
+// HEAD -- and decides, per ref, whether its not-yet-remote commits are
+// genuinely unpushed or have already landed on the remote's default branch
+// under a different sha (the squash-merge, auto-delete-on-merge shape
+// facet#66 is about). It replaces an earlier per-commit patch-identity design
+// (`git cherry`): that design could never recognize a multi-commit branch
+// squashed into a single commit, because no individual commit's patch matches
+// the combined diff -- an audited defect that made the fix work only for
+// one-commit branches, the minority of this fleet's own PRs.
+//
+// Ported from the fleet's own harness workaround, which had already reached
+// this design under real, repeated failures:
+// `~/.stele/harness/lib/reap.sh` ("AUDITIONING FOR: facet#66").
+//
+// repo is the issue's home repo, needed for the merged-PR lookup; commitPR may
+// be nil, in which case only the ancestor check runs and a squash-merge is not
+// detected (fails safe toward "unpushed", never toward silently clearing a
+// blocker).
+func unpushedLanding(git gitx.Runner, dir, repo string, commitPR CommitPRLookup) (unpushed, landed int, err error) {
+	def := remoteDefaultBranch(git, dir)
+
+	current, detached, err := currentRef(git, dir)
+	if err != nil {
+		return 0, 0, err
+	}
+	refsOut, err := git.Run(dir, nil, "for-each-ref", "--format=%(refname:short)", "refs/heads")
+	if err != nil {
+		return 0, 0, err
+	}
+	refs := strings.Fields(refsOut)
+	if detached {
+		refs = append(refs, "HEAD")
+	}
+
+	for _, ref := range refs {
+		out, err := git.Run(dir, nil, "rev-list", "--count", ref, "--not", "--remotes")
+		if err != nil {
+			return 0, 0, err
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(out))
+		if err != nil {
+			return 0, 0, err
+		}
+		if n == 0 {
+			// This ref's commits are all already reachable from some remote
+			// (pushed to its own branch, say) -- nothing to prove for it, and
+			// nothing to add.
+			continue
+		}
+		shaOut, err := git.Run(dir, nil, "rev-parse", ref)
+		if err != nil {
+			return 0, 0, err
+		}
+		sha := strings.TrimSpace(shaOut)
+		isHead := ref == current || (detached && ref == "HEAD")
+		if proofLanded(git, dir, sha, repo, def, commitPR, isHead) {
+			landed += n
+		} else {
+			unpushed += n
+		}
+	}
+	return unpushed, landed, nil
+}
+
+// proofLanded answers whether sha's content has already landed on def (the
+// remote's resolved default branch, "" if unresolvable). Three independent
+// checks; isHead selects which apply.
+//
+// isHead is true for the checked-out ref (a branch, or a detached HEAD -- the
+// shape every auditor workspace is in, since auditing checks out the audited
+// sha rather than a branch tip) and requires all three checks. isHead is false
+// for a leftover local branch the workspace happens to still be carrying
+// (an auditor's own working branch, say); that only needs the first two,
+// because its tree is allowed to differ from def -- a later round inside the
+// same PR can supersede it, and "tree identical to def" would then wrongly
+// refuse a correct deletion.
+func proofLanded(git gitx.Runner, dir, sha, repo, def string, commitPR CommitPRLookup, isHead bool) bool {
+	if def == "" {
+		return false
+	}
+
+	// (a) sha is already an ancestor of def -- no squash happened, and there
+	// is nothing left to prove.
+	if _, err := git.Run(dir, nil, "merge-base", "--is-ancestor", sha, def); err == nil {
+		return true
+	}
+
+	// (b) a MERGED pull request had sha as a commit. With no lookup available,
+	// nothing beyond (a) can be proven, and that is the safe direction to
+	// fail in: the commit stays counted as unpushed.
+	if commitPR == nil {
+		return false
+	}
+	merged, err := commitPR.MergedPRForSHA(repo, sha)
+	if err != nil || merged == nil {
+		return false
+	}
+	if !isHead {
+		return true
+	}
+
+	// (c) the checked-out ref's tree must be IDENTICAL to def. A merged PR
+	// whose file then diverged on def would still be a loss, and (b) alone
+	// would have called it safe.
+	diff, err := git.Run(dir, nil, "diff", "--stat", sha, def)
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(diff) == ""
+}
+
+// currentRef reports the checked-out branch name, or detached=true if HEAD is
+// not on any branch.
+func currentRef(git gitx.Runner, dir string) (branch string, detached bool, err error) {
+	out, err := git.Run(dir, nil, "symbolic-ref", "--quiet", "--short", "HEAD")
+	if err != nil {
+		// Exit 1 here means "detached", not a failure -- HEAD simply is not a
+		// symbolic ref. Anything else is a genuine problem reading the repo.
+		var gitErr *gitx.Error
+		if errors.As(err, &gitErr) && gitErr.ExitCode == 1 {
+			return "", true, nil
+		}
+		return "", false, err
+	}
+	return strings.TrimSpace(out), false, nil
+}
+
+// remoteDefaultBranch resolves origin's default branch as "origin/<name>", or
+// "" if it cannot be determined -- in which case callers must not guess.
+func remoteDefaultBranch(git gitx.Runner, dir string) string {
+	if out, err := git.Run(dir, nil, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"); err == nil {
+		if s := strings.TrimSpace(out); s != "" {
+			return s
+		}
+	}
+	// refs/remotes/origin/HEAD is set by a normal clone, but is not
+	// guaranteed (a hand-built remote, an old fetch config). "main" is the
+	// fleet's actual default (the branch ruling, D29-family), not a bare
+	// guess, so fall back to it if it exists.
+	if _, err := git.Run(dir, nil, "rev-parse", "--verify", "refs/remotes/origin/main"); err == nil {
+		return "origin/main"
+	}
+	return ""
 }
 
 // countLines counts newline-separated entries in already-trimmed output.

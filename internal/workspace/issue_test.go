@@ -24,6 +24,22 @@ func (fakePRErr) ViewPR(string, string) (*ghx.PR, error) {
 	return nil, errors.New("gh auth expired")
 }
 
+// fakeCommitPR answers the squash-merge landing proof's merged-PR-by-commit
+// lookup (CommitPRLookup), reporting merged for exactly the shas in merged.
+// It also implements ViewPR (returning nil, no open PR) so a single value can
+// be passed as InspectIssue's pr argument and still be found by the
+// CommitPRLookup type assertion inspectClone performs on it.
+type fakeCommitPR struct{ merged map[string]bool }
+
+func (fakeCommitPR) ViewPR(string, string) (*ghx.PR, error) { return nil, nil }
+
+func (f fakeCommitPR) MergedPRForSHA(_, sha string) (*ghx.PRForCommit, error) {
+	if f.merged[sha] {
+		return &ghx.PRForCommit{Number: 1, MergedAt: "2026-01-01T00:00:00Z"}, nil
+	}
+	return nil, nil
+}
+
 // failGit fails every command, standing in for a repo whose state cannot be read
 // (a held index.lock, a corrupt object store).
 func failGit() *gitxtest.Runner {
@@ -207,6 +223,429 @@ func TestStaleRemoteRefButCommitAlreadyUpstreamReapsClean(t *testing.T) {
 	}
 	if b := st.Blockers(); len(b) != 0 {
 		t.Errorf("a commit already landed upstream must reap clean once refs are fetched fresh, got %v", b)
+	}
+}
+
+// The bug facet#66 is about: GitHub squash-merges a PR, rewriting the sha, and
+// auto-deletes the branch on merge. From the clone's perspective that is
+// indistinguishable, by sha, from a commit that was never pushed at all -- no
+// remote-tracking ref exists under any name that contains it. The landing
+// proof (ancestor check, then merged-PR-by-commit, then tree-identical) is
+// what tells the two apart, and this must reap clean without --force.
+func TestSquashMergedBranchWithDeletedRemoteReapsClean(t *testing.T) {
+	ws, clone := issueWorkspace(t)
+	m, err := manifest.Read(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin := m.Clones["repo"]
+	g := gitx.Git{}
+
+	if _, err := g.Run(clone, nil, "checkout", "-qb", "1-x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clone, "landed.txt"), []byte("landed\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "commit", "-qm", "feature work"); err != nil {
+		t.Fatal(err)
+	}
+	sha, err := g.Run(clone, nil, "rev-parse", "1-x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha = strings.TrimSpace(sha)
+
+	// Simulate the squash merge: the same content lands on origin's default
+	// branch as a brand-new commit (different sha, different message), the
+	// way "Squash and merge" on GitHub does it. The feature branch is never
+	// pushed here at all -- after auto-delete-on-merge and a prune, a real
+	// clone's view of the world is exactly this.
+	patch, err := g.Run(clone, nil, "format-patch", "-1", "1-x", "--stdout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	patchFile := filepath.Join(t.TempDir(), "squash.patch")
+	if err := os.WriteFile(patchFile, []byte(patch+"\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(origin, nil, "am", patchFile); err != nil {
+		t.Fatal(err)
+	}
+	// GitHub's squash-merge always synthesizes its own commit message (the PR
+	// title plus its number), so amend it here too, the way real squash-merges
+	// do -- the tree must match, the sha and message need not.
+	if _, err := g.Run(origin, nil, "commit", "--amend", "-qm", "feature work (squash-merged, #1)"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The landing proof's second check needs a merged pull request whose head
+	// was the local commit sha -- real GitHub records this regardless of how
+	// the merge rewrote history on the base branch; the fake stands in for it.
+	pr := fakeCommitPR{merged: map[string]bool{sha: true}}
+	st, err := InspectIssue(ws, g, pr, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := st.Blockers(); len(b) != 0 {
+		t.Errorf("a squash-merged, content-landed branch must reap clean, got %v", b)
+	}
+	notes := st.Notes()
+	if len(notes) == 0 || !strings.Contains(notes[0], "not held") {
+		t.Errorf("a landed-but-rewritten commit must be reported, not silent: %v", notes)
+	}
+}
+
+// Audit finding on facet!76, round 3: `git cherry` compares patch content per
+// commit, so a multi-commit branch collapsed into ONE squash-merge commit has
+// no individual commit whose patch matches the combined diff -- the fix that
+// worked for a one-commit branch did nothing for the common case (the
+// auditor's corpus: 11 of the last 20 merged facet PRs had more than one
+// commit). The landing proof replaces per-commit comparison with an
+// ancestor-or-merged-PR-or-identical-tree test on the branch tip, which does
+// not care how many commits got there.
+func TestMultiCommitSquashMergedBranchReapsClean(t *testing.T) {
+	ws, clone := issueWorkspace(t)
+	m, err := manifest.Read(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin := m.Clones["repo"]
+	g := gitx.Git{}
+
+	if _, err := g.Run(clone, nil, "checkout", "-qb", "1-x"); err != nil {
+		t.Fatal(err)
+	}
+	for i, line := range []string{"line 1", "line 2", "line 3"} {
+		if err := os.WriteFile(filepath.Join(clone, "landed.txt"), []byte(strings.Join([]string{"line 1", "line 2", "line 3"}[:i+1], "\n")+"\n"), 0o666); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := g.Run(clone, nil, "add", "-A"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := g.Run(clone, nil, "commit", "-qm", "feature work "+line); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sha, err := g.Run(clone, nil, "rev-parse", "1-x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha = strings.TrimSpace(sha)
+
+	// Squash the branch's three commits into origin's default branch as ONE
+	// commit -- the combined diff, one message, the way GitHub's "Squash and
+	// merge" produces it.
+	diff, err := g.Run(clone, nil, "diff", "main", "1-x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	patchFile := filepath.Join(t.TempDir(), "squash.diff")
+	if err := os.WriteFile(patchFile, []byte(diff+"\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(origin, nil, "apply", patchFile); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(origin, nil, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(origin, nil, "commit", "-qm", "feature work (squash-merged, #1)"); err != nil {
+		t.Fatal(err)
+	}
+
+	pr := fakeCommitPR{merged: map[string]bool{sha: true}}
+	st, err := InspectIssue(ws, g, pr, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := st.Blockers(); len(b) != 0 {
+		t.Errorf("a multi-commit branch squashed into one commit must reap clean, got %v", b)
+	}
+}
+
+// Audit finding on facet!76, round 3: the harness's own workaround
+// (`~/.stele/harness/lib/reap.sh`) exists because every auditor workspace is a
+// DETACHED HEAD -- auditing checks out the audited sha, never a branch tip, so
+// a squash-merged audit workspace is 100% of that traffic. The landing proof's
+// third check (tree identical to def) is what a detached HEAD needs, same as
+// a checked-out branch.
+func TestDetachedHeadOnSquashMergedShaReapsClean(t *testing.T) {
+	ws, clone := issueWorkspace(t)
+	m, err := manifest.Read(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin := m.Clones["repo"]
+	g := gitx.Git{}
+
+	if _, err := g.Run(clone, nil, "checkout", "-qb", "1-x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clone, "landed.txt"), []byte("landed\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "commit", "-qm", "feature work"); err != nil {
+		t.Fatal(err)
+	}
+	sha, err := g.Run(clone, nil, "rev-parse", "1-x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha = strings.TrimSpace(sha)
+	if _, err := g.Run(clone, nil, "checkout", "-q", "--detach", sha); err != nil {
+		t.Fatal(err)
+	}
+
+	patch, err := g.Run(clone, nil, "format-patch", "-1", sha, "--stdout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	patchFile := filepath.Join(t.TempDir(), "squash.patch")
+	if err := os.WriteFile(patchFile, []byte(patch+"\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(origin, nil, "am", patchFile); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(origin, nil, "commit", "--amend", "-qm", "feature work (squash-merged, #1)"); err != nil {
+		t.Fatal(err)
+	}
+
+	pr := fakeCommitPR{merged: map[string]bool{sha: true}}
+	st, err := InspectIssue(ws, g, pr, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := st.Blockers(); len(b) != 0 {
+		t.Errorf("a detached HEAD at a squash-merged sha must reap clean, got %v", b)
+	}
+}
+
+// Audit finding on facet!76: an auditor leaves working branches behind (e.g. a
+// `pr183` branch pinned to a round-1 head that a later round superseded
+// inside the same PR). That branch's tree is deliberately NOT identical to
+// the default branch, so the head-shaped proof (which requires an identical
+// tree) would wrongly refuse to clear it. A leftover, non-checked-out branch
+// only needs to prove "this belonged to a merged PR" -- whatever superseded
+// it merged too, so nothing is lost.
+func TestLeftoverBranchBelongingToMergedPRIsNotCountedUnpushed(t *testing.T) {
+	ws, clone := issueWorkspace(t)
+	g := gitx.Git{}
+
+	if _, err := g.Run(clone, nil, "checkout", "-qb", "pr183", "main"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clone, "round1.txt"), []byte("superseded\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "commit", "-qm", "round 1 (superseded)"); err != nil {
+		t.Fatal(err)
+	}
+	sha, err := g.Run(clone, nil, "rev-parse", "pr183")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha = strings.TrimSpace(sha)
+
+	// Back to main, checked out -- pr183 is a leftover, not the current ref.
+	if _, err := g.Run(clone, nil, "checkout", "-q", "main"); err != nil {
+		t.Fatal(err)
+	}
+
+	// This commit belonged to a merged PR, but origin/main never contains its
+	// tree (round 2 replaced it inside the same PR) -- the point of the test.
+	pr := fakeCommitPR{merged: map[string]bool{sha: true}}
+	st, err := InspectIssue(ws, g, pr, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := st.Blockers(); len(b) != 0 {
+		t.Errorf("a leftover branch belonging to a merged PR must not block reap even though its tree differs from main, got %v", b)
+	}
+}
+
+// Audit finding on facet!76: a sibling local branch that is fully pushed to
+// its *own* remote branch (never merged to main -- an open PR on a second
+// issue, say) has commits that are not on the default branch either. A naive
+// check that runs the landing proof against every local branch unconditionally
+// would treat those as unpushed the same as a genuinely unpushed commit; the
+// per-ref rev-list --not --remotes pre-check (0 commits => skip) is what keeps
+// this branch's already-pushed-elsewhere commits from being touched at all.
+func TestSquashLandedBranchWithSiblingPushedElsewhereReapsClean(t *testing.T) {
+	ws, clone := issueWorkspace(t)
+	m, err := manifest.Read(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin := m.Clones["repo"]
+	g := gitx.Git{}
+
+	if _, err := g.Run(clone, nil, "checkout", "-qb", "1-x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clone, "landed.txt"), []byte("landed\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "commit", "-qm", "feature work"); err != nil {
+		t.Fatal(err)
+	}
+	sha, err := g.Run(clone, nil, "rev-parse", "1-x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha = strings.TrimSpace(sha)
+	patch, err := g.Run(clone, nil, "format-patch", "-1", "1-x", "--stdout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	patchFile := filepath.Join(t.TempDir(), "squash.patch")
+	if err := os.WriteFile(patchFile, []byte(patch+"\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(origin, nil, "am", patchFile); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(origin, nil, "commit", "--amend", "-qm", "feature work (squash-merged, #1)"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The sibling: a second local branch, pushed to its own remote branch,
+	// never merged into main.
+	if _, err := g.Run(clone, nil, "checkout", "-qb", "other", "main"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clone, "other.txt"), []byte("other work\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "commit", "-qm", "unrelated open PR work"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "push", "-q", "origin", "other"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "checkout", "-q", "1-x"); err != nil {
+		t.Fatal(err)
+	}
+
+	pr := fakeCommitPR{merged: map[string]bool{sha: true}}
+	st, err := InspectIssue(ws, g, pr, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := st.Blockers(); len(b) != 0 {
+		t.Errorf("the squash-landed branch must still reap clean with an unrelated pushed sibling present, got %v", b)
+	}
+}
+
+// The sibling of the test above: a branch whose remote is gone but whose
+// content never landed anywhere must still refuse. Squash-merge detection
+// must not become "an absent remote ref is safe" -- that is exactly the case
+// the guard exists for (Deliberately not proposed, facet#66).
+func TestBranchWithDeletedRemoteButNoLandedContentStillBlocks(t *testing.T) {
+	ws, clone := issueWorkspace(t)
+	g := gitx.Git{}
+	if _, err := g.Run(clone, nil, "checkout", "-qb", "never-landed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clone, "precious.txt"), []byte("work\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "commit", "-qm", "never merged anywhere"); err != nil {
+		t.Fatal(err)
+	}
+	st, err := InspectIssue(ws, g, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasBlocker(st, "unpushed") {
+		t.Fatalf("content that never landed upstream must still block reap; blockers = %v", st.Blockers())
+	}
+	if notes := st.Notes(); len(notes) != 0 {
+		t.Errorf("nothing landed here; Notes() must stay empty, got %v", notes)
+	}
+}
+
+// Audit finding on facet!76, round 2: `git cherry` silently omits merge
+// commits from its output entirely -- neither "+" nor "-". A merge commit
+// that is the sole unpushed candidate (both its parents already pushed to
+// their own remote branches, never merged to main) is therefore never
+// mentioned by any cherry invocation, and a design that starts from "not
+// landed = whatever cherry marks +" treats an unmentioned candidate as
+// landed by omission. That deleted the only copy of a hand-resolved merge
+// conflict in the audit's reproduction. The fix flips the default: a
+// candidate only counts as landed when cherry explicitly marks it "-";
+// anything else, including silence, stays unpushed.
+func TestUnpushedMergeCommitStillBlocksReap(t *testing.T) {
+	ws, clone := issueWorkspace(t)
+	g := gitx.Git{}
+
+	if _, err := g.Run(clone, nil, "checkout", "-qb", "a", "main"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clone, "a.txt"), []byte("a\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "commit", "-qm", "a work"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "push", "-q", "origin", "a"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := g.Run(clone, nil, "checkout", "-qb", "b", "main"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clone, "b.txt"), []byte("b\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "commit", "-qm", "b work"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "push", "-q", "origin", "b"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := g.Run(clone, nil, "checkout", "-qb", "merged", "a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "merge", "--no-ff", "-q", "-m", "merge b into a", "b"); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := InspectIssue(ws, g, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasBlocker(st, "unpushed") {
+		t.Fatalf("the only copy of a merge commit must block reap even though both its parents are pushed elsewhere; blockers = %v", st.Blockers())
+	}
+	if notes := st.Notes(); len(notes) != 0 {
+		t.Errorf("the merge commit never landed anywhere; Notes() must stay empty, got %v", notes)
 	}
 }
 

@@ -93,6 +93,9 @@ func newReapCmd() *cobra.Command {
 				return err
 			}
 			fmt.Printf("%s  (%s#%d, %s)\n", st.Name, st.Issue.Repo, st.Issue.Number, humanBytes(st.SizeBytes))
+			for _, n := range st.Notes() {
+				fmt.Println(n)
+			}
 
 			blockers := st.Blockers()
 			if len(blockers) > 0 {
