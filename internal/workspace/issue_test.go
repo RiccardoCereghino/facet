@@ -210,6 +210,95 @@ func TestStaleRemoteRefButCommitAlreadyUpstreamReapsClean(t *testing.T) {
 	}
 }
 
+// The bug facet#66 is about: GitHub squash-merges a PR, rewriting the sha, and
+// auto-deletes the branch on merge. From the clone's perspective that is
+// indistinguishable, by sha, from a commit that was never pushed at all -- no
+// remote-tracking ref exists under any name that contains it. A patch-identity
+// check (`git cherry`) is what tells the two apart, and this must reap clean
+// without --force.
+func TestSquashMergedBranchWithDeletedRemoteReapsClean(t *testing.T) {
+	ws, clone := issueWorkspace(t)
+	m, err := manifest.Read(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin := m.Clones["repo"]
+	g := gitx.Git{}
+
+	if _, err := g.Run(clone, nil, "checkout", "-qb", "1-x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clone, "landed.txt"), []byte("landed\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "commit", "-qm", "feature work"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate the squash merge: the same content lands on origin's default
+	// branch as a brand-new commit (different sha, different message), the
+	// way "Squash and merge" on GitHub does it. The feature branch is never
+	// pushed here at all -- after auto-delete-on-merge and a prune, a real
+	// clone's view of the world is exactly this.
+	patch, err := g.Run(clone, nil, "format-patch", "-1", "1-x", "--stdout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	patchFile := filepath.Join(t.TempDir(), "squash.patch")
+	if err := os.WriteFile(patchFile, []byte(patch+"\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(origin, nil, "am", patchFile); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := InspectIssue(ws, g, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := st.Blockers(); len(b) != 0 {
+		t.Errorf("a squash-merged, content-landed branch must reap clean, got %v", b)
+	}
+	notes := st.Notes()
+	if len(notes) == 0 || !strings.Contains(notes[0], "not held") {
+		t.Errorf("a landed-but-rewritten commit must be reported, not silent: %v", notes)
+	}
+}
+
+// The sibling of the test above: a branch whose remote is gone but whose
+// content never landed anywhere must still refuse. Squash-merge detection
+// must not become "an absent remote ref is safe" -- that is exactly the case
+// the guard exists for (Deliberately not proposed, facet#66).
+func TestBranchWithDeletedRemoteButNoLandedContentStillBlocks(t *testing.T) {
+	ws, clone := issueWorkspace(t)
+	g := gitx.Git{}
+	if _, err := g.Run(clone, nil, "checkout", "-qb", "never-landed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clone, "precious.txt"), []byte("work\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "commit", "-qm", "never merged anywhere"); err != nil {
+		t.Fatal(err)
+	}
+	st, err := InspectIssue(ws, g, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasBlocker(st, "unpushed") {
+		t.Fatalf("content that never landed upstream must still block reap; blockers = %v", st.Blockers())
+	}
+	if notes := st.Notes(); len(notes) != 0 {
+		t.Errorf("nothing landed here; Notes() must stay empty, got %v", notes)
+	}
+}
+
 // A fetch failure alone -- no network, unreachable origin -- must not turn
 // into a hard block on a clean clone; that would make reap useless offline.
 func TestFetchFailureIsStalenessDisclaimerNotBlocker(t *testing.T) {

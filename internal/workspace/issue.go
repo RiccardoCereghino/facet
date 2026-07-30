@@ -22,9 +22,20 @@ type CloneState struct {
 	// Dirty means uncommitted changes or untracked files.
 	Dirty bool
 	// Unpushed counts commits reachable from HEAD or any local branch that no
-	// remote has. This deliberately covers branches with no upstream at all, and
-	// commits made on a detached HEAD: those are the ones most easily lost.
+	// remote has *and* that are not, by patch content, already on the remote's
+	// default branch under a different sha. This deliberately covers branches
+	// with no upstream at all, and commits made on a detached HEAD: those are
+	// the ones most easily lost. The patch-content exception is what keeps a
+	// squash-merged, auto-deleted branch from being counted here: squash
+	// rewrites the sha, so a sha-only reachability test can never see it.
 	Unpushed int
+	// SquashLanded counts commits that failed the sha-based check above --
+	// Unpushed would otherwise have included them -- but were confirmed, by
+	// patch-id (`git cherry`), to already be on the remote's default branch
+	// under a different sha. Purely informational: these are excluded from
+	// Unpushed and never block reap, but staying silent about them is what
+	// taught operators to reach for --force (facet#66).
+	SquashLanded int
 	// FetchStale is set when `git fetch --prune origin` failed, or did not
 	// finish within fetchTimeout, before Unpushed was computed. The count above
 	// is still computed and used against whatever refs are on disk -- refusing
@@ -106,6 +117,22 @@ func (s *IssueState) Blockers() []string {
 	}
 	for _, r := range s.LiveRoots {
 		out = append(out, fmt.Sprintf("%s -- kill it before reaping", r))
+	}
+	return out
+}
+
+// Notes lists non-blocking information about a workspace's state -- things
+// worth saying so an operator does not read silence as "nothing to report"
+// (facet#66). Nothing here belongs in Blockers(): every entry is something
+// that does *not* hold the workspace.
+func (s *IssueState) Notes() []string {
+	var out []string
+	for _, c := range s.Clone {
+		if c.SquashLanded > 0 {
+			out = append(out, fmt.Sprintf(
+				"%s: %d local commit(s) already landed upstream under a different sha (squash-merged) -- not held",
+				c.Dir, c.SquashLanded))
+		}
 	}
 	return out
 }
@@ -237,8 +264,14 @@ func inspectClone(git gitx.Runner, dir, p string) CloneState {
 		c.Unverifiable = append(c.Unverifiable, fmt.Sprintf("git rev-list failed: %v", err))
 	} else if n, err := strconv.Atoi(strings.TrimSpace(out)); err != nil {
 		c.Unverifiable = append(c.Unverifiable, fmt.Sprintf("could not read the unpushed-commit count: %v", err))
-	} else {
-		c.Unpushed = n
+	} else if n > 0 {
+		// A sha not reachable from any remote is not the same question as
+		// "is this content already upstream": squash-merge rewrites the sha,
+		// and GitHub's auto-delete-on-merge then removes the only ref that
+		// could have proven it by name. Check by patch content instead.
+		notLanded := unpushedNotLanded(git, p, n)
+		c.SquashLanded = n - notLanded
+		c.Unpushed = notLanded
 	}
 
 	if out, err := git.Run(p, nil, "stash", "list"); err != nil {
@@ -248,6 +281,68 @@ func inspectClone(git gitx.Runner, dir, p string) CloneState {
 	}
 
 	return c
+}
+
+// unpushedNotLanded narrows a sha-based unpushed count down to commits that
+// are not, by patch content, already present on the remote's default branch.
+// unpushed is the count `rev-list --not --remotes` already found; it is
+// returned unchanged whenever the check below cannot run, so a git failure
+// here fails safe toward the original, more conservative count -- never
+// toward silently clearing a blocker.
+func unpushedNotLanded(git gitx.Runner, dir string, unpushed int) int {
+	def := remoteDefaultBranch(git, dir)
+	if def == "" {
+		return unpushed
+	}
+	refsOut, err := git.Run(dir, nil, "for-each-ref", "--format=%(refname:short)", "refs/heads")
+	if err != nil {
+		return unpushed
+	}
+	refs := strings.Fields(refsOut)
+	refs = append(refs, "HEAD")
+
+	notLanded := map[string]bool{}
+	for _, ref := range refs {
+		// git cherry <upstream> <head> partitions commits reachable from head
+		// but not from upstream by sha into "+" (no equivalent patch found
+		// upstream) and "-" (an equivalent patch already exists upstream,
+		// under some other sha) -- exactly the squash-merge shape.
+		out, err := git.Run(dir, nil, "cherry", def, ref)
+		if err != nil {
+			// Can't verify this ref's commits patch-wise (e.g. no common
+			// history with def). Trust the original, more conservative count
+			// rather than guess.
+			return unpushed
+		}
+		for _, line := range strings.Split(out, "\n") {
+			fields := strings.Fields(line)
+			if len(fields) < 2 {
+				continue
+			}
+			if fields[0] == "+" {
+				notLanded[fields[1]] = true
+			}
+		}
+	}
+	return len(notLanded)
+}
+
+// remoteDefaultBranch resolves origin's default branch as "origin/<name>", or
+// "" if it cannot be determined -- in which case callers must not guess.
+func remoteDefaultBranch(git gitx.Runner, dir string) string {
+	if out, err := git.Run(dir, nil, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"); err == nil {
+		if s := strings.TrimSpace(out); s != "" {
+			return s
+		}
+	}
+	// refs/remotes/origin/HEAD is set by a normal clone, but is not
+	// guaranteed (a hand-built remote, an old fetch config). "main" is the
+	// fleet's actual default (the branch ruling, D29-family), not a bare
+	// guess, so fall back to it if it exists.
+	if _, err := git.Run(dir, nil, "rev-parse", "--verify", "refs/remotes/origin/main"); err == nil {
+		return "origin/main"
+	}
+	return ""
 }
 
 // countLines counts newline-separated entries in already-trimmed output.
