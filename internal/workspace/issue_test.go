@@ -254,6 +254,18 @@ func TestSquashMergedBranchWithDeletedRemoteReapsClean(t *testing.T) {
 	if _, err := g.Run(origin, nil, "am", patchFile); err != nil {
 		t.Fatal(err)
 	}
+	// GitHub's squash-merge always synthesizes its own commit message (the PR
+	// title plus its number), so amend it here too -- and doing so is also
+	// what makes this test's outcome deterministic. `git am` preserves the
+	// original author identity and date; the committer identity and date come
+	// from the environment (CI pins these), so an unmodified `am` can
+	// reproduce the exact same tree+parents+author+committer and land on the
+	// *same* sha as the clone's original commit when both run within the same
+	// second -- which would pass Blockers() for the wrong reason and never
+	// exercise the patch-identity path this test exists to cover.
+	if _, err := g.Run(origin, nil, "commit", "--amend", "-qm", "feature work (squash-merged, #1)"); err != nil {
+		t.Fatal(err)
+	}
 
 	st, err := InspectIssue(ws, g, nil, nil)
 	if err != nil {
