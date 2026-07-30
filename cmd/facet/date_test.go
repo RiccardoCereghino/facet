@@ -79,7 +79,11 @@ func TestCheckAcceptsAPastTimestamp(t *testing.T) {
 }
 
 // A timestamp barely ahead of now -- within ordinary clock skew -- must not
-// be refused; only genuinely-wrong timestamps should trip this.
+// be refused; only genuinely-wrong timestamps should trip this. And it must
+// be reported honestly as still being in the future, never as a negative
+// amount "in the past" (facet!79, F2): that is a sentence about the direction
+// of time that is wrong on its face, in the one command whose subject is not
+// misreading the direction of time.
 func TestCheckToleratesSmallClockSkew(t *testing.T) {
 	now := fixedNow(t)
 	almostNow := now.Add(2 * time.Second).UTC().Format(time.RFC3339)
@@ -87,6 +91,13 @@ func TestCheckToleratesSmallClockSkew(t *testing.T) {
 	var buf bytes.Buffer
 	if err := runDateCheck(&buf, now, almostNow); err != nil {
 		t.Errorf("2 seconds of skew must not be refused: %v", err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "is -") {
+		t.Errorf("a timestamp still ahead of now must never be reported with a negative duration, got %q", out)
+	}
+	if !strings.Contains(out, "future") {
+		t.Errorf("a timestamp ahead of now, even within tolerance, must say so, got %q", out)
 	}
 }
 
@@ -96,6 +107,74 @@ func TestCheckRejectsAMalformedTimestamp(t *testing.T) {
 	err := runDateCheck(&buf, now, "not-a-timestamp")
 	if err == nil {
 		t.Fatal("a malformed timestamp must be rejected, not silently accepted")
+	}
+}
+
+// Command-layer tests: everything above calls runDateCheck/formatNow directly
+// and never exercised RunE's own dispatch -- which is exactly where facet!79's
+// F1 lived (an empty --check silently fell through to the default branch).
+// These go through newDateCmd() and Execute() so that dispatch is what's
+// under test, not just the functions it calls.
+
+// The defect itself: `--check ""` must refuse, not silently print the current
+// time and exit 0. That silent fallthrough is the exact class of bug this
+// command exists to eliminate -- a watch that gets a well-formed timestamp and
+// a zero exit from an unset watermark reads as "all clear."
+func TestDateCmdEmptyCheckRefuses(t *testing.T) {
+	cmd := newDateCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"--check", ""})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatalf("--check with an empty value must refuse, not silently print the current time; got output %q", out.String())
+	}
+}
+
+// The `--check=` spelling must refuse the same way as `--check ""`.
+func TestDateCmdEmptyCheckEqualsFormRefuses(t *testing.T) {
+	cmd := newDateCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"--check="})
+
+	if err := cmd.Execute(); err == nil {
+		t.Fatalf("--check= must refuse, not silently print the current time; got output %q", out.String())
+	}
+}
+
+// With no --check at all, the command must still print the current time --
+// the refusal above must not have broken the ordinary no-flags path.
+func TestDateCmdNoCheckPrintsCurrentTime(t *testing.T) {
+	cmd := newDateCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("facet date with no flags must not error: %v", err)
+	}
+	if _, err := time.Parse(time.RFC3339, strings.TrimSpace(out.String())); err != nil {
+		t.Errorf("output %q does not parse as RFC 3339: %v", out.String(), err)
+	}
+}
+
+// A real --check value must actually dispatch to the check path and refuse a
+// genuinely future timestamp, through the full command, not just the helper.
+func TestDateCmdCheckDispatchesAndRefusesFuture(t *testing.T) {
+	cmd := newDateCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	future := time.Now().Add(74 * time.Minute).UTC().Format(time.RFC3339)
+	cmd.SetArgs([]string{"--check", future})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatalf("a real 74-minutes-future --check value must be refused through the command layer")
 	}
 }
 

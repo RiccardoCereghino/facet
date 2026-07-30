@@ -41,7 +41,18 @@ func newDateCmd() *cobra.Command {
 		PersistentPreRunE: func(*cobra.Command, []string) error { return nil },
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			now := time.Now()
-			if check != "" {
+			if cmd.Flags().Changed("check") {
+				// An empty --check must refuse, not silently fall through to
+				// printing the current time: that is the exact defect class
+				// this command exists to eliminate. A watch calling
+				// `facet date --check "$WATERMARK"` with WATERMARK unset or
+				// blank from a failed substitution would otherwise see a
+				// well-formed timestamp and a zero exit -- the same false
+				// all-clear that left a watch dead for 74 minutes, reproduced
+				// inside the tool meant to catch it (facet!79, F1).
+				if check == "" {
+					return fmt.Errorf("--check was given an empty timestamp -- refusing rather than silently not checking")
+				}
 				return runDateCheck(cmd.OutOrStdout(), now, check)
 			}
 			_, err := fmt.Fprintln(cmd.OutOrStdout(), formatNow(now, local))
@@ -76,6 +87,16 @@ func runDateCheck(w io.Writer, now time.Time, ts string) error {
 	if ahead > futureSkew {
 		return fmt.Errorf("%s is %s in the future (now is %s) -- refusing a timestamp this far ahead of now",
 			ts, ahead.Round(time.Second), formatNow(now, false))
+	}
+	// A timestamp inside the tolerance window can still be nanoseconds to
+	// futureSkew *ahead* of now, and reporting that as a negative amount "in
+	// the past" is a sentence about the direction of time that is wrong on
+	// its face -- in the one command whose subject is not misreading the
+	// direction of time (facet!79, F2). Report each direction honestly.
+	if ahead > 0 {
+		_, err = fmt.Fprintf(w, "%s is %s in the future (now is %s), within the %s skew tolerance\n",
+			ts, ahead.Round(time.Millisecond), formatNow(now, false), futureSkew)
+		return err
 	}
 	_, err = fmt.Fprintf(w, "%s is %s in the past (now is %s)\n", ts, (-ahead).Round(time.Second), formatNow(now, false))
 	return err
