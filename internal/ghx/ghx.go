@@ -57,6 +57,14 @@ type PR struct {
 	URL      string `json:"url"`
 }
 
+// PRForCommit is a merged pull request as returned by GitHub's commit->pulls
+// association -- the REST API's json field names, not gh's `--json` camelCase,
+// because this goes through `gh api` rather than a gh subcommand.
+type PRForCommit struct {
+	Number   int    `json:"number"`
+	MergedAt string `json:"merged_at"`
+}
+
 // ProjectTarget names a Projects v2 board and the single-select field value to
 // put an issue in. Everything is named, never an opaque node ID: the IDs GitHub
 // wants (PVT_…, PVTSSF_…, and an eight-hex-digit option) are stable but
@@ -89,6 +97,12 @@ type Client interface {
 	BranchesFor(repo string, number int) ([]string, error)
 	// ViewPR finds the pull request for a head branch, if any.
 	ViewPR(repo, branch string) (*PR, error)
+	// MergedPRForSHA finds the merged pull request that had sha as a commit,
+	// if any. Unlike ViewPR, which resolves by branch name and goes blind the
+	// moment GitHub deletes the branch on merge, this looks the commit up
+	// directly by its GitHub-side PR association -- which survives a squash
+	// merge rewriting the branch tip to a new sha on the base branch.
+	MergedPRForSHA(repo, sha string) (*PRForCommit, error)
 	// SetIssueStatus puts the issue on target's board, if it is not already
 	// there, and sets target's field to target's option. issueURL is the issue's
 	// html_url, which is what `gh project item-add` takes.
@@ -355,4 +369,28 @@ func (CLI) ViewPR(repo, branch string) (*PR, error) {
 		return nil, err
 	}
 	return &pr, nil
+}
+
+// MergedPRForSHA finds the merged pull request that had sha as a commit.
+//
+// `gh pr list --search <sha>` does NOT index pull requests by commit sha: it
+// can return nothing for a sha whose PR merged minutes earlier
+// (`~/.stele/harness/lib/reap.sh`, "AUDITIONING FOR: facet#66", records this
+// exact near-miss). The commit->pulls REST endpoint is the query that
+// actually answers it.
+func (CLI) MergedPRForSHA(repo, sha string) (*PRForCommit, error) {
+	out, err := run("api", fmt.Sprintf("repos/%s/commits/%s/pulls", repo, sha))
+	if err != nil {
+		return nil, err
+	}
+	var prs []PRForCommit
+	if err := json.Unmarshal(out, &prs); err != nil {
+		return nil, err
+	}
+	for _, pr := range prs {
+		if pr.MergedAt != "" {
+			return &pr, nil
+		}
+	}
+	return nil, nil
 }

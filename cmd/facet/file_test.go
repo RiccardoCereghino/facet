@@ -51,8 +51,11 @@ func (f *fakeGH) ViewIssue(_ string, _ int) (*ghx.Issue, error) { return nil, ni
 func (f *fakeGH) DevelopBranch(_ string, _ int, _, _ string) (string, error) {
 	return "", nil
 }
-func (f *fakeGH) BranchesFor(_ string, _ int) ([]string, error)      { return nil, nil }
-func (f *fakeGH) ViewPR(_, _ string) (*ghx.PR, error)                { return nil, nil }
+func (f *fakeGH) BranchesFor(_ string, _ int) ([]string, error) { return nil, nil }
+func (f *fakeGH) ViewPR(_, _ string) (*ghx.PR, error)           { return nil, nil }
+func (f *fakeGH) MergedPRForSHA(_, _ string) (*ghx.PRForCommit, error) {
+	return nil, nil
+}
 func (f *fakeGH) SetIssueStatus(_ ghx.ProjectTarget, _ string) error { return nil }
 func (f *fakeGH) SetIssueBody(_ string, _ int, _ string) error       { return nil }
 func (f *fakeGH) SearchIssues(_, _ string) ([]ghx.Issue, error)      { return nil, nil }
