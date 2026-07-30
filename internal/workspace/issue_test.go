@@ -383,6 +383,71 @@ func TestBranchWithDeletedRemoteButNoLandedContentStillBlocks(t *testing.T) {
 	}
 }
 
+// Audit finding on facet!76, round 2: `git cherry` silently omits merge
+// commits from its output entirely -- neither "+" nor "-". A merge commit
+// that is the sole unpushed candidate (both its parents already pushed to
+// their own remote branches, never merged to main) is therefore never
+// mentioned by any cherry invocation, and a design that starts from "not
+// landed = whatever cherry marks +" treats an unmentioned candidate as
+// landed by omission. That deleted the only copy of a hand-resolved merge
+// conflict in the audit's reproduction. The fix flips the default: a
+// candidate only counts as landed when cherry explicitly marks it "-";
+// anything else, including silence, stays unpushed.
+func TestUnpushedMergeCommitStillBlocksReap(t *testing.T) {
+	ws, clone := issueWorkspace(t)
+	g := gitx.Git{}
+
+	if _, err := g.Run(clone, nil, "checkout", "-qb", "a", "main"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clone, "a.txt"), []byte("a\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "commit", "-qm", "a work"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "push", "-q", "origin", "a"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := g.Run(clone, nil, "checkout", "-qb", "b", "main"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clone, "b.txt"), []byte("b\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "commit", "-qm", "b work"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "push", "-q", "origin", "b"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := g.Run(clone, nil, "checkout", "-qb", "merged", "a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "merge", "--no-ff", "-q", "-m", "merge b into a", "b"); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := InspectIssue(ws, g, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasBlocker(st, "unpushed") {
+		t.Fatalf("the only copy of a merge commit must block reap even though both its parents are pushed elsewhere; blockers = %v", st.Blockers())
+	}
+	if notes := st.Notes(); len(notes) != 0 {
+		t.Errorf("the merge commit never landed anywhere; Notes() must stay empty, got %v", notes)
+	}
+}
+
 // A fetch failure alone -- no network, unreachable origin -- must not turn
 // into a hard block on a clean clone; that would make reap useless offline.
 func TestFetchFailureIsStalenessDisclaimerNotBlocker(t *testing.T) {

@@ -328,16 +328,24 @@ func unpushedNotLanded(git gitx.Runner, dir string, unpushed int) int {
 	refs := strings.Fields(refsOut)
 	refs = append(refs, "HEAD")
 
-	notLanded := map[string]bool{}
+	// landed holds only candidates git cherry explicitly confirmed ("-": an
+	// equivalent patch already exists upstream). Everything else about a
+	// candidate defaults to *not* landed -- including a candidate git cherry
+	// never mentions at all. That default is load-bearing: git cherry silently
+	// omits merge commits from its output entirely (neither "+" nor "-"), so a
+	// design that built the not-landed set out of "+" marks treated an
+	// unmentioned merge commit as landed by omission -- an audited defect that
+	// let facet reap delete the only copy of a hand-resolved merge conflict.
+	landed := map[string]bool{}
 	for _, ref := range refs {
-		// git cherry <upstream> <head> partitions commits reachable from head
-		// but not from upstream by sha into "+" (no equivalent patch found
-		// upstream) and "-" (an equivalent patch already exists upstream,
-		// under some other sha) -- exactly the squash-merge shape. Its
-		// traversal is bounded by `def` only, so anything it marks "+" that
-		// is not also in `candidates` is a commit rev-list had already
-		// cleared some other way (pushed to a different remote branch) and
-		// must not be added back in.
+		// git cherry <upstream> <head> partitions non-merge commits reachable
+		// from head but not from upstream by sha into "+" (no equivalent
+		// patch found upstream) and "-" (an equivalent patch already exists
+		// upstream, under some other sha) -- exactly the squash-merge shape.
+		// Its traversal is bounded by `def` only, so a mark on a sha that is
+		// not also in `candidates` is a commit rev-list had already cleared
+		// some other way (pushed to a different remote branch) and must not
+		// be added back in.
 		out, err := git.Run(dir, nil, "cherry", def, ref)
 		if err != nil {
 			// Can't verify this ref's commits patch-wise (e.g. no common
@@ -347,15 +355,22 @@ func unpushedNotLanded(git gitx.Runner, dir string, unpushed int) int {
 		}
 		for _, line := range strings.Split(out, "\n") {
 			fields := strings.Fields(line)
-			if len(fields) < 2 || fields[0] != "+" {
+			if len(fields) < 2 || fields[0] != "-" {
 				continue
 			}
 			if candidates[fields[1]] {
-				notLanded[fields[1]] = true
+				landed[fields[1]] = true
 			}
 		}
 	}
-	return len(notLanded)
+
+	notLanded := 0
+	for sha := range candidates {
+		if !landed[sha] {
+			notLanded++
+		}
+	}
+	return notLanded
 }
 
 // remoteDefaultBranch resolves origin's default branch as "origin/<name>", or
