@@ -38,9 +38,12 @@ func newSpawnCmd() *cobra.Command {
 			"durable hazards recorded for its areas.\n\n" +
 			"It also records who the workspace belongs to. --seat is required and names\n" +
 			"the seat; the name goes in .seat, and the issues the workspace covers go in\n" +
-			".scope, one per line. Both are written here rather than by whatever works in\n" +
-			"the workspace afterwards, because an identity a thing asserts about itself is\n" +
-			"not evidence of anything. Neither file is versioned: they are session state.\n\n" +
+			".scope, one per line. --seat-issue is optional and names the issue that\n" +
+			"describes the SEAT rather than the work -- its workload, order, orchestration\n" +
+			"notes and escalation channel -- written to .seat-issue. All three are written\n" +
+			"here rather than by whatever works in the workspace afterwards, because an\n" +
+			"identity a thing asserts about itself is not evidence of anything. None of\n" +
+			"them is versioned: they are session state.\n\n" +
 			"Labels alone cannot decide the repo set: the same topic label is used in\n" +
 			"several repos, and a cross-repo dependency lives in the issue body. So the\n" +
 			"inference is always shown and never silently trusted.\n\n" +

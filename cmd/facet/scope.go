@@ -22,9 +22,10 @@ func newScopeCmd() *cobra.Command {
 		Use:   "scope",
 		Short: "Show or extend the issues a workspace covers",
 		Long: "A workspace records the issues it legitimately covers in .scope, one\n" +
-			"owner/repo#n per line, alongside the seat name in .seat. `facet spawn` writes\n" +
-			"both; this reads them, and adds an issue to a workspace that has been given\n" +
-			"one after the fact.\n\n" +
+			"owner/repo#n per line, alongside the seat name in .seat and the issue that\n" +
+			"describes the seat itself in .seat-issue. `facet spawn` writes all three;\n" +
+			"this reads them, and adds an issue to a workspace that has been given one\n" +
+			"after the fact.\n\n" +
 			"Both subcommands find the workspace by walking UP from the working directory,\n" +
 			"because the work is done inside a repository subdirectory rather than at the\n" +
 			"workspace root.\n\n" +

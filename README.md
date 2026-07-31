@@ -96,6 +96,15 @@ legitimately covers go in `.scope`, one `owner/repo#n` per line — the spawned
 issue always, plus any `--scope owner/repo#n` you pass, because one worker
 regularly carries a coherent group of issues rather than exactly one.
 
+`--seat-issue owner/repo#n` is optional and names the issue that describes the
+**seat** rather than the work — its workload and order, its per-issue tiers, the
+orchestration notes, and the channel it escalates on. It goes in `.seat-issue`,
+one line. A workspace without one is ordinary: every workspace created before the
+file existed has none, and so does one an operator drives directly.
+
+All three are written here rather than by whatever works in the workspace
+afterwards, and none is versioned — they are session state.
+
 Both are written **here**, by the thing creating the workspace, and never by
 whatever works in it afterwards. That is the entire point: an identity a thing
 asserts about itself is not evidence of anything, so attribution has to be
