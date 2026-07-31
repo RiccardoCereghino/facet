@@ -56,7 +56,13 @@ func TestScopeListSaysSoWhenNothingIsRecorded(t *testing.T) {
 		t.Fatalf("runScopeList: %v", err)
 	}
 	out := buf.String()
-	if strings.Count(out, "none recorded") != 2 {
-		t.Errorf("want both the seat and the scope reported as none recorded, got:\n%s", out)
+	// Named rather than counted. A bare count told you the number was wrong and
+	// not which field had gone quiet, and it had to be edited anyway the moment
+	// .seat-issue joined the family — so it may as well say what it wants.
+	for _, field := range []string{seat.NameFile, seat.SeatIssueFile, seat.ScopeFile} {
+		if !strings.Contains(out, "none recorded in "+field) {
+			t.Errorf("%s is not reported as none recorded; a field that vanishes when unset "+
+				"cannot be told from one nobody thought to print. got:\n%s", field, out)
+		}
 	}
 }

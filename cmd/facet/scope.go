@@ -72,6 +72,24 @@ func runScopeList(w io.Writer, ws string) error {
 	} else {
 		_, _ = fmt.Fprintf(w, "seat:      %s\n", name)
 	}
+	// The seat issue is reported before the scope, and reported even when there
+	// is none, for the same reason the seat is: this command is where an
+	// operator looks when identity is in doubt, and a field that vanishes when
+	// unset cannot be distinguished from one nobody thought to print.
+	//
+	// A malformed .seat-issue is surfaced rather than swallowed. It is the one
+	// state that means the spawner's write is broken, and `facet scope list` is
+	// the command run after every re-seed precisely to catch that.
+	seatIssue, haveSeatIssue, siErr := seat.ReadSeatIssue(ws)
+	switch {
+	case siErr != nil:
+		_, _ = fmt.Fprintf(w, "seat issue: (UNREADABLE) %v\n", siErr)
+	case !haveSeatIssue:
+		_, _ = fmt.Fprintf(w, "seat issue: (none recorded in %s)\n", seat.SeatIssueFile)
+	default:
+		_, _ = fmt.Fprintf(w, "seat issue: %s\n", seatIssue)
+	}
+
 	if len(refs) == 0 {
 		_, _ = fmt.Fprintf(w, "scope:     (none recorded in %s)\n", seat.ScopeFile)
 		return nil

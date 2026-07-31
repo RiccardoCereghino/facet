@@ -44,6 +44,21 @@ func runSpawn(o spawnOpts) error {
 	}
 	// The issue being spawned for always leads, whether or not --scope repeats it.
 	scopeRefs := seat.Dedupe(append([]seat.Ref{{Repo: o.Repo, Number: o.Number}}, extraScope...))
+
+	// Parsed here, beside --scope, so a malformed ref refuses before anything is
+	// created rather than after the clones are on disk. It is deliberately NOT
+	// added to scopeRefs: the seat issue is a different thing from the work this
+	// workspace covers, and folding it in would make `.scope` claim the seat
+	// record as work — which is exactly the conflation the third file exists to
+	// avoid.
+	var seatIssueRef seat.Ref
+	haveSeatIssue := o.SeatIssue != ""
+	if haveSeatIssue {
+		seatIssueRef, err = seat.ParseRef(o.SeatIssue)
+		if err != nil {
+			return fmt.Errorf("--seat-issue: %w", err)
+		}
+	}
 	// Before routing, before the issue lookup, before anything is created on
 	// disk or on the forge. A spawn that gets halfway on a bad credential
 	// leaves a workspace whose branch was never linked, which is worse than a
@@ -92,7 +107,7 @@ func runSpawn(o spawnOpts) error {
 	fragNames := route.Fragments(iss.LabelNames())
 	frags, fragErrs := knowledge.LoadAll(roots.Knowledge, fragNames)
 
-	printPlan(ws, o.Repo, iss, sel, hints, route, branch, o.Seat, scopeRefs, frags, fragErrs)
+	printPlan(ws, o.Repo, iss, sel, hints, route, branch, o.Seat, scopeRefs, o.SeatIssue, frags, fragErrs)
 
 	if o.DryRun {
 		fmt.Println("\n--dry-run: nothing was created.")
@@ -157,6 +172,15 @@ func runSpawn(o spawnOpts) error {
 	}
 	rep.Created("%s: %s", seat.NameFile, o.Seat)
 	rep.Created("%s: %s", seat.ScopeFile, seat.Join(scopeRefs))
+	// Reported, never silent. facet#65 was exactly this defect for the first two
+	// files — the one action with no line in the output — and it is closed; a
+	// third silent write would reopen it under a new name.
+	if haveSeatIssue {
+		if err := seat.WriteSeatIssue(ws, seatIssueRef); err != nil {
+			return err
+		}
+		rep.Created("%s: %s", seat.SeatIssueFile, seatIssueRef)
+	}
 	if err := workspace.Sync(roots, ws, git, rep, workspace.SyncOptions{Source: sourceFor(true, rep)}); err != nil {
 		return err
 	}
@@ -325,7 +349,7 @@ func applyOverrides(sel []routing.Selection, route *routing.Routing, homeKey str
 }
 
 func printPlan(ws, repo string, iss *ghx.Issue, sel []routing.Selection, hints []routing.Hint,
-	route *routing.Routing, branch, seatName string, scope []seat.Ref,
+	route *routing.Routing, branch, seatName string, scope []seat.Ref, seatIssue string,
 	frags []knowledge.Fragment, fragErrs []error) {
 
 	fmt.Printf("%s#%d  %s\n", repo, iss.Number, iss.Title)
@@ -341,6 +365,14 @@ func printPlan(ws, repo string, iss *ghx.Issue, sel []routing.Selection, hints [
 	}
 	fmt.Printf("seat:      %s\n", seatName)
 	fmt.Printf("scope:     %s\n", seat.Join(scope))
+	// Shown in the plan as well as reported at write time, so --dry-run
+	// confirms it before anything is created. A field that only appears when
+	// set reads as one nobody thought to print.
+	if seatIssue != "" {
+		fmt.Printf("seat issue: %s\n", seatIssue)
+	} else {
+		fmt.Printf("seat issue: (none)\n")
+	}
 	if t, ok := route.Target(); ok {
 		fmt.Printf("board:     %s/%d, %s = %s\n", t.Owner, t.Number, t.Field, t.Option)
 	}
