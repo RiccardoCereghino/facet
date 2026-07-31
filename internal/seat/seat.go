@@ -31,10 +31,22 @@ import (
 	"unicode"
 )
 
-// NameFile and ScopeFile are the two file names, relative to a workspace root.
+// NameFile, ScopeFile and SeatIssueFile are the file names, relative to a
+// workspace root.
+//
+// SeatIssueFile names the issue that describes the SEAT rather than the work:
+// its bundle and order, its per-issue tiers, the orchestration notes, and the
+// channel it escalates on. It is the third member of the family and it is
+// deliberately the same mechanism as the other two — one line, written by
+// whoever creates the workspace, never by the agent that then works in it.
+//
+// facet writes the pointer and nothing else. It does not create the issue, does
+// not read it, and does not know what is in it: what a seat issue CONTAINS is
+// gad's and stele's.
 const (
-	NameFile  = ".seat"
-	ScopeFile = ".scope"
+	NameFile      = ".seat"
+	ScopeFile     = ".scope"
+	SeatIssueFile = ".seat-issue"
 )
 
 // ValidateName rejects a seat name that cannot be used as written.
@@ -242,6 +254,62 @@ func ReadScope(workspaceDir string) ([]Ref, error) {
 		out = append(out, r)
 	}
 	return out, nil
+}
+
+// WriteSeatIssue records the issue that describes this seat.
+//
+// Separate from Write rather than a fourth parameter to it: a workspace can be
+// created without a seat issue — every one before this existed was, and an
+// operator's own workspace has none — and threading an optional value through
+// the function that writes the two mandatory ones would make the common case
+// carry the rare one.
+//
+// Read back like everything else here, for the reason writeAndVerify exists: a
+// write that reports success and does not land is the failure this codebase has
+// hit most often.
+func WriteSeatIssue(workspaceDir string, ref Ref) error {
+	return writeAndVerify(filepath.Join(workspaceDir, SeatIssueFile), []byte(ref.String()+"\n"))
+}
+
+// ReadSeatIssue returns the issue that describes this seat, and whether one is
+// recorded at all.
+//
+// **Missing and empty are different, and that is the whole point.** No file
+// means no seat issue recorded, which is not an error: it is the state of every
+// workspace created before this file existed, and of any workspace an operator
+// drives directly. A file that is *present but names nothing* is an error,
+// because "this seat has no record" and "the spawner meant to write one and did
+// not" are both defensible readings of it — the same argument parseScope already
+// makes for an empty .scope, and the same reason it is refused rather than
+// guessed at.
+//
+// A note may follow the ref on later lines, as .seat allows beneath the name.
+func ReadSeatIssue(workspaceDir string) (Ref, bool, error) {
+	path := filepath.Join(workspaceDir, SeatIssueFile)
+	b, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return Ref{}, false, nil
+	}
+	if err != nil {
+		return Ref{}, false, err
+	}
+
+	for _, line := range strings.Split(string(b), "\n") {
+		text := strings.TrimSpace(line)
+		if text == "" || strings.HasPrefix(text, "#") {
+			continue
+		}
+		r, err := ParseRef(text)
+		if err != nil {
+			return Ref{}, false, fmt.Errorf("%s: %w", path, err)
+		}
+		return r, true, nil
+	}
+
+	return Ref{}, false, fmt.Errorf("%s is present but names no issue\n"+
+		"fix: write one issue as owner/repo#123, or delete the file if this workspace has no seat issue — "+
+		"an empty file is ambiguous between 'no seat issue' and 'the spawner meant to write one and did not', "+
+		"which is why it is refused rather than guessed at", path)
 }
 
 // AppendScope adds issues to a workspace's scope, and reports which were new. It

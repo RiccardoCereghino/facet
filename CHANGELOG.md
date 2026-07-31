@@ -17,6 +17,18 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   which neither the manifest's single issue number nor the branch name can
   express.
 
+- **`spawn --seat-issue owner/repo#n` records the issue that describes the
+  seat.** Written to `.seat-issue`, one line — the third member of the
+  `.seat`/`.scope` family, same spawner-writes rule and same walk-up
+  resolution. It names the seat's workload and order, its per-issue tiers, the
+  orchestration notes, and the channel it escalates on: everything that is true
+  of the *seat* rather than of the work, which previously had nowhere to live.
+  Optional, because a workspace without one is ordinary. **Missing is not an
+  error; present-but-empty is** — "no seat issue" and "the spawner meant to
+  write one and did not" are both defensible readings of an empty file. Reported
+  at write time and shown in the plan, so `--dry-run` confirms it before
+  anything is created, and `facet scope list` reports it including when absent.
+
   Both files are written by the command that *creates* the workspace and never
   by whatever works in it afterwards, which is the whole property: an identity a
   thing asserts about itself is not evidence of anything. The mechanism this
