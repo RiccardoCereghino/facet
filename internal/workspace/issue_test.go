@@ -365,7 +365,7 @@ func TestStaleRemoteRefButCommitAlreadyUpstreamReapsClean(t *testing.T) {
 // auto-deletes the branch on merge. From the clone's perspective that is
 // indistinguishable, by sha, from a commit that was never pushed at all -- no
 // remote-tracking ref exists under any name that contains it. The landing
-// proof (ancestor check, then merged-PR-by-commit, then tree-identical) is
+// proof (ancestor check, then merged-PR-by-commit, then my-files-match-def) is
 // what tells the two apart, and this must reap clean without --force.
 func TestSquashMergedBranchWithDeletedRemoteReapsClean(t *testing.T) {
 	ws, clone := issueWorkspace(t)
@@ -440,7 +440,7 @@ func TestSquashMergedBranchWithDeletedRemoteReapsClean(t *testing.T) {
 // worked for a one-commit branch did nothing for the common case (the
 // auditor's corpus: 11 of the last 20 merged facet PRs had more than one
 // commit). The landing proof replaces per-commit comparison with an
-// ancestor-or-merged-PR-or-identical-tree test on the branch tip, which does
+// ancestor-or-merged-PR-or-my-files-match-def test on the branch tip, which does
 // not care how many commits got there.
 func TestMultiCommitSquashMergedBranchReapsClean(t *testing.T) {
 	ws, clone := issueWorkspace(t)
@@ -506,8 +506,8 @@ func TestMultiCommitSquashMergedBranchReapsClean(t *testing.T) {
 // (`~/.stele/harness/lib/reap.sh`) exists because every auditor workspace is a
 // DETACHED HEAD -- auditing checks out the audited sha, never a branch tip, so
 // a squash-merged audit workspace is 100% of that traffic. The landing proof's
-// third check (tree identical to def) is what a detached HEAD needs, same as
-// a checked-out branch.
+// third check (every file this ref touched still reads as it does on def) is
+// what a detached HEAD needs, same as a checked-out branch.
 func TestDetachedHeadOnSquashMergedShaReapsClean(t *testing.T) {
 	ws, clone := issueWorkspace(t)
 	m, err := manifest.Read(ws)
@@ -565,11 +565,11 @@ func TestDetachedHeadOnSquashMergedShaReapsClean(t *testing.T) {
 
 // Audit finding on facet!76: an auditor leaves working branches behind (e.g. a
 // `pr183` branch pinned to a round-1 head that a later round superseded
-// inside the same PR). That branch's tree is deliberately NOT identical to
-// the default branch, so the head-shaped proof (which requires an identical
-// tree) would wrongly refuse to clear it. A leftover, non-checked-out branch
-// only needs to prove "this belonged to a merged PR" -- whatever superseded
-// it merged too, so nothing is lost.
+// inside the same PR). That branch's content deliberately does NOT match the
+// default branch, so the head-shaped proof (whose third check requires the
+// files it touched to match) would wrongly refuse to clear it. A leftover,
+// non-checked-out branch only needs to prove "this belonged to a merged PR" --
+// whatever superseded it merged too, so nothing is lost.
 func TestLeftoverBranchBelongingToMergedPRIsNotCountedUnpushed(t *testing.T) {
 	ws, clone := issueWorkspace(t)
 	g := gitx.Git{}
@@ -836,6 +836,128 @@ func TestSquashLandedCommitCountedOnceAcrossSeveralBranches(t *testing.T) {
 	}
 	if notes := st.Notes(); len(notes) != 1 || !strings.Contains(notes[0], "1 local commit(s)") {
 		t.Errorf("the note must quote the true count, got %v", notes)
+	}
+}
+
+// landOnDefault commits an unrelated change straight onto origin's default
+// branch -- somebody else's pull request merging while this workspace sat there.
+func landOnDefault(t *testing.T, g gitx.Git, origin, file, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(origin, file), []byte(content), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(origin, nil, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(origin, nil, "commit", "-qm", "an unrelated pull request (#999)"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// squashLandedWorkspace is the shape facet#78 is about: a workspace whose branch
+// was squash-merged and auto-deleted, checked out at its own tip, with the
+// merged-PR lookup that would confirm it.
+func squashLandedWorkspace(t *testing.T) (ws string, clone string, origin string, pr fakeCommitPR) {
+	t.Helper()
+	ws, clone = issueWorkspace(t)
+	m, err := manifest.Read(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin = m.Clones["repo"]
+	g := gitx.Git{}
+	if _, err := g.Run(clone, nil, "checkout", "-qb", "1-x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clone, "mine.txt"), []byte("my work\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "commit", "-qm", "feature work"); err != nil {
+		t.Fatal(err)
+	}
+	sha := squashLand(t, g, clone, origin, "1-x")
+	return ws, clone, origin, fakeCommitPR{merged: map[string]bool{sha: true}}
+}
+
+// facet#78: check (c) required the checked-out ref's tree to be IDENTICAL to
+// origin's default branch, so a squash-landed workspace reaped cleanly only in
+// the gap between its own merge and the next unrelated one. On a repo where
+// merges are frequent that window is minutes, and the workspace then goes back
+// to claiming it holds the only copy of work that is demonstrably on main --
+// which is precisely the false alarm that teaches --force.
+//
+// Nothing about the workspace changes between reaping clean and refusing. Only
+// somebody else's pull request landed.
+func TestSquashLandedWorkspaceStillReapsAfterAnUnrelatedMerge(t *testing.T) {
+	ws, _, origin, pr := squashLandedWorkspace(t)
+	landOnDefault(t, gitx.Git{}, origin, "someone-else.txt", "their work\n")
+
+	st, err := InspectIssue(ws, gitx.Git{}, pr, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := st.Blockers(); len(b) != 0 {
+		t.Errorf("an unrelated sibling merge must not resurrect the refusal on a squash-landed workspace, got %v", b)
+	}
+}
+
+// The guard nothing asserted, and the reason check (c) exists at all, quoted
+// from the harness workaround it was ported from: "a merged PR whose file then
+// diverged would still be a loss, and (b) alone would have said it was safe."
+//
+// That property must survive facet#78 exactly. The narrowing is only allowed to
+// stop caring about files this branch never touched; a file it DID touch,
+// changed on the default branch after the merge, still means the tree here is
+// not what landed.
+func TestSquashLandedWorkspaceStillRefusesWhenItsOwnFileDivergedAfterwards(t *testing.T) {
+	ws, _, origin, pr := squashLandedWorkspace(t)
+	landOnDefault(t, gitx.Git{}, origin, "mine.txt", "my work, rewritten by someone else\n")
+
+	st, err := InspectIssue(ws, gitx.Git{}, pr, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasBlocker(st, "unpushed") {
+		t.Fatalf("a file this branch touched, diverged on the default branch afterwards, must still hold the workspace; blockers = %v", st.Blockers())
+	}
+}
+
+// facet#78's third acceptance sibling: a landed head is not a licence to delete
+// the whole workspace. An unrelated local branch carrying work that landed
+// nowhere must still refuse, even though the checked-out ref is provably safe.
+func TestLandedHeadWithAnUnlandedSiblingBranchStillBlocks(t *testing.T) {
+	ws, clone, origin, pr := squashLandedWorkspace(t)
+	g := gitx.Git{}
+	landOnDefault(t, g, origin, "someone-else.txt", "their work\n")
+
+	if _, err := g.Run(clone, nil, "checkout", "-qb", "sidework", "main"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clone, "side.txt"), []byte("never landed anywhere\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "commit", "-qm", "side work, landed nowhere"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "checkout", "-q", "1-x"); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := InspectIssue(ws, g, pr, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasBlocker(st, "unpushed") {
+		t.Fatalf("a sibling branch whose work landed nowhere must still hold the workspace; blockers = %v", st.Blockers())
+	}
+	if got := st.Clone[0].Unpushed; got != 1 {
+		t.Errorf("only the sibling's own commit is at risk: Unpushed = %d, want 1", got)
 	}
 }
 
