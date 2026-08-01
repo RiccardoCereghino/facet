@@ -286,6 +286,78 @@ func TestFragments(t *testing.T) {
 	}
 }
 
+// spawnable:false narrows what `facet spawn` may target. It must not narrow
+// anything else: Load, KeyForRepo and Infer are exactly the paths every
+// survey and every other command builds on, and a field that hid a repo from
+// any of them would silently reintroduce the invisibility spawnable:false was
+// chosen to fix (facet#85).
+func TestSpawnableFalseRepoStaysVisibleToRouting(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "routing.json")
+	contents := `{
+		"version": 1,
+		"repos": {
+			"lab-workspaces": {"dir": "lab-workspaces", "url": "https://example.invalid/lab-workspaces.git", "spawnable": false},
+			"home":           {"dir": "home",           "url": "https://example.invalid/home.git"}
+		},
+		"ownerRepoToKey": {
+			"acme/lab-workspaces": "lab-workspaces",
+			"acme/home": "home"
+		},
+		"aliases": {},
+		"areaMap": {"area/lab": ["lab-workspaces"]},
+		"knowledgeByArea": {},
+		"pathHints": {}
+	}`
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	repo, ok := r.Repos["lab-workspaces"]
+	if !ok {
+		t.Fatal("spawnable:false dropped the repo out of Repos entirely")
+	}
+	if repo.IsSpawnable() {
+		t.Error("IsSpawnable() = true for a repo marked spawnable:false")
+	}
+	if got := r.KeyForRepo("acme/lab-workspaces"); got != "lab-workspaces" {
+		t.Errorf(`KeyForRepo("acme/lab-workspaces") = %q, want "lab-workspaces": `+
+			"spawnable:false must not remove it from ownerRepoToKey resolution", got)
+	}
+
+	// A label naming it must still pull it into a selection -- this is the
+	// property that matters. sync, restore and any future survey read Repos
+	// and KeyForRepo, already proven above; Infer is the one remaining path
+	// that could quietly drop a repo instead of merely refusing to spawn it.
+	iss := &ghx.Issue{Labels: []ghx.Label{{Name: "area/lab"}}}
+	sel, _ := r.Infer("acme/home", iss)
+	found := false
+	for _, s := range sel {
+		if s.Key == "lab-workspaces" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Infer() did not select lab-workspaces even though area/lab names it; sel=%+v", sel)
+	}
+}
+
+// Every entry in the real routing file predates this field, so the default
+// must be "spawnable" -- otherwise this change silently refuses every
+// existing repo the moment it lands.
+func TestAbsentSpawnableMeansSpawnable(t *testing.T) {
+	r := load(t)
+	for key, repo := range r.Repos {
+		if !repo.IsSpawnable() {
+			t.Errorf("%s: IsSpawnable() = false with no spawnable field in testdata/routing.json", key)
+		}
+	}
+}
+
 // A routing file that names a repo it never defines is a configuration bug and
 // must fail loudly at load, not silently drop the repo at spawn time.
 func TestValidateCatchesDanglingKeys(t *testing.T) {
