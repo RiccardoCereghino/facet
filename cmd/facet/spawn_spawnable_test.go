@@ -26,9 +26,16 @@ func (f *forbidViewIssue) ViewIssue(repo string, number int) (*ghx.Issue, error)
 }
 
 // withSpawnableRouting writes a routing file with one spawnable repo and one
-// marked spawnable:false, and points the package-level roots at it.
+// marked spawnable:false, and points the package-level roots at it. It also
+// stubs the SSH-key half of the credential preflight runSpawn runs first --
+// the CI runner has none, and these tests are about spawnable:false, not
+// about the machine's SSH state (already covered by preflight_test.go).
 func withSpawnableRouting(t *testing.T) {
 	t.Helper()
+	prevCheck := checkSSHKey
+	checkSSHKey = func(string) ([]ghx.Problem, string) { return nil, "" }
+	t.Cleanup(func() { checkSSHKey = prevCheck })
+
 	dir := t.TempDir()
 	path := filepath.Join(dir, "routing.json")
 	contents := `{
