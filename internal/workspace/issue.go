@@ -322,6 +322,13 @@ func inspectClone(git gitx.Runner, dir, p, repo string, pr PRLookup) CloneState 
 // be nil, in which case only the ancestor check runs and a squash-merge is not
 // detected (fails safe toward "unpushed", never toward silently clearing a
 // blocker).
+//
+// The counts are over DISTINCT COMMITS, not a sum of per-ref answers. A commit
+// reachable from more than one local branch -- `git branch backup` before a
+// rebase is enough -- was counted once per branch, so a workspace holding the
+// only copy of one commit was told three commits were at risk (facet#77). The
+// classification is still per ref, because "landed" is a property of the ref
+// that was proven, not of an individual sha; only the accounting is a set.
 func unpushedLanding(git gitx.Runner, dir, repo string, commitPR CommitPRLookup) (unpushed, landed int, err error) {
 	def := remoteDefaultBranch(git, dir)
 
@@ -338,16 +345,15 @@ func unpushedLanding(git gitx.Runner, dir, repo string, commitPR CommitPRLookup)
 		refs = append(refs, "HEAD")
 	}
 
+	unpushedShas := map[string]struct{}{}
+	landedShas := map[string]struct{}{}
 	for _, ref := range refs {
-		out, err := git.Run(dir, nil, "rev-list", "--count", ref, "--not", "--remotes")
+		out, err := git.Run(dir, nil, "rev-list", ref, "--not", "--remotes")
 		if err != nil {
 			return 0, 0, err
 		}
-		n, err := strconv.Atoi(strings.TrimSpace(out))
-		if err != nil {
-			return 0, 0, err
-		}
-		if n == 0 {
+		shas := strings.Fields(out)
+		if len(shas) == 0 {
 			// This ref's commits are all already reachable from some remote
 			// (pushed to its own branch, say) -- nothing to prove for it, and
 			// nothing to add.
@@ -357,15 +363,27 @@ func unpushedLanding(git gitx.Runner, dir, repo string, commitPR CommitPRLookup)
 		if err != nil {
 			return 0, 0, err
 		}
-		sha := strings.TrimSpace(shaOut)
+		tip := strings.TrimSpace(shaOut)
 		isHead := ref == current || (detached && ref == "HEAD")
-		if proofLanded(git, dir, sha, repo, def, commitPR, isHead) {
-			landed += n
-		} else {
-			unpushed += n
+		into := unpushedShas
+		if proofLanded(git, dir, tip, repo, def, commitPR, isHead) {
+			into = landedShas
+		}
+		for _, s := range shas {
+			into[s] = struct{}{}
 		}
 	}
-	return unpushed, landed, nil
+
+	// A commit reachable from both a ref proven landed and one that is not
+	// counts as UNPUSHED. The landing proof ran against the other ref's tip and
+	// says nothing about a ref carrying further work on top, so the overlap is
+	// resolved in the direction that holds the workspace -- and it keeps
+	// SquashLanded's contract true: those commits are excluded from Unpushed,
+	// never reported under both.
+	for s := range unpushedShas {
+		delete(landedShas, s)
+	}
+	return len(unpushedShas), len(landedShas), nil
 }
 
 // proofLanded answers whether sha's content has already landed on def (the
