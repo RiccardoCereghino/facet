@@ -104,6 +104,141 @@ func issueWorkspace(t *testing.T) (ws string, clone string) {
 	return ws, filepath.Join(ws, "repo")
 }
 
+// issueWorkspaceNoDefaultBranch builds an issue workspace whose origin has NO
+// resolvable default branch: its own HEAD points at a branch that does not
+// exist, and it has no `main`. That is the "hand-built remote, an old fetch
+// config, a repo whose default is not main" shape remoteDefaultBranch's comment
+// names, and it is the only one that survives inspectClone's fetch --
+// `git remote set-head origin --delete` is undone by the next
+// `git fetch --prune origin` on git 2.51.2, measured, so a clone doctored after
+// the fact never reaches the branch under test (facet#80).
+//
+// The clone therefore has no checked-out branch either; callers make one.
+func issueWorkspaceNoDefaultBranch(t *testing.T) (ws string, clone string) {
+	t.Helper()
+	root := t.TempDir()
+	origin := filepath.Join(root, "origin")
+	g := gitx.Git{}
+	if err := os.MkdirAll(origin, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "trunk"},
+		{"config", "user.email", "t@example.com"},
+		{"config", "user.name", "t"},
+	} {
+		if _, err := g.Run(origin, nil, args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(origin, "README"), []byte("hello\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"add", "-A"},
+		{"commit", "-qm", "init"},
+		{"symbolic-ref", "HEAD", "refs/heads/ghost"},
+	} {
+		if _, err := g.Run(origin, nil, args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+
+	ws = filepath.Join(root, "iss-repo-1-x")
+	if err := os.MkdirAll(ws, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	m := &manifest.Manifest{
+		Name:   "iss-repo-1-x",
+		Clones: map[string]string{"repo": origin},
+		Issue: &manifest.Issue{
+			Repo: "o/repo", Number: 1, Branch: "1-x", Home: "repo",
+		},
+	}
+	if err := m.Write(ws); err != nil {
+		t.Fatal(err)
+	}
+	if err := Sync(testRoots(root), ws, g, quiet(), SyncOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	return ws, filepath.Join(ws, "repo")
+}
+
+// facet#80: proofLanded's `def == ""` fail-safe had never executed, in four
+// rounds of audit on facet#66 or anywhere since -- the only path in the landing
+// proof that decides whether a workspace is reapable and had never run.
+//
+// This asserts the fixture actually reaches it. Without this, the end-to-end
+// test below could pass for the wrong reason: a workspace refuses for any number
+// of causes, and "the message changed" is not evidence the branch was entered.
+func TestUnresolvableDefaultBranchIsTheFailSafesTrigger(t *testing.T) {
+	_, clone := issueWorkspaceNoDefaultBranch(t)
+	if def := remoteDefaultBranch(gitx.Git{}, clone); def != "" {
+		t.Fatalf("remoteDefaultBranch = %q, want \"\" -- the fixture does not reach the fail-safe, so nothing below tests it", def)
+	}
+}
+
+// And what reap prints when it fires is now a decision, not a side effect. The
+// direction is unchanged -- an unresolvable default branch still holds the
+// workspace, because nothing can be proven landed against a branch that cannot
+// be named -- but an operator on such a remote was told only about unpushed
+// commits, with no way to learn the real cause.
+//
+// The disclaimer rides the unpushed line, exactly as FetchStale's does, rather
+// than becoming an Unverifiable entry: Unverifiable blocks even with zero
+// unpushed commits, which would make every clean workspace on a repo like this
+// unreapable. This surfaces only where the fail-safe actually cost something.
+func TestUnresolvableDefaultBranchNamesTheCauseInTheRefusal(t *testing.T) {
+	ws, clone := issueWorkspaceNoDefaultBranch(t)
+	g := gitx.Git{}
+	if _, err := g.Run(clone, nil, "checkout", "-qb", "1-x", "origin/trunk"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clone, "work.txt"), []byte("work\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "commit", "-qm", "work on an odd remote"); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := InspectIssue(ws, g, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasBlocker(st, "unpushed") {
+		t.Fatalf("nothing can be proven landed against an unresolvable default branch, so the work must still be held; blockers = %v", st.Blockers())
+	}
+	if !hasBlocker(st, "could not resolve origin's default branch") {
+		t.Errorf("the refusal must name the actual cause, not just report unpushed commits; blockers = %v", st.Blockers())
+	}
+}
+
+// The disclaimer must not appear where the fail-safe changed nothing. A clean
+// workspace on the same odd remote has no unpushed candidates, so the default
+// branch was never needed -- reporting it there would be noise on a reap that
+// succeeds, and the FetchStale precedent it copies is silent for the same reason.
+func TestUnresolvableDefaultBranchIsSilentOnACleanWorkspace(t *testing.T) {
+	ws, clone := issueWorkspaceNoDefaultBranch(t)
+	g := gitx.Git{}
+	// A branch at origin/trunk with nothing on top. The checkout is needed
+	// because this fixture's clone has no HEAD to speak of -- an unborn HEAD is
+	// not a clean workspace, it is an unverifiable one, and reap rightly refuses
+	// it for a different reason entirely.
+	if _, err := g.Run(clone, nil, "checkout", "-qb", "1-x", "origin/trunk"); err != nil {
+		t.Fatal(err)
+	}
+	st, err := InspectIssue(ws, g, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := st.Blockers(); len(b) != 0 {
+		t.Errorf("a clean workspace must still reap even when origin's default branch cannot be resolved, got %v", b)
+	}
+}
+
 func TestInspectCleanWorkspaceIsReapable(t *testing.T) {
 	ws, _ := issueWorkspace(t)
 	st, err := InspectIssue(ws, gitx.Git{}, nil, nil)
