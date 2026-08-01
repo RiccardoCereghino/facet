@@ -414,8 +414,8 @@ func unpushedLanding(git gitx.Runner, dir, repo string, commitPR CommitPRLookup)
 // sha rather than a branch tip) and requires all three checks. isHead is false
 // for a leftover local branch the workspace happens to still be carrying
 // (an auditor's own working branch, say); that only needs the first two,
-// because its tree is allowed to differ from def -- a later round inside the
-// same PR can supersede it, and "tree identical to def" would then wrongly
+// because its content is allowed to differ from def -- a later round inside the
+// same PR can supersede it, and requiring it to match def would then wrongly
 // refuse a correct deletion.
 func proofLanded(git gitx.Runner, dir, sha, repo, def string, commitPR CommitPRLookup, isHead bool) bool {
 	if def == "" {
@@ -442,10 +442,49 @@ func proofLanded(git gitx.Runner, dir, sha, repo, def string, commitPR CommitPRL
 		return true
 	}
 
-	// (c) the checked-out ref's tree must be IDENTICAL to def. A merged PR
-	// whose file then diverged on def would still be a loss, and (b) alone
-	// would have called it safe.
-	diff, err := git.Run(dir, nil, "diff", "--stat", sha, def)
+	// (c) every file this ref itself touched must still read on def exactly as
+	// it does here. A merged PR whose file then diverged on def would still be
+	// a loss, and (b) alone would have called it safe -- that is why this check
+	// exists and the property is unchanged.
+	//
+	// What changed (facet#78) is the scope. This compared the WHOLE tree to def,
+	// so a squash-landed workspace reaped cleanly only until the next unrelated
+	// pull request merged; from that moment it went back to claiming it held the
+	// only copy of work demonstrably on def. Nothing about the workspace had
+	// changed. On a repo where merges are frequent the clean window is minutes,
+	// and a guard that cries wolf on the ordinary path teaches --force -- the one
+	// flag that can actually destroy unpushed work.
+	//
+	// Asking "is MY content still on def" rather than "is the whole tree still
+	// what I left" narrows the question to the files this ref changed, and
+	// nothing else. A sibling touching some other file is no longer this
+	// workspace's problem; a sibling touching one of these files still refuses.
+	base, err := git.Run(dir, nil, "merge-base", sha, def)
+	if err != nil {
+		return false
+	}
+	names, err := git.Run(dir, nil, "diff", "--name-only", "-z", strings.TrimSpace(base), sha)
+	if err != nil {
+		return false
+	}
+	// -z because a path may contain anything but NUL, and a filename with a
+	// newline in it must not be read as two paths -- one of which would then
+	// name nothing and quietly narrow the comparison.
+	var files []string
+	for _, f := range strings.Split(names, "\x00") {
+		if f != "" {
+			files = append(files, f)
+		}
+	}
+	if len(files) == 0 {
+		// This ref changed no file relative to the merge base, so there is no
+		// content of its own left to lose -- (a) and (b) have already proven
+		// everything there is to prove. Guarded explicitly because an empty
+		// pathspec would make the diff below compare the entire tree again,
+		// silently restoring the behaviour this replaced.
+		return true
+	}
+	diff, err := git.Run(dir, nil, append([]string{"diff", "--stat", sha, def, "--"}, files...)...)
 	if err != nil {
 		return false
 	}
