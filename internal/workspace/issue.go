@@ -44,6 +44,17 @@ type CloneState struct {
 	// Blockers appends a disclaimer to the unpushed-commit line whenever this is
 	// set and there are unpushed commits to disclaim.
 	FetchStale bool
+	// DefaultBranchUnresolved is set when origin's default branch could not be
+	// determined -- no refs/remotes/origin/HEAD and no origin/main, which is a
+	// hand-built remote, an old fetch config, or a repo whose default is not
+	// main -- *and* there were unpushed candidates that needed it. Nothing can
+	// be proven to have landed on a branch that cannot be named, so proofLanded
+	// fails safe and every candidate is counted unpushed. Without this the
+	// operator is told about unpushed commits and never about the real cause
+	// (facet#80). Like FetchStale it is a disclaimer on that line and never a
+	// blocker of its own: it is set only when the fail-safe actually decided
+	// something, so a clean workspace on such a remote still reaps.
+	DefaultBranchUnresolved bool
 	// Stashed counts `git stash` entries, which no push would ever carry.
 	Stashed int
 	// Unverifiable holds the reasons this clone's state could not be confirmed --
@@ -93,6 +104,9 @@ func (s *IssueState) Blockers() []string {
 			msg := fmt.Sprintf("%s has %d unpushed commit(s) -- this workspace is their only copy", c.Dir, c.Unpushed)
 			if c.FetchStale {
 				msg += " (could not fetch origin first -- a branch merged and deleted upstream may be miscounted here)"
+			}
+			if c.DefaultBranchUnresolved {
+				msg += " (could not resolve origin's default branch -- work already landed there cannot be told from unpushed work here)"
 			}
 			out = append(out, msg)
 		}
@@ -287,11 +301,12 @@ func inspectClone(git gitx.Runner, dir, p, repo string, pr PRLookup) CloneState 
 		if pr != nil {
 			commitPR, _ = pr.(CommitPRLookup)
 		}
-		if unpushed, landed, err := unpushedLanding(git, p, repo, commitPR); err != nil {
+		if unpushed, landed, defUnresolved, err := unpushedLanding(git, p, repo, commitPR); err != nil {
 			c.Unverifiable = append(c.Unverifiable, fmt.Sprintf("could not verify unpushed commits: %v", err))
 		} else {
 			c.Unpushed = unpushed
 			c.SquashLanded = landed
+			c.DefaultBranchUnresolved = defUnresolved
 		}
 	}
 
@@ -329,16 +344,16 @@ func inspectClone(git gitx.Runner, dir, p, repo string, pr PRLookup) CloneState 
 // only copy of one commit was told three commits were at risk (facet#77). The
 // classification is still per ref, because "landed" is a property of the ref
 // that was proven, not of an individual sha; only the accounting is a set.
-func unpushedLanding(git gitx.Runner, dir, repo string, commitPR CommitPRLookup) (unpushed, landed int, err error) {
+func unpushedLanding(git gitx.Runner, dir, repo string, commitPR CommitPRLookup) (unpushed, landed int, defUnresolved bool, err error) {
 	def := remoteDefaultBranch(git, dir)
 
 	current, detached, err := currentRef(git, dir)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, false, err
 	}
 	refsOut, err := git.Run(dir, nil, "for-each-ref", "--format=%(refname:short)", "refs/heads")
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, false, err
 	}
 	refs := strings.Fields(refsOut)
 	if detached {
@@ -350,7 +365,7 @@ func unpushedLanding(git gitx.Runner, dir, repo string, commitPR CommitPRLookup)
 	for _, ref := range refs {
 		out, err := git.Run(dir, nil, "rev-list", ref, "--not", "--remotes")
 		if err != nil {
-			return 0, 0, err
+			return 0, 0, false, err
 		}
 		shas := strings.Fields(out)
 		if len(shas) == 0 {
@@ -359,9 +374,13 @@ func unpushedLanding(git gitx.Runner, dir, repo string, commitPR CommitPRLookup)
 			// nothing to add.
 			continue
 		}
+		// A candidate exists, so the landing proof genuinely needed def. An
+		// unresolvable default branch is only worth disclosing once it has
+		// actually decided something (facet#80).
+		defUnresolved = def == ""
 		shaOut, err := git.Run(dir, nil, "rev-parse", ref)
 		if err != nil {
-			return 0, 0, err
+			return 0, 0, false, err
 		}
 		tip := strings.TrimSpace(shaOut)
 		isHead := ref == current || (detached && ref == "HEAD")
@@ -383,7 +402,7 @@ func unpushedLanding(git gitx.Runner, dir, repo string, commitPR CommitPRLookup)
 	for s := range unpushedShas {
 		delete(landedShas, s)
 	}
-	return len(unpushedShas), len(landedShas), nil
+	return len(unpushedShas), len(landedShas), defUnresolved, nil
 }
 
 // proofLanded answers whether sha's content has already landed on def (the
