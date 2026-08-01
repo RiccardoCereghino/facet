@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 
@@ -82,9 +83,9 @@ func newReapCmd() *cobra.Command {
 			"in the workspace.\n\n" +
 			"The shared mirror is never touched: a clone's objects are hardlinks, so\n" +
 			"deleting the workspace drops those names and leaves the mirror's own intact.",
-		Args: cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			ws, err := config.ResolveWorkspace(path)
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			ws, err := reapTarget(path, args)
 			if err != nil {
 				return err
 			}
@@ -130,6 +131,41 @@ func newReapCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&force, "force", false, "delete even when work would be lost")
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "skip the confirmation prompt")
 	return cmd
+}
+
+// reapTarget resolves the workspace to reap from --path and an optional
+// positional argument, which name the same thing.
+//
+// `facet reap <name>` used to answer `unknown command "<name>" for "facet reap"`:
+// the command took --path only, and cobra.NoArgs rejected the positional. That is
+// the first shape every operator reaches for, and the error names the wrong
+// problem -- it reads as "reap is broken", not as "reap wants a flag". It has cost
+// time more than once and is documented as a trap in prose, which is where a CLI
+// puts things it has decided not to fix (facet#83).
+//
+// A positional is taken as a path, and falls back to <workspaces root>/<name>
+// when it is a bare name and no such path exists: a workspace is referred to by
+// name far more often than by path, and that fallback is what makes
+// `facet reap iss-73` mean what it looks like it means.
+//
+// Both forms at once is an error, never a precedence rule. Two arguments that
+// disagree about which directory to delete must not have a silent winner.
+func reapTarget(path string, args []string) (string, error) {
+	if len(args) == 0 {
+		return config.ResolveWorkspace(path)
+	}
+	name := args[0]
+	if path != "" {
+		return "", fmt.Errorf("name the workspace once: --path %s and %q disagree; drop one", path, name)
+	}
+	if _, err := os.Stat(name); err != nil && !strings.ContainsRune(name, filepath.Separator) {
+		if byName := filepath.Join(roots.Workspaces, name); byName != name {
+			if _, err := os.Stat(byName); err == nil {
+				return config.ResolveWorkspace(byName)
+			}
+		}
+	}
+	return config.ResolveWorkspace(name)
 }
 
 func newAttachCmd() *cobra.Command {
