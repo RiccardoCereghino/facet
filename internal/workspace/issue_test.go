@@ -949,6 +949,58 @@ func TestReapFromInsideAClone(t *testing.T) {
 	}
 }
 
+// TestRemoveAllForceLeavesSymlinkTargetsAlone pins the one thing removeAllForce
+// must never do: reach outside the tree it is deleting.
+//
+// filepath.WalkDir stats with Lstat, so a symlink arrives with IsDir() == false
+// and lands in the same branch as a regular file; os.Chmod then FOLLOWS it, so
+// the mode is applied to the target. A seat workspace holds
+// .claude/skills/<skill> pointing into the live harness at $STELE_HOME, and
+// every reap therefore left that directory at 0666 -- a directory with no
+// execute bit, which cannot be traversed, so neither a seat nor git could read
+// or check out the live tree afterwards. Repaired by hand twice before it was
+// root-caused (facet#87, stele-home#16).
+//
+// The assertion is on the TARGET's mode, not on reap succeeding: reap succeeded
+// every single time this fired. The damage was always somewhere else.
+func TestRemoveAllForceLeavesSymlinkTargetsAlone(t *testing.T) {
+	base := t.TempDir()
+
+	target := filepath.Join(base, "live", "skills", "seat-exit")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "SKILL.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Without this the failing run leaves an untraversable directory behind and
+	// t.TempDir's own cleanup fails -- the exact symptom, one layer up.
+	t.Cleanup(func() { _ = os.Chmod(target, 0o755) })
+
+	ws := filepath.Join(base, "ws")
+	if err := os.MkdirAll(filepath.Join(ws, ".claude", "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(ws, ".claude", "skills", "seat-exit")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := removeAllForce(ws); err != nil {
+		t.Fatalf("removeAllForce: %v", err)
+	}
+	if _, err := os.Stat(ws); !os.IsNotExist(err) {
+		t.Error("workspace survived removeAllForce")
+	}
+
+	fi, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("symlink target is gone: %v", err)
+	}
+	if got := fi.Mode().Perm(); got != 0o755 {
+		t.Errorf("symlink target mode = %04o, want 0755: removeAllForce chmod'd through the link", got)
+	}
+}
+
 func TestIsUnder(t *testing.T) {
 	root := filepath.Join("a", "b")
 	cases := map[string]bool{

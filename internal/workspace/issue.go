@@ -510,12 +510,26 @@ func isUnder(root, path string) bool {
 
 // removeAllForce deletes a tree, clearing the read-only attribute git sets on
 // objects and packs. Plain os.RemoveAll fails on a git repository on Windows.
+//
+// REGULAR FILES ONLY, and that is the whole point of the condition. WalkDir
+// stats with Lstat, so a symlink arrives with IsDir() == false -- and os.Chmod
+// FOLLOWS symlinks, so `!d.IsDir()` applied the mode to the target, outside the
+// tree being deleted. A seat workspace links .claude/skills/<skill> into the
+// live harness, so every reap left that directory at 0666: no execute bit, so
+// it could not be traversed, so neither a seat nor git could read the live tree
+// afterwards (facet#87, stele-home#16).
+//
+// os.Lchmod does not exist in the standard library, and a symlink has no
+// read-only attribute of its own that would block the removal -- so skipping is
+// both the only correct handling and the one that costs nothing. Sockets, fifos
+// and devices are skipped for the same reason: the attribute this clears is one
+// git sets on regular object and pack files.
 func removeAllForce(root string) error {
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil // keep going; the remove below will report what matters
 		}
-		if !d.IsDir() {
+		if d.Type().IsRegular() {
 			_ = os.Chmod(path, 0o666)
 		}
 		return nil
