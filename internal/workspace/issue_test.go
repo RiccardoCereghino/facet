@@ -584,6 +584,191 @@ func TestBranchWithDeletedRemoteButNoLandedContentStillBlocks(t *testing.T) {
 	}
 }
 
+// squashLand replays ref's tip commit onto origin's default branch as a brand-new
+// commit -- different sha, GitHub's own synthesized message -- which is what
+// "Squash and merge" leaves a clone looking at once the branch is auto-deleted.
+// Returns the local sha, the one a merged-PR-by-commit lookup would report.
+func squashLand(t *testing.T, g gitx.Git, clone, origin, ref string) string {
+	t.Helper()
+	sha, err := g.Run(clone, nil, "rev-parse", ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha = strings.TrimSpace(sha)
+	patch, err := g.Run(clone, nil, "format-patch", "-1", ref, "--stdout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	patchFile := filepath.Join(t.TempDir(), "squash.patch")
+	if err := os.WriteFile(patchFile, []byte(patch+"\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(origin, nil, "am", patchFile); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(origin, nil, "commit", "--amend", "-qm", "feature work (squash-merged, #1)"); err != nil {
+		t.Fatal(err)
+	}
+	return sha
+}
+
+// facet#77: the count is per-ref and summed, so one commit reachable from three
+// local branches is reported three times. The shape is ordinary -- `git branch
+// backup` before a rebase produces it -- and the number lands in the one message
+// whose entire job is telling an operator how much work is at risk.
+//
+// Measured on facet!76: this fixture reports 3. `main`'s single
+// `rev-list --count HEAD --branches --not --remotes` is a set and reports 1,
+// which is the answer; the per-ref walk that replaced it lost that property.
+func TestUnpushedCommitCountedOnceAcrossSeveralBranches(t *testing.T) {
+	ws, clone := issueWorkspace(t)
+	g := gitx.Git{}
+
+	if _, err := g.Run(clone, nil, "checkout", "-qb", "never-pushed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clone, "precious.txt"), []byte("work\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "commit", "-qm", "the only copy"); err != nil {
+		t.Fatal(err)
+	}
+	// Two more refs at the very same tip: the backup-branch-before-a-rebase shape.
+	for _, b := range []string{"copy1", "copy2"} {
+		if _, err := g.Run(clone, nil, "branch", b, "never-pushed"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	st, err := InspectIssue(ws, g, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasBlocker(st, "unpushed") {
+		t.Fatalf("one genuinely unpushed commit must still block reap; blockers = %v", st.Blockers())
+	}
+	if got := st.Clone[0].Unpushed; got != 1 {
+		t.Errorf("one commit reachable from three local branches is one commit at risk: Unpushed = %d, want 1", got)
+	}
+	if !hasBlocker(st, "1 unpushed commit(s)") {
+		t.Errorf("the refusal must quote the true count; blockers = %v", st.Blockers())
+	}
+}
+
+// The same overlap inflates SquashLanded, so the non-blocking note overstates
+// too -- the note exists to stop an operator reading silence as "nothing to
+// report", and a wrong number there teaches exactly the distrust it was added
+// to remove.
+func TestSquashLandedCommitCountedOnceAcrossSeveralBranches(t *testing.T) {
+	ws, clone := issueWorkspace(t)
+	m, err := manifest.Read(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin := m.Clones["repo"]
+	g := gitx.Git{}
+
+	if _, err := g.Run(clone, nil, "checkout", "-qb", "1-x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clone, "landed.txt"), []byte("landed\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "commit", "-qm", "feature work"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "branch", "backup", "1-x"); err != nil {
+		t.Fatal(err)
+	}
+	sha := squashLand(t, g, clone, origin, "1-x")
+
+	pr := fakeCommitPR{merged: map[string]bool{sha: true}}
+	st, err := InspectIssue(ws, g, pr, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := st.Blockers(); len(b) != 0 {
+		t.Fatalf("a squash-landed branch with a backup at the same tip must still reap clean, got %v", b)
+	}
+	if got := st.Clone[0].SquashLanded; got != 1 {
+		t.Errorf("one landed commit reachable from two local branches is one commit: SquashLanded = %d, want 1", got)
+	}
+	if notes := st.Notes(); len(notes) != 1 || !strings.Contains(notes[0], "1 local commit(s)") {
+		t.Errorf("the note must quote the true count, got %v", notes)
+	}
+}
+
+// The direction the deduplication must fail in. A commit reachable from BOTH a
+// ref proven landed and a ref that is not must count as unpushed: the landed
+// classification belongs to the ref, not to the commit, and the ref carrying
+// more work has not proven anything about the commits it shares. Counting it
+// landed would clear a blocker on a workspace that is genuinely the only copy
+// of the commit stacked on top.
+func TestCommitOnBothLandedAndUnpushedRefsCountsUnpushed(t *testing.T) {
+	ws, clone := issueWorkspace(t)
+	m, err := manifest.Read(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin := m.Clones["repo"]
+	g := gitx.Git{}
+
+	if _, err := g.Run(clone, nil, "checkout", "-qb", "1-x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clone, "landed.txt"), []byte("landed\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "commit", "-qm", "feature work"); err != nil {
+		t.Fatal(err)
+	}
+
+	// A second ref carrying that same commit plus one more that landed nowhere.
+	if _, err := g.Run(clone, nil, "checkout", "-qb", "stacked"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clone, "stacked.txt"), []byte("not landed\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "commit", "-qm", "stacked on top, landed nowhere"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Run(clone, nil, "checkout", "-q", "1-x"); err != nil {
+		t.Fatal(err)
+	}
+	sha := squashLand(t, g, clone, origin, "1-x")
+
+	pr := fakeCommitPR{merged: map[string]bool{sha: true}}
+	st, err := InspectIssue(ws, g, pr, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasBlocker(st, "unpushed") {
+		t.Fatalf("the stacked commit is the only copy of itself; blockers = %v", st.Blockers())
+	}
+	if got := st.Clone[0].Unpushed; got != 2 {
+		t.Errorf("both the shared commit and the one stacked on it are at risk: Unpushed = %d, want 2", got)
+	}
+	if got := st.Clone[0].SquashLanded; got != 0 {
+		t.Errorf("a commit counted unpushed must not also be counted landed: SquashLanded = %d, want 0", got)
+	}
+	if notes := st.Notes(); len(notes) != 0 {
+		t.Errorf("nothing is safely landed here; Notes() must stay empty, got %v", notes)
+	}
+}
+
 // Audit finding on facet!76, round 2: `git cherry` silently omits merge
 // commits from its output entirely -- neither "+" nor "-". A merge commit
 // that is the sole unpushed candidate (both its parents already pushed to
