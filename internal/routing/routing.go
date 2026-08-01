@@ -27,6 +27,19 @@ type Repo struct {
 	Remotes map[string]string `json:"remotes,omitempty"`
 	// LFS false clones Git-LFS pointers rather than blobs. Absent means blobs.
 	LFS *bool `json:"lfs,omitempty"`
+	// Spawnable false marks a repo `facet spawn` must refuse -- a repo that is
+	// known to routing (so surveys, sync and restore keep seeing it) but is not
+	// meant to be cloned into an ephemeral issue workspace, e.g. the workspaces
+	// root itself, whose own routing entry names its own directory. Absent means
+	// spawnable, so every existing entry is unchanged.
+	Spawnable *bool `json:"spawnable,omitempty"`
+}
+
+// IsSpawnable reports whether `facet spawn` may clone this repo. Absent means
+// spawnable: the field only ever narrows, so a routing file written before it
+// existed keeps behaving exactly as it always did.
+func (r Repo) IsSpawnable() bool {
+	return r.Spawnable == nil || *r.Spawnable
 }
 
 // Project points at a Projects v2 board and says what to do to an issue when a

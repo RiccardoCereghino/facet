@@ -75,6 +75,15 @@ func runSpawn(o spawnOpts) error {
 	if homeKey == "" {
 		return fmt.Errorf("%s is not in %s's ownerRepoToKey", o.Repo, roots.Routing)
 	}
+	// Checked before the issue lookup, same as the seat and scope checks above:
+	// a repo marked spawnable:false (the workspaces root itself, cloned into
+	// itself, is the case this exists for) should never reach the forge on the
+	// way to a refusal.
+	if !route.Repos[homeKey].IsSpawnable() {
+		return fmt.Errorf("%s (%s) is marked spawnable:false in %s\n"+
+			"fix: work it directly -- it already has a standing checkout -- or add it to a workspace by hand with `facet new`/`facet add`, not `facet spawn`",
+			o.Repo, homeKey, roots.Routing)
+	}
 
 	iss, err := gh.ViewIssue(o.Repo, o.Number)
 	if err != nil {
