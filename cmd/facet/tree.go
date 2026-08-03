@@ -39,8 +39,9 @@ func newTreeWireCmd() *cobra.Command {
 		Short: "Make an issue a child of another",
 		Long: "Creates the sub-issue edge, across repositories if need be.\n\n" +
 			"An issue has exactly one parent, so wiring one that already has a parent\n" +
-			"MOVES it. Nothing in GitHub's response says so, which is why this prints\n" +
-			"the previous parent when there was one.\n\n" +
+			"MOVES it: the existing edge is detached first, then the new one is\n" +
+			"attached. GitHub has no atomic move, so this is two calls, and it prints\n" +
+			"the previous parent when there was one so the detach is visible.\n\n" +
 			"It also prints both tiers. A parent's complexity is an at-a-glance worst\n" +
 			"case for the grouping and never an input to the child's merge authority --\n" +
 			"stated on every wire because an edge that quietly changed who may merge\n" +

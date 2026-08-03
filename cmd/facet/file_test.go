@@ -37,6 +37,9 @@ type fakeGH struct {
 	addSubIssueCalls []string // "repo#number<-childID" per call
 	addSubIssueErr   error
 
+	removeSubIssueCalls []string // "repo#number<-childID" per call
+	removeSubIssueErr   error
+
 	// The dependency graph, which is not the issue graph.
 	blockedBy map[string][]ghx.IssueRef
 	blocking  map[string][]ghx.IssueRef
@@ -137,6 +140,12 @@ func (f *fakeGH) AddSubIssue(repo string, number int, childID int64) error {
 	f.addSubIssueCalls = append(f.addSubIssueCalls,
 		f.key(repo, number)+"<-"+strconv.FormatInt(childID, 10))
 	return f.addSubIssueErr
+}
+
+func (f *fakeGH) RemoveSubIssue(repo string, number int, childID int64) error {
+	f.removeSubIssueCalls = append(f.removeSubIssueCalls,
+		f.key(repo, number)+"<-"+strconv.FormatInt(childID, 10))
+	return f.removeSubIssueErr
 }
 
 func (f *fakeGH) BlockedBy(repo string, number int) ([]ghx.IssueRef, error) {

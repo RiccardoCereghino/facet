@@ -22,6 +22,7 @@ type treeGH interface {
 	IssueID(repo string, number int) (int64, error)
 	IssueParent(repo string, number int) (ghx.IssueRef, bool, error)
 	AddSubIssue(repo string, number int, childID int64) error
+	RemoveSubIssue(repo string, number int, childID int64) error
 	ProjectStatuses(owner string, projectNumber int, field string) (map[string]string, error)
 }
 
@@ -87,6 +88,20 @@ func runTreeWire(w io.Writer, gh treeGH, child, parent ghx.IssueRef) error {
 	if err != nil {
 		return err
 	}
+
+	// There is no atomic move on this API: an issue with a parent refuses a
+	// second POST outright (422), so re-parenting is DELETE the old edge,
+	// then POST the new one. Print the detach before attaching -- if the POST
+	// below fails, this line is already on stdout and the issue's true state
+	// (unparented, not silently still-under-the-old-parent) is recoverable by
+	// hand rather than only inferable from a stack trace.
+	if hadParent {
+		if err := gh.RemoveSubIssue(previous.OwnerRepo(), previous.Number, id); err != nil {
+			return fmt.Errorf("could not detach %s from its current parent %s, so did not attempt to attach it to %s: %w", child, previous, parent, err)
+		}
+		_, _ = fmt.Fprintf(w, "  detached %s from %s\n", child, previous)
+	}
+
 	if err := gh.AddSubIssue(parent.OwnerRepo(), parent.Number, id); err != nil {
 		return err
 	}

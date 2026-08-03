@@ -219,10 +219,26 @@ func (CLI) IssueChildren(repo string, number int) ([]IssueRef, error) {
 // ~10-digit global integer, which is why it is an int64 and not an int.
 //
 // An issue has exactly one parent: calling this on a child that already has
-// one MOVES it, with no warning and no way to tell from the response.
+// one does NOT move it -- it 422s ("Sub issue may only have one parent").
+// Detach the existing edge with [CLI.RemoveSubIssue] first.
 func (CLI) AddSubIssue(repo string, number int, childID int64) error {
 	_, err := run("api", fmt.Sprintf("repos/%s/issues/%d/sub_issues", repo, number),
 		"-X", "POST", "-F", fmt.Sprintf("sub_issue_id=%d", childID))
+	return err
+}
+
+// RemoveSubIssue detaches child (by database id) from repo#number as its
+// sub-issue parent.
+//
+// The REST endpoint is the SINGULAR "sub_issue", unlike AddSubIssue's plural
+// "sub_issues" -- one character apart and a 404 if confused. This exists
+// because AddSubIssue's own doc comment was wrong: POSTing to a child that
+// already has a parent does not move it, it 422s ("Sub issue may only have
+// one parent"). A move is DELETE this edge, then POST the new one -- there is
+// no atomic move on this API.
+func (CLI) RemoveSubIssue(repo string, number int, childID int64) error {
+	_, err := run("api", fmt.Sprintf("repos/%s/issues/%d/sub_issue", repo, number),
+		"-X", "DELETE", "-F", fmt.Sprintf("sub_issue_id=%d", childID))
 	return err
 }
 
