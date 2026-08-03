@@ -1,6 +1,7 @@
 package tree
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -100,7 +101,38 @@ func levelNameAt(s *routing.Structure, i int) string {
 // structural holds only where levels are declared.
 func structural(n *Node, s *routing.Structure) []Defect {
 	var out []Defect
-	if n.Err != nil || !n.LevelKnown {
+	if n.Err != nil {
+		return out
+	}
+
+	// The node read fine and its POSITION could not be established. Two
+	// different facts hide here and they get two messages, because one sentence
+	// covering both is how a report ends up asserting something false about
+	// whichever case it was not written for.
+	if n.LevelErr != nil {
+		var cyc *ParentCycleError
+		if errors.As(n.LevelErr, &cyc) {
+			// A record defect, not a failure. It is fully known and nameable.
+			return []Defect{{
+				Ref: n.Ref,
+				What: fmt.Sprintf("is inside a parent cycle: %s's parent is %s, which is already above it",
+					cyc.Child, cyc.Ancestor),
+				Why: "an issue that is its own ancestor has no level, and any walk of its ancestry runs forever -- so nothing above it can be judged, by this report or any other",
+				Fix: fmt.Sprintf("break it at the closing edge: re-parent %s away from %s",
+					cyc.Child, cyc.Ancestor),
+			}}
+		}
+		// A read that did not answer. Nothing is known, and saying more than
+		// that would be inventing it.
+		return []Defect{{
+			Ref:  n.Ref,
+			What: "its position in the tree could not be established: " + n.LevelErr.Error(),
+			Why:  "the node itself was read; its ancestry was not, and that is where a level comes from -- so the tree below is shown but nothing here says whether it sits in the right place",
+			Fix:  "retry, or check this credential can read the repositories its parents live in -- a parent routinely lives in another repo",
+		}}
+	}
+
+	if !n.LevelKnown {
 		return out
 	}
 

@@ -15,6 +15,12 @@ type fakeSource struct {
 	children map[string][]ghx.IssueRef
 	parents  map[string]ghx.IssueRef
 	errs     map[string]error
+	// parentErrs makes a FAILED parent read expressible. Its absence is why
+	// four rounds of enumeration could not reach the states behind it: every
+	// tree the double could build was one where the climb succeeds, so the
+	// failure branch was unreachable by construction rather than untested by
+	// oversight. cmd/facet's double has carried this since round 1.
+	parentErrs map[string]error
 }
 
 func (f *fakeSource) ViewIssue(repo string, number int) (*ghx.Issue, error) {
@@ -36,6 +42,9 @@ func (f *fakeSource) IssueChildren(repo string, number int) ([]ghx.IssueRef, err
 // A miss is "asked, and there is none" -- the ordinary case for a root, and
 // the one that must not be an error.
 func (f *fakeSource) IssueParent(repo string, number int) (ghx.IssueRef, bool, error) {
+	if err, ok := f.parentErrs[key(repo, number)]; ok {
+		return ghx.IssueRef{}, false, err
+	}
 	p, ok := f.parents[key(repo, number)]
 	return p, ok, nil
 }
@@ -632,6 +641,30 @@ func TestEveryLevelResolutionStateHasItsOwnMessage(t *testing.T) {
 		// must not invert the structure by calling the shallowest rung deepest.
 		wantNever: []string{"sits below", "deepest declared level", "re-parent it"},
 	}, {
+		// Added after the enumeration was found to be closed over NODE states
+		// given a walk that SUCCEEDED. These two are states of the resolution
+		// itself, and no node existed in them until the walk stopped blanking
+		// the report.
+		state: "S8 the node read, its ancestry did not -- position unknown",
+		node: &Node{Ref: ref("acme", "lab", 8), State: "OPEN",
+			LevelErr: errors.New("HTTP 502")},
+		structure: route,
+		wantSays:  []string{"position in the tree could not be established", "HTTP 502", "another repo"},
+		// The node itself read fine, so it is not unreadable; and nothing is
+		// known about where it belongs, so no placement wording may appear.
+		wantNever: []string{"could not be read", "sits below", "could not be placed", "cycle"},
+	}, {
+		state: "S9 a cycle in the ancestry -- known, nameable, and a record defect",
+		node: &Node{Ref: ref("acme", "lab", 9), State: "OPEN",
+			LevelErr: &ParentCycleError{
+				At:    ref("acme", "lab", 9),
+				Child: ref("acme", "lab", 10), Ancestor: ref("acme", "lab", 9)}},
+		structure: route,
+		wantSays:  []string{"parent cycle", "acme/lab#10", "re-parent"},
+		// A cycle is fully known. Describing it as a failure to find something
+		// out would be borrowing S8's sentence for a state that is its opposite.
+		wantNever: []string{"could not be established", "retry", "could not be read"},
+	}, {
 		state: "S4 child at a rung its parent may not hold",
 		node: &Node{Ref: ref("acme", "lab", 4), State: "OPEN",
 			LevelKnown: true, Assigned: false, HasParent: true, ParentLevel: 0},
@@ -712,6 +745,9 @@ func TestTheStateSpaceIsClosed(t *testing.T) {
 		{"a misplaced node with work beneath it", misplacedAncestorTree(), ref("acme", "lab", 46), route},
 		{"started inside a broken subtree", misplacedAncestorTree(), ref("acme", "harness", 121), route},
 		{"a skippable rung that is constrained", wellFormedWithParents(), ref("acme", "lab", 46), constrained},
+		// The climb FAILING is a resolution state, not a node state, and the
+		// closure test could not reach it until the double could express it.
+		{"the parent read fails", failingClimbTree(), ref("acme", "lab", 46), route},
 	}
 
 	for _, tc := range trees {
@@ -745,6 +781,12 @@ func TestTheStateSpaceIsClosed(t *testing.T) {
 						}
 					}
 				}
+				// 4b. A node whose position could not be established is never
+				//     also judged for placement -- the two messages are
+				//     mutually exclusive by construction.
+				if n.LevelErr != nil && n.Assigned {
+					t.Errorf("%s: assigned a level despite an unresolved position", n.Ref)
+				}
 				// 4. With no structure, nothing is ever judged.
 				if tc.route.Structure == nil && n.LevelKnown {
 					t.Errorf("%s: a level was known with no structure declared", n.Ref)
@@ -752,6 +794,12 @@ func TestTheStateSpaceIsClosed(t *testing.T) {
 			}
 		})
 	}
+}
+
+func failingClimbTree() *fakeSource {
+	s := wellFormedWithParents()
+	s.parentErrs = map[string]error{"acme/lab#46": errors.New("HTTP 502")}
+	return s
 }
 
 func misplacedAncestorTree() *fakeSource {
@@ -780,4 +828,96 @@ func wellFormedWithParents() *fakeSource {
 		"acme/harness#121":  ref("acme", "lab", 75),
 	}
 	return s
+}
+
+// !! A FAILED PARENT READ MUST NOT BLANK THE REPORT. !! The child direction has
+// always held this -- "one inaccessible issue must not blank out the rest of a
+// tree, and a partial answer that says which part is missing beats no answer" --
+// and the parent climb entered the walk without it, so a single failed read
+// returned no tree at all.
+//
+// Reachability is not exotic: a parent routinely lives in ANOTHER repository,
+// so any transient failure, or a credential that can read the starting repo and
+// not the parent's, hits this.
+func TestWalkCarriesAFailedParentReadInsteadOfBlankingTheReport(t *testing.T) {
+	src := wellFormedWithParents()
+	src.parentErrs = map[string]error{"acme/lab#46": errors.New("HTTP 502")}
+	route := routeWithStructure()
+
+	root, err := Walk(src, ref("acme", "lab", 46), -1, route)
+	if err != nil {
+		t.Fatalf("a failed parent read blanked the whole report: %v", err)
+	}
+	if root == nil {
+		t.Fatal("no tree returned")
+	}
+	// The tree below is still rendered -- that is the point of carrying it.
+	if len(root.Descendants()) == 0 {
+		t.Error("the tree below the failure was lost")
+	}
+
+	got := Doctor(root, route)
+	if len(got) != 1 {
+		t.Fatalf("got %d defects, want 1: %v", len(got), got)
+	}
+	text := got[0].String()
+	for _, w := range []string{"position in the tree could not be established", "HTTP 502", "another repo"} {
+		if !strings.Contains(text, w) {
+			t.Errorf("missing %q:\n%s", w, text)
+		}
+	}
+	// It must NOT claim the node was unreadable -- it read fine -- and must not
+	// borrow the placement wording, which asserts things it cannot know.
+	for _, w := range []string{"could not be read", "sits below", "could not be placed"} {
+		if strings.Contains(text, w) {
+			t.Errorf("says %q, which is not true in this state:\n%s", w, text)
+		}
+	}
+}
+
+// A cycle in the PARENT direction. Same asymmetry as the read failure, but a
+// different answer: a cycle is a DEFECT IN THE RECORD, fully known and
+// nameable, not a failure to find something out. The pre-existing cycle test
+// covers the CHILD direction and runs with no structure at all, so it never
+// called LevelOf -- its name made the climb look covered when it was not.
+func TestWalkReportsAParentCycleAsADefectRatherThanFailing(t *testing.T) {
+	src := &fakeSource{
+		issues: map[string]*ghx.Issue{
+			"acme/lab#1": issue("a", "OPEN"),
+			"acme/lab#2": issue("b", "OPEN"),
+		},
+		children: map[string][]ghx.IssueRef{"acme/lab#1": {ref("acme", "lab", 2)}},
+		parents: map[string]ghx.IssueRef{
+			"acme/lab#1": ref("acme", "lab", 2),
+			"acme/lab#2": ref("acme", "lab", 1),
+		},
+	}
+	route := routeWithStructure()
+
+	root, err := Walk(src, ref("acme", "lab", 1), -1, route)
+	if err != nil {
+		t.Fatalf("a parent cycle blanked the whole report: %v", err)
+	}
+	got := Doctor(root, route)
+	var found string
+	for _, d := range got {
+		if strings.Contains(d.What, "parent cycle") {
+			found = d.String()
+		}
+	}
+	if found == "" {
+		t.Fatalf("the parent cycle was not reported: %v", got)
+	}
+	// It must name the CLOSING EDGE -- both nodes -- so there is something to
+	// go and break. "X is its own ancestor" is true, repeats the node the
+	// caller already supplied, and names nothing actionable.
+	for _, w := range []string{"acme/lab#1", "acme/lab#2", "re-parent"} {
+		if !strings.Contains(found, w) {
+			t.Errorf("the cycle report is missing %q:\n%s", w, found)
+		}
+	}
+	// And it is not described as a read failure, which it is not.
+	if strings.Contains(found, "could not be established") {
+		t.Errorf("a known cycle is described as a failure to find out:\n%s", found)
+	}
 }

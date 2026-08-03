@@ -57,6 +57,13 @@ type Node struct {
 
 	Children []*Node
 
+	// LevelErr records that the node's POSITION could not be established --
+	// the node itself read fine, but the ancestry its level is derived from
+	// did not. Distinct from Err, which means the node is unreadable: these
+	// are different facts and a report that gives them one sentence is the
+	// inherited-message defect again.
+	LevelErr error
+
 	// Err records a node that could not be read. The walk keeps going: one
 	// inaccessible issue must not blank out the rest of a tree, and a partial
 	// answer that says which part is missing beats no answer.
@@ -104,10 +111,19 @@ func Walk(src Source, ref ghx.IssueRef, maxDepth int, route *routing.Routing) (*
 	// break a correct tree is worse than a missed defect.
 	if route != nil && route.Structure != nil {
 		level, ok, err := LevelOf(src, route, ref)
-		if err != nil {
-			return nil, err
+		switch {
+		case err != nil:
+			// CARRY IT, DO NOT BLANK THE REPORT. The same principle the child
+			// direction has always held: one inaccessible issue must not erase
+			// the rest of a tree, and a partial answer that says which part is
+			// missing beats no answer. The climb only entered the walk with the
+			// start-node fix, and the principle did not come with it -- so a
+			// parent in another repository this credential cannot read, or one
+			// transient failure, turned the whole report into nothing.
+			root.LevelErr = err
+		default:
+			root.Level, root.Assigned, root.LevelKnown = level, ok, true
 		}
-		root.Level, root.Assigned, root.LevelKnown = level, ok, true
 	}
 	path := map[string]bool{ref.String(): true}
 	descend(src, root, maxDepth, route, path)
@@ -235,6 +251,24 @@ func (c Counts) StatusNames() []string {
 	return out
 }
 
+// ParentCycleError reports an issue that is its own ancestor. It is a typed
+// error rather than a plain one because a cycle is a DEFECT IN THE RECORD,
+// while a failed read is a transient or permission problem -- the caller
+// reports them differently, and only a type lets it tell them apart.
+// It names the CLOSING EDGE rather than just the node asked about. "X is its
+// own ancestor" is true and useless: it repeats the node the caller already
+// gave and names nothing else in the loop, so there is no edge to go and break.
+type ParentCycleError struct {
+	At       ghx.IssueRef // where the walk started
+	Child    ghx.IssueRef // the node whose parent closes the loop
+	Ancestor ghx.IssueRef // the parent that was already in the ancestry
+}
+
+func (e *ParentCycleError) Error() string {
+	return fmt.Sprintf("cycle in the ancestry of %s: %s's parent is %s, which is already above it",
+		e.At, e.Child, e.Ancestor)
+}
+
 // LevelOf resolves which declared level an issue occupies.
 //
 // IT IS NOT A DEPTH. A level is assigned by matching a node's shape against
@@ -272,7 +306,7 @@ func LevelOf(src Source, route *routing.Routing, ref ghx.IssueRef) (int, bool, e
 			break
 		}
 		if seen[parent.String()] {
-			return 0, false, fmt.Errorf("cycle above %s: %s is its own ancestor", ref, parent)
+			return 0, false, &ParentCycleError{At: ref, Child: at, Ancestor: parent}
 		}
 		seen[parent.String()] = true
 		chain = append(chain, parent)
