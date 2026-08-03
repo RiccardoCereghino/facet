@@ -108,15 +108,30 @@ func structural(n *Node, s *routing.Structure) []Defect {
 	// does not belong, which is how levels collapse one reasonable-looking
 	// edge at a time.
 	if !n.Assigned {
+		// THE NODE THE WALK STARTED AT, which has no parent in this report --
+		// unplaceable because it, or something above it, matches no declared
+		// level. Whatever is at fault may be an ancestor this walk never
+		// visited, so nothing here can name it, and the child wording below
+		// would blame this node for its ancestor's defect and tell someone to
+		// re-parent a node that may be perfectly well formed.
+		if !n.HasParent {
+			out = append(out, Defect{
+				Ref:  n.Ref,
+				What: "could not be placed: it, or something above it, sits at no level this structure declares",
+				Why: "this walk began here, so the misplaced node may be an ancestor it never visited -- " +
+					"naming this one as the defect would send someone to re-parent a node that may be correct",
+				Fix: "run doctor from the root of the tree, which can see the ancestors this report cannot",
+			})
+			return out
+		}
+
 		// Derive the expectation from the parent's LEVEL, which is what the
 		// assignment actually used. Deriving it from depth instead produces a
 		// message naming the very level the node was just rejected for not
 		// matching, whenever a rung above has been skipped.
 		var want []string
-		if n.HasParent {
-			for _, i := range s.ChildLevels(n.ParentLevel) {
-				want = append(want, s.Levels[i].Describe())
-			}
+		for _, i := range s.ChildLevels(n.ParentLevel) {
+			want = append(want, s.Levels[i].Describe())
 		}
 		what := fmt.Sprintf("sits below %q, which may only hold %s",
 			levelNameAt(s, n.ParentLevel), strings.Join(want, " or "))

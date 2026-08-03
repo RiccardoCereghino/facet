@@ -530,3 +530,52 @@ func TestWalkFromAMisplacedNodeDoesNotCascade(t *testing.T) {
 		t.Errorf("the defect blames %s, want the misplaced node itself", defects[0].Ref)
 	}
 }
+
+// !! READ THE SENTENCE, NOT ONLY THE COUNT. !! The sibling test above asserts
+// how MANY defects a misplaced ancestor produces and which node they name, and
+// both were right while the message itself said three false things: that the
+// node sat below the commission (it sat below a stray the walk never visited),
+// that "commission" was the deepest declared level (it is the shallowest), and
+// nothing at all about the node actually at fault. A passing count is what
+// made that look examined.
+func TestDoctorExplainsAnUnplaceableStartNodeWithoutBlamingIt(t *testing.T) {
+	src := &fakeSource{
+		issues: map[string]*ghx.Issue{
+			"acme/lab#46":      issue("commission 1", "OPEN"),
+			"acme/lab#99":      issue("a stray that matches no seat shape", "OPEN"),
+			"acme/harness#121": issue("the work", "OPEN"),
+		},
+		children: map[string][]ghx.IssueRef{
+			"acme/lab#46": {ref("acme", "lab", 99)},
+			"acme/lab#99": {ref("acme", "harness", 121)},
+		},
+		parents: map[string]ghx.IssueRef{
+			"acme/lab#99":      ref("acme", "lab", 46),
+			"acme/harness#121": ref("acme", "lab", 99),
+		},
+	}
+	route := routeWithStructure()
+
+	// Start at the work, whose ancestor #99 is the thing actually misplaced.
+	defects := Doctor(mustWalk(t, src, ref("acme", "harness", 121), route), route)
+	if len(defects) != 1 {
+		t.Fatalf("got %d defects, want 1: %v", len(defects), defects)
+	}
+	got := defects[0].String()
+
+	// It must not invert the structure by calling the shallowest rung the
+	// deepest, and must not claim a parent relationship the walk never saw.
+	if strings.Contains(got, "deepest declared level") {
+		t.Errorf("the message calls a rung the deepest that is not:\n%s", got)
+	}
+	if strings.Contains(got, "sits below \"commission\"") {
+		t.Errorf("the message asserts a parent the walk never visited:\n%s", got)
+	}
+	// And it must say where the real answer is rather than prescribing a fix
+	// to this node, which may be perfectly well formed.
+	for _, want := range []string{"could not be placed", "above it", "from the root"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the message is missing %q:\n%s", want, got)
+		}
+	}
+}
