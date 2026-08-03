@@ -8,6 +8,53 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`tree` reads and writes GitHub's sub-issue graph** — `wire`, `show`,
+  `list`, `status`, `doctor`, across repositories. **The hierarchy is optional
+  and stays optional:** an issue with no parent is a valid issue, `spawn` never
+  asks about one, and no command here is a precondition of another. `wire`
+  establishes the parent's depth by climbing to the root before judging
+  anything — a child's level only means something relative to its parent's —
+  and it climbs rather than descends because the child→parent direction is the
+  immediately consistent one. An unreadable parent refuses rather than
+  proceeding: skipping the check is how a wrong edge gets written by the tool
+  meant to prevent it. It also reads the previous parent before writing, since
+  an issue has exactly one parent and the write is silently a *move* otherwise.
+
+  Every `wire` prints both tiers and states that the **child's own** governs. A
+  parent's is an at-a-glance worst case for the grouping and is never
+  inherited; saying so at the edge is what stops it being re-derived as an
+  obvious improvement, given that an edge quietly moving merge authority would
+  look exactly like filing.
+
+- **`structure` in the routing file declares what levels a tree should have.**
+  Levels are matched by position, may list alternative accepted shapes, and may
+  be skippable — a real hierarchy has a rung that is sometimes not needed, and
+  forcing a placeholder in to satisfy a schema is worse than allowing the gap.
+  Skipping stops at the first required rung, which is what catches a node filed
+  straight under the root with the rung above it missing. **Without the block,
+  no shape is checked at all** — not leniently — because which shape is right is
+  the adopter's contract rather than facet's. `doctor` still reports cycles,
+  unreadable nodes and a closed parent with open children, which are wrong on
+  any tree's own terms, and it says explicitly when shape went unchecked so
+  silence about it does not read as a clean bill of health.
+
+- **`comment list|last|post|edit`, filtered by kind.** `last --kind plan` is
+  the point: where a decision is revised by posting it again, the newest one is
+  what binds. A kind is a named regexp in the routing file's `commentKinds` —
+  facet knows some comments have kinds, never which ones — and `--grep` needs
+  no configuration at all. The match count is always reported, because a loose
+  pattern does not error, it silently makes an older comment "the latest". An
+  edited comment is flagged as edited.
+
+- **`deps show|check|ready`, for the dependency graph — which is not the issue
+  graph.** Blocked-by says what must land first; a parent says what a thing is
+  part of. `check` compares the body's declared blockers against the wired
+  edges using the same parser that files them, and treats only one direction as
+  a defect: declared-and-unwired means the write failed silently at filing and
+  the dependency exists as prose nobody schedules from, while wired-and-
+  undeclared is ordinary ageing. `ready` reports which open issues below one
+  have no open blockers left.
+
 - **`spawn` records who a workspace belongs to, in `.seat` and `.scope`.**
   `--seat` is now required and names the seat the workspace is created for; it
   is written to `.seat` at the workspace root, one line. `.scope` lists the
