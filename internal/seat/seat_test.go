@@ -114,9 +114,9 @@ func TestParseRef(t *testing.T) {
 		want    Ref
 		wantErr bool
 	}{
-		{"owner/repo#1", Ref{"owner/repo", 1}, false},
-		{"acme/some-tool#4321", Ref{"acme/some-tool", 4321}, false},
-		{"  owner/repo#2  ", Ref{"owner/repo", 2}, false},
+		{"owner/repo#1", Ref{Repo: "owner/repo", Number: 1}, false},
+		{"acme/some-tool#4321", Ref{Repo: "acme/some-tool", Number: 4321}, false},
+		{"  owner/repo#2  ", Ref{Repo: "owner/repo", Number: 2}, false},
 
 		{"owner/repo", Ref{}, true},   // no number at all
 		{"#7", Ref{}, true},           // no repo
@@ -129,6 +129,17 @@ func TestParseRef(t *testing.T) {
 		{"owner/repo#", Ref{}, true},
 		{"own er/repo#7", Ref{}, true},
 		{"", Ref{}, true},
+
+		// landing:owner/repo -- facet#97: a repo the workspace's PRs land in
+		// without claiming any issue there.
+		{"landing:owner/repo", Ref{Repo: "owner/repo", Landing: true}, false},
+		{"  landing:owner/repo  ", Ref{Repo: "owner/repo", Landing: true}, false},
+		{"landing:owner/some-tool", Ref{Repo: "owner/some-tool", Landing: true}, false},
+		{"landing:owner", Ref{}, true},  // no repo half
+		{"landing:owner/", Ref{}, true}, // half a repo
+		{"landing:/repo", Ref{}, true},  //
+		{"landing:", Ref{}, true},       // nothing at all
+		{"landing:own er/repo", Ref{}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.in, func(t *testing.T) {
@@ -148,7 +159,7 @@ func TestParseRefsDropsDuplicatesAndKeepsOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseRefs: %v", err)
 	}
-	want := []Ref{{"owner/repo", 12}, {"acme/tools", 7}}
+	want := []Ref{{Repo: "owner/repo", Number: 12}, {Repo: "acme/tools", Number: 7}}
 	if len(got) != len(want) {
 		t.Fatalf("ParseRefs = %v, want %v", got, want)
 	}
@@ -161,11 +172,11 @@ func TestParseRefsDropsDuplicatesAndKeepsOrder(t *testing.T) {
 
 func TestAppendScopeIsAdditiveAndIdempotent(t *testing.T) {
 	ws := t.TempDir()
-	if err := Write(ws, "w-example-12", []Ref{{"owner/repo", 12}}); err != nil {
+	if err := Write(ws, "w-example-12", []Ref{{Repo: "owner/repo", Number: 12}}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 
-	added, err := AppendScope(ws, []Ref{{"acme/tools", 7}})
+	added, err := AppendScope(ws, []Ref{{Repo: "acme/tools", Number: 7}})
 	if err != nil {
 		t.Fatalf("AppendScope: %v", err)
 	}
@@ -175,7 +186,7 @@ func TestAppendScopeIsAdditiveAndIdempotent(t *testing.T) {
 
 	// Again, with one already present and one new: only the new one is added,
 	// and the file gains exactly one line.
-	added, err = AppendScope(ws, []Ref{{"acme/tools", 7}, {"owner/repo", 99}})
+	added, err = AppendScope(ws, []Ref{{Repo: "acme/tools", Number: 7}, {Repo: "owner/repo", Number: 99}})
 	if err != nil {
 		t.Fatalf("AppendScope: %v", err)
 	}
@@ -200,7 +211,7 @@ func TestAppendScopeRefusesAnUnreadableFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ws, ScopeFile), []byte("owner/repo#12\nnot a reference\n"), 0o666); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := AppendScope(ws, []Ref{{"acme/tools", 7}}); err == nil {
+	if _, err := AppendScope(ws, []Ref{{Repo: "acme/tools", Number: 7}}); err == nil {
 		t.Fatal("AppendScope accepted a scope file with an unparseable line")
 	} else if !strings.Contains(err.Error(), "line 2") {
 		t.Errorf("error %q does not say which line is wrong", err)
