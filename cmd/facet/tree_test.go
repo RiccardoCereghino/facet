@@ -310,3 +310,130 @@ func TestParseIssueRef(t *testing.T) {
 		}
 	}
 }
+
+// A structure whose skippable rung is CONSTRAINED, so it can actually be
+// skipped. Under the committed lab structure `block` has no `accepts` and
+// therefore never skips, which is why the divergence below was latent rather
+// than live -- and why constraining that rung is the natural later change that
+// would have armed it.
+const skippableStructure = `,
+	"structure": {"levels": [
+		{"name": "commission"},
+		{"name": "seat", "accepts": [{"repo": "doctrine", "titlePattern": "^seat: "}]},
+		{"name": "block", "optional": true, "accepts": [{"titlePattern": "^block: "}]},
+		{"name": "issue"}
+	]}`
+
+// !! wire MUST judge an edge by the parent's assigned LEVEL, never by its
+// ancestor count. !! The two are equal only while no optional rung is ever
+// skipped above the edge. Skip one and a depth-based check lets `wire` write
+// the exact edge `doctor` reports as a defect -- in the command whose stated
+// purpose is making the wrong shape unrepresentable.
+//
+// Here the block rung is skipped, so the work sits at LEVEL 3 (issue) with a
+// DEPTH of 2. Nothing may hang below the deepest level, so the edge must be
+// refused; judging by depth would consult level 2 instead and permit it.
+func TestTreeWireJudgesByLevelNotDepth(t *testing.T) {
+	withRouting(t, skippableStructure)
+	f := &treeFake{issues: map[string]*ghx.Issue{
+		"acme/lab#46":       issueWith("commission 1"),
+		"acme/doctrine#282": issueWith("seat: a record"),
+		"acme/harness#121":  issueWith("the work, hung straight off the record"),
+		"acme/harness#122":  issueWith("something below the work"),
+	}}
+	f.parents = map[string]ghx.IssueRef{
+		"acme/doctrine#282": iref("acme", "lab", 46),
+		"acme/harness#121":  iref("acme", "doctrine", 282),
+	}
+	f.issueIDs = map[string]int64{"acme/harness#122": 5049244999}
+
+	var out bytes.Buffer
+	err := runTreeWire(&out, f, iref("acme", "harness", 122), iref("acme", "harness", 121))
+	if err == nil {
+		t.Fatal("wire accepted an edge below the deepest level; it judged by depth, not by level")
+	}
+	if !strings.Contains(err.Error(), "deepest declared level") {
+		t.Errorf("refusal = %v, want it to name the deepest level", err)
+	}
+	if len(f.addSubIssueCalls) != 0 {
+		t.Errorf("the edge was written despite the refusal: %v", f.addSubIssueCalls)
+	}
+}
+
+// An ancestor sitting at no declared level is not this edge's fault, and must
+// not be reported as if it were -- nothing below a misplaced node can be judged.
+func TestTreeWireRefusesWhenAnAncestorIsItselfMisplaced(t *testing.T) {
+	withRouting(t, skippableStructure)
+	f := &treeFake{issues: map[string]*ghx.Issue{
+		"acme/lab#46":      issueWith("commission 1"),
+		"acme/lab#72":      issueWith("not a seat record at all"),
+		"acme/harness#121": issueWith("work under a misplaced node"),
+	}}
+	f.parents = map[string]ghx.IssueRef{"acme/lab#72": iref("acme", "lab", 46)}
+	f.issueIDs = map[string]int64{"acme/harness#121": 5049244998}
+
+	var out bytes.Buffer
+	err := runTreeWire(&out, f, iref("acme", "harness", 121), iref("acme", "lab", 72))
+	if err == nil {
+		t.Fatal("wire judged an edge under an ancestor that sits at no declared level")
+	}
+	if !strings.Contains(err.Error(), "does not itself sit at any level") {
+		t.Errorf("refusal = %v, want it to blame the ancestor rather than this edge", err)
+	}
+	if len(f.addSubIssueCalls) != 0 {
+		t.Error("the edge was written despite the refusal")
+	}
+}
+
+// These commands read GitHub, not the lab. A missing routing file means "no
+// levels and no comment kinds declared", which is a legitimate state -- not a
+// reason to refuse to render a tree that facet never built.
+func TestTreeAndCommentWorkWithNoRoutingFileAtAll(t *testing.T) {
+	prev := roots
+	roots = config.Roots{Routing: filepath.Join(t.TempDir(), "absent.json")}
+	t.Cleanup(func() { roots = prev })
+
+	f := wireFake()
+	f.children = map[string][]ghx.IssueRef{"acme/lab#46": {iref("acme", "doctrine", 282)}}
+	f.comments = map[string][]ghx.Comment{"acme/lab#46": {{ID: 1, Body: "## Plan\nx"}}}
+
+	var out bytes.Buffer
+	if err := runTreeShow(&out, f, iref("acme", "lab", 46), -1); err != nil {
+		t.Errorf("tree show refused without a routing file: %v", err)
+	}
+	if err := runTreeDoctor(&bytes.Buffer{}, f, iref("acme", "lab", 46)); err != nil {
+		t.Errorf("tree doctor refused without a routing file: %v", err)
+	}
+	// --grep needs no configuration, so it must work here too.
+	if err := runCommentList(&bytes.Buffer{}, f, iref("acme", "lab", 46), "", "Plan", true); err != nil {
+		t.Errorf("comment --grep refused without a routing file: %v", err)
+	}
+	// --kind still refuses, because there genuinely are no kinds declared.
+	if err := runCommentList(&bytes.Buffer{}, f, iref("acme", "lab", 46), "plan", "", true); err == nil {
+		t.Error("--kind was accepted with no kinds declared anywhere")
+	}
+}
+
+// The refusal must not teach the pattern this branch measured as wrong: an
+// unanchored form returns a heading that merely CONTAINS the word.
+func TestCommentKindRefusalDoesNotRecommendAnUnanchoredPattern(t *testing.T) {
+	withRouting(t, "")
+	err := runCommentList(&bytes.Buffer{}, commentFake(), iref("acme", "lab", 75), "plan", "", true)
+	if err == nil {
+		t.Fatal("--kind was accepted with no commentKinds block")
+	}
+	msg := err.Error()
+	// What is OFFERED after "e.g." must be the anchored form. The unanchored
+	// one may still appear -- naming it as the thing to avoid is the useful
+	// half -- so this asserts what is recommended, not what is mentioned.
+	offered, _, _ := strings.Cut(strings.SplitN(msg, "e.g. ", 2)[1], "\n")
+	if !strings.Contains(offered, "(?mi)") || !strings.Contains(offered, "#{1,6}") {
+		t.Errorf("the recommended pattern is not anchored and case-insensitive: %q", offered)
+	}
+	if strings.Contains(offered, ".*") {
+		t.Errorf("the recommended pattern is unanchored: %q", offered)
+	}
+	if !strings.Contains(msg, "anchor") {
+		t.Errorf("the fix line does not warn about anchoring:\n%s", msg)
+	}
+}

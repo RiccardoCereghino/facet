@@ -4,8 +4,10 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/RiccardoCereghino/facet/internal/ghx"
@@ -23,7 +25,24 @@ type treeGH interface {
 	ProjectStatuses(owner string, projectNumber int, field string) (map[string]string, error)
 }
 
-func loadRouting() (*routing.Routing, error) { return routing.Load(roots.Routing) }
+// loadRouting reads the routing file, treating its ABSENCE as an empty one.
+//
+// These commands read GitHub, not the lab: the routing file only ever tells
+// them which levels to expect and which comment kinds exist, and having none
+// of either is a legitimate state. Refusing to render a tree because there is
+// no routing file would make `show` require a configuration it does not use --
+// against the rule that these commands work on a tree facet never built.
+//
+// A routing file that EXISTS and is malformed still refuses. "There is no
+// configuration" and "the configuration is broken" are different answers, and
+// only the first is ordinary.
+func loadRouting() (*routing.Routing, error) {
+	route, err := routing.Load(roots.Routing)
+	if errors.Is(err, os.ErrNotExist) {
+		return &routing.Routing{}, nil
+	}
+	return route, err
+}
 
 // runTreeWire attaches child to parent and reports what it did.
 func runTreeWire(w io.Writer, gh treeGH, child, parent ghx.IssueRef) error {
@@ -116,27 +135,36 @@ func refuseByStructure(gh treeGH, route *routing.Routing, child ghx.IssueRef, ch
 		return nil
 	}
 
-	// The child's level can only be judged from the parent's, so establish
-	// that first by climbing to the root. The climb uses the child->parent
-	// direction, which is the immediately consistent one, and it is bounded by
-	// the depth of the tree -- four calls, not a graph walk.
-	depth, err := depthOf(gh, parent)
+	// The child's level can only be judged from the parent's, so establish the
+	// PARENT'S LEVEL first -- not its depth. The two are equal only while no
+	// optional rung is ever skipped above the edge, and they are exactly what
+	// a skipped rung separates: skip one and the parent sits at a level deeper
+	// than its ancestor count. Judging by depth there would let `wire` write
+	// the very edge `doctor` reports as a defect, in the command whose whole
+	// purpose is making the wrong shape unrepresentable.
+	level, ok, err := levelOf(gh, route, parent)
 	if err != nil {
 		// Refuse when you cannot tell. A probe that errors is not a pass, and
 		// silently skipping the check is how a wrong edge gets written by the
 		// tool built to prevent it.
-		return fmt.Errorf("could not establish %s's depth, so cannot check where %s would sit: %w\n"+
+		return fmt.Errorf("could not establish %s's level, so cannot check where %s would sit: %w\n"+
 			"fix: resolve the read above, or wire it by hand if the structure is known to be right",
 			parent, child, err)
 	}
+	if !ok {
+		return fmt.Errorf("%s does not itself sit at any level this structure declares, "+
+			"so where %s belongs under it cannot be judged\n"+
+			"fix: run `facet tree doctor` on the tree above %s and correct it first",
+			parent, child, parent)
+	}
 
 	key := route.KeyForRepo(child.OwnerRepo())
-	if _, ok := s.Assign(depth, key, childIssue.Title); ok {
+	if _, ok := s.Assign(level, key, childIssue.Title); ok {
 		return nil
 	}
 
 	var want []string
-	for _, i := range s.ChildLevels(depth) {
+	for _, i := range s.ChildLevels(level) {
 		want = append(want, s.Levels[i].Describe())
 	}
 	if len(want) == 0 {
@@ -154,31 +182,71 @@ func refuseByStructure(gh treeGH, route *routing.Routing, child ghx.IssueRef, ch
 		parent, strings.Join(want, ", or "))
 }
 
-// depthOf counts how far an issue sits below its root, by climbing parents.
+// levelOf resolves which declared level an issue occupies.
 //
-// The climb is the child->parent direction on purpose: it is immediately
-// consistent, so an edge written moments ago is already visible, whereas
-// listing children is not. A cycle would otherwise spin forever, so the path
-// is tracked.
-func depthOf(gh treeGH, ref ghx.IssueRef) (int, error) {
+// IT IS NOT A DEPTH. A level is assigned by matching a node's shape against
+// the rungs its parent's level permits, so a tree that skips an optional rung
+// has nodes whose level exceeds their ancestor count. Every caller judging an
+// edge needs the level; the count is only ever a coincidence that holds until
+// the first skip.
+//
+// So this climbs to the root -- the child->parent direction, which is the
+// immediately consistent one, unlike listing children -- and then assigns back
+// down exactly as the walk does, reusing Structure.Assign so the two cannot
+// disagree about the same tree.
+//
+// ok is false when some ancestor sits at no declared level at all. That is not
+// this edge's fault and must not be reported as if it were: the tree above is
+// already wrong, and nothing below a misplaced node can be judged.
+func levelOf(gh treeGH, route *routing.Routing, ref ghx.IssueRef) (int, bool, error) {
+	s := route.Structure
+	if s == nil {
+		return 0, false, nil
+	}
+
+	// Climb, collecting the chain with ref first and the root last.
+	chain := []ghx.IssueRef{ref}
 	seen := map[string]bool{ref.String(): true}
-	depth := 0
 	at := ref
 	for {
 		parent, ok, err := gh.IssueParent(at.OwnerRepo(), at.Number)
 		if err != nil {
-			return 0, err
+			return 0, false, err
 		}
 		if !ok {
-			return depth, nil
+			break
 		}
 		if seen[parent.String()] {
-			return 0, fmt.Errorf("cycle above %s: %s is its own ancestor", ref, parent)
+			return 0, false, fmt.Errorf("cycle above %s: %s is its own ancestor", ref, parent)
 		}
 		seen[parent.String()] = true
+		chain = append(chain, parent)
 		at = parent
-		depth++
 	}
+
+	// Assign from the root down. The root takes the first level a root may
+	// occupy; everything under it is matched against what its parent permits.
+	roots := s.ChildLevels(-1)
+	if len(roots) == 0 {
+		return 0, false, nil
+	}
+	level := roots[0]
+	for i := len(chain) - 2; i >= 0; i-- {
+		n := chain[i]
+		iss, err := gh.ViewIssue(n.OwnerRepo(), n.Number)
+		if err != nil {
+			return 0, false, err
+		}
+		if iss == nil {
+			return 0, false, fmt.Errorf("%s: no such issue", n)
+		}
+		next, ok := s.Assign(level, route.KeyForRepo(n.OwnerRepo()), iss.Title)
+		if !ok {
+			return 0, false, nil
+		}
+		level = next
+	}
+	return level, true, nil
 }
 
 func walk(gh treeGH, ref ghx.IssueRef, depth int) (*tree.Node, *routing.Routing, error) {

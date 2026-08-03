@@ -206,7 +206,10 @@ func (r *Routing) Validate() error {
 func (r *Routing) CommentKind(kind string) (*regexp.Regexp, error) {
 	if len(r.CommentKinds) == 0 {
 		return nil, fmt.Errorf("this routing file defines no comment kinds\n" +
-			"fix: add a `commentKinds` block mapping a name to a regexp, e.g. {\"plan\": \"(?m)^#+ .*plan\"}")
+			"fix: add a `commentKinds` block mapping a name to a regexp, e.g. " +
+			"{\"plan\": \"(?mi)^#{1,6} +Plan\\\\b\"}\n" +
+			"note: anchor to the whole heading. A pattern like `^#+ .*plan` also matches a heading " +
+			"that merely CONTAINS the word, and returns the wrong comment as the latest")
 	}
 	pattern, ok := r.CommentKinds[kind]
 	if !ok {

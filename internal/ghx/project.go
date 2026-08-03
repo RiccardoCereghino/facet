@@ -68,8 +68,19 @@ func parseProjectStatuses(out []byte, field string) (map[string]string, error) {
 }
 
 // itemIssueKey renders a board item's content as "owner/repo#n", or reports
-// that the item is not an issue. gh gives the repository as a URL rather than
-// a full name, so the owner and repo are the last two path segments.
+// that the item is not an issue.
+//
+// gh writes the repository TWO ways in the same document: as a full name
+// ("owner/repo") inside `content`, and as a URL at the top level of the item.
+// This reads the one inside `content`, and takes the last two path segments so
+// that either form yields the same key -- which also absorbs a trailing slash,
+// the difference between "acme/lab" and "lab/", and so between a key that
+// matches a node in the tree and one that matches nothing.
+//
+// The measurement is in project_test.go, which pins both forms. An earlier
+// version of this comment said gh gives a URL "rather than" a full name; that
+// was the wrong way round, and the tests passed anyway because last-two
+// segments is right either way.
 func itemIssueKey(item map[string]any) (string, bool) {
 	content, ok := item["content"].(map[string]any)
 	if !ok {

@@ -90,7 +90,13 @@ func newTreeListCmd() *cobra.Command {
 		Short: "List the issues below one, flat",
 		Long: "The same walk as `show`, without the shape -- for piping.\n\n" +
 			"--level filters to one declared level, and needs a structure block in the\n" +
-			"routing file to mean anything.",
+			"routing file to mean anything.\n\n" +
+			"A level is assigned by matching a node against the rungs its parent's level\n" +
+			"permits, and the shallowest match wins. So where a skippable rung is left\n" +
+			"unconstrained it absorbs everything below it, and --level then returns a\n" +
+			"different set than the level's name suggests: the rung above holds a mixture,\n" +
+			"and the rung below returns only what sits deeper still. Constrain the\n" +
+			"skippable rung if the distinction matters to the caller.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ref, err := parseIssueRef(args[0])
