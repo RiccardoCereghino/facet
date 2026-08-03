@@ -299,9 +299,9 @@ func runTreeStatus(w io.Writer, gh treeGH, ref ghx.IssueRef) error {
 		// answer, and "0 in progress" would read as measured rather than as
 		// unavailable.
 		return fmt.Errorf("cannot derive status: the routing file has no `project` block with a statusField\n"+
-			"  %s has %d issues below it, but open/closed cannot tell started from not\n"+
+			"  %s has %d %s below it, but open/closed cannot tell started from not\n"+
 			"fix: add project.{owner,number,statusField} to the routing file",
-			ref, len(nodes))
+			ref, len(nodes), plural(len(nodes), "issue", "issues"))
 	}
 
 	statuses, err := gh.ProjectStatuses(p.Owner, p.Number, p.StatusField)
@@ -311,7 +311,7 @@ func runTreeStatus(w io.Writer, gh treeGH, ref ghx.IssueRef) error {
 	c := tree.Tally(nodes, statuses)
 
 	_, _ = fmt.Fprintf(w, "%s  %s\n", ref, truncate(root.Title, 58))
-	_, _ = fmt.Fprintf(w, "  %d issues below it\n", c.Total)
+	_, _ = fmt.Fprintf(w, "  %d %s below it\n", c.Total, plural(c.Total, "issue", "issues"))
 	for _, name := range c.StatusNames() {
 		_, _ = fmt.Fprintf(w, "  %5d  %s\n", c.ByStatus[name], name)
 	}
