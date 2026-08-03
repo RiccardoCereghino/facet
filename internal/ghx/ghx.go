@@ -130,8 +130,12 @@ type Client interface {
 	// use it to confirm an edge just written.
 	IssueChildren(repo string, number int) ([]IssueRef, error)
 	// AddSubIssue makes the issue with database id childID a sub-issue of
-	// repo#number, moving it if it already had a parent.
+	// repo#number. Refuses (422) if the child already has a parent -- call
+	// RemoveSubIssue against the old parent first.
 	AddSubIssue(repo string, number int, childID int64) error
+	// RemoveSubIssue detaches the issue with database id childID from
+	// repo#number as its sub-issue parent.
+	RemoveSubIssue(repo string, number int, childID int64) error
 	// BlockedBy lists what must land before repo#number can proceed.
 	BlockedBy(repo string, number int) ([]IssueRef, error)
 	// Blocking lists what cannot start until repo#number lands.

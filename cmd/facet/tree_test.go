@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -199,6 +200,68 @@ func TestTreeWireReportsAMove(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "MOVED") || !strings.Contains(out.String(), "acme/lab#46") {
 		t.Errorf("a move was not reported:\n%s", out.String())
+	}
+}
+
+// The 422 this whole issue is about: GitHub refuses a second POST outright
+// when the child already has a DIFFERENT parent. wire must detach the old
+// edge before attaching the new one -- and in that order, so a fake that let
+// the detach happen after (or not at all) would still pass a test that only
+// checked the end state.
+func TestTreeWireDetachesBeforeReattaching(t *testing.T) {
+	withRouting(t, "")
+	f := wireFake()
+	f.parents["acme/lab#75"] = iref("acme", "lab", 46) // already parented, elsewhere
+	var out bytes.Buffer
+
+	if err := runTreeWire(&out, f, iref("acme", "lab", 75), iref("acme", "doctrine", 282)); err != nil {
+		t.Fatalf("wire: %v", err)
+	}
+
+	wantDetach := "acme/lab#46<-5049244556"
+	if len(f.removeSubIssueCalls) != 1 || f.removeSubIssueCalls[0] != wantDetach {
+		t.Fatalf("removeSubIssueCalls = %v, want [%s]", f.removeSubIssueCalls, wantDetach)
+	}
+	wantAttach := "acme/doctrine#282<-5049244556"
+	if len(f.addSubIssueCalls) != 1 || f.addSubIssueCalls[0] != wantAttach {
+		t.Fatalf("addSubIssueCalls = %v, want [%s]", f.addSubIssueCalls, wantAttach)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "detached") || !strings.Contains(got, "acme/lab#46") {
+		t.Errorf("output does not report the detach:\n%s", got)
+	}
+	if !strings.Contains(got, "MOVED") || !strings.Contains(got, "acme/lab#46") {
+		t.Errorf("output does not report the move:\n%s", got)
+	}
+	// The detach must be printed before the attach happens, per the issue's
+	// own mitigation: a failure between the two steps must be recoverable
+	// from what was already on stdout.
+	if i, j := strings.Index(got, "detached"), strings.Index(got, "wired"); i < 0 || j < 0 || i > j {
+		t.Errorf("detach was not reported before the attach:\n%s", got)
+	}
+}
+
+// A failed detach must not be followed by an attach attempt -- that would
+// leave the child parented to neither the old nor the new parent with no
+// record of why, exactly the silent-orphan failure mode the issue warns
+// against.
+func TestTreeWireStopsIfTheDetachFails(t *testing.T) {
+	withRouting(t, "")
+	f := wireFake()
+	f.parents["acme/lab#75"] = iref("acme", "lab", 46)
+	f.removeSubIssueErr = fmt.Errorf("boom")
+	var out bytes.Buffer
+
+	err := runTreeWire(&out, f, iref("acme", "lab", 75), iref("acme", "doctrine", 282))
+	if err == nil {
+		t.Fatal("wire did not report the detach failure")
+	}
+	if !strings.Contains(err.Error(), "detach") {
+		t.Errorf("error = %q, want it to name the detach", err)
+	}
+	if len(f.addSubIssueCalls) != 0 {
+		t.Error("wire attached the new parent despite the failed detach")
 	}
 }
 
