@@ -149,25 +149,69 @@ func ghAuthStatus() string {
 	return string(out)
 }
 
-// parseAuthStatus reads gh's human-readable status. There is no --json for it,
-// so this parses prose; every field is optional and a missing one leaves its
-// zero value, which the preflight then reports as a problem rather than
-// guessing.
-func parseAuthStatus(out string) (*AuthStatus, error) {
+// loginLine reports whether line starts a new per-account block: gh prints one
+// of these three shapes at the top of each login it holds for a host.
+func loginLine(line string) bool {
+	return strings.HasPrefix(line, "✓ Logged in to") ||
+		strings.HasPrefix(line, "X Failed to log in to") ||
+		strings.HasPrefix(line, "✗ Failed to log in to")
+}
+
+// splitLoginBlocks cuts out's lines at each loginLine boundary. gh can hold
+// several logins for one host and prints them as consecutive blocks under a
+// single shared host line; without this cut, a naive whole-output parse lets a
+// later block's fields silently overwrite an earlier block's.
+//
+// Fewer than two login lines returns the lines unsplit -- there is nothing to
+// separate, and this is also what keeps single-account output (and output with
+// no recognisable login line at all, e.g. futureShape) on the exact same
+// parse path as before this function existed.
+func splitLoginBlocks(lines []string) [][]string {
+	var starts []int
+	for i, raw := range lines {
+		if loginLine(strings.TrimSpace(raw)) {
+			starts = append(starts, i)
+		}
+	}
+	if len(starts) < 2 {
+		return [][]string{lines}
+	}
+	blocks := make([][]string, 0, len(starts))
+	for i, s := range starts {
+		start := s
+		if i == 0 {
+			// The first block absorbs the bare host line (and anything else)
+			// gh prints above the first login line. Later blocks never need
+			// it: parseLoginLine reads the host straight off their own login
+			// line.
+			start = 0
+		}
+		end := len(lines)
+		if i+1 < len(starts) {
+			end = starts[i+1]
+		}
+		blocks = append(blocks, lines[start:end])
+	}
+	return blocks
+}
+
+// parseBlock runs the per-line recognition over one block's worth of lines --
+// either the whole output (single-account shape) or one account's slice of a
+// multi-account one. recognised reports whether any line positively identified
+// an account shape; parseAuthStatus uses that to decide whether to attach the
+// unrecognised-shape warning.
+//
+// Raw is deliberately left unset here -- it is gh's full, original output, and
+// parseAuthStatus sets it once on whichever result it chooses.
+func parseBlock(lines []string) (st *AuthStatus, recognised bool) {
 	// State is StateUnconfirmed here and stays that way unless a line below is
 	// positively recognised. That is the safety default, not an oversight.
-	st := &AuthStatus{Raw: out}
-	recognised := false
-	for _, raw := range strings.Split(out, "\n") {
+	st = &AuthStatus{}
+	for _, raw := range lines {
 		line := strings.TrimSpace(raw)
 		switch {
 		case line == "":
 			continue
-		case strings.Contains(line, "not logged into any GitHub host"):
-			// The ONLY route to StateAbsent: a positively identified
-			// logged-out shape. Never reached by fall-through.
-			st.State = StateAbsent
-			return st, nil
 		case strings.HasPrefix(line, "✓ Logged in to"):
 			st.State = StateConfirmed
 			recognised = true
@@ -197,14 +241,52 @@ func parseAuthStatus(out string) (*AuthStatus, error) {
 			st.Host = line
 		}
 	}
-	if !recognised {
-		// gh said something -- or nothing -- that matches no shape this code
-		// knows. State is already StateUnconfirmed; say why, so the report
-		// blames the parser rather than the operator's credential.
-		st.VerifyFailure = "gh's output matched no status shape this version of facet " +
-			"recognises, so the credential could be anything -- including fine"
+	return st, recognised
+}
+
+// parseAuthStatus reads gh's human-readable status. There is no --json for it,
+// so this parses prose; every field is optional and a missing one leaves its
+// zero value, which the preflight then reports as a problem rather than
+// guessing.
+func parseAuthStatus(out string) (*AuthStatus, error) {
+	for _, raw := range strings.Split(out, "\n") {
+		if strings.Contains(strings.TrimSpace(raw), "not logged into any GitHub host") {
+			// The ONLY route to StateAbsent: a positively identified
+			// logged-out shape. Never reached by fall-through.
+			return &AuthStatus{Raw: out, State: StateAbsent}, nil
+		}
 	}
-	return st, nil
+
+	blocks := splitLoginBlocks(strings.Split(out, "\n"))
+
+	if len(blocks) <= 1 {
+		st, recognised := parseBlock(blocks[0])
+		if !recognised {
+			// gh said something -- or nothing -- that matches no shape this
+			// code knows. State is already StateUnconfirmed; say why, so the
+			// report blames the parser rather than the operator's credential.
+			st.VerifyFailure = "gh's output matched no status shape this version of facet " +
+				"recognises, so the credential could be anything -- including fine"
+		}
+		st.Raw = out
+		return st, nil
+	}
+
+	// Multiple accounts: parse each block on its own -- never let a later
+	// account's fields overwrite an earlier one's -- and report on the ACTIVE
+	// one. Falling back to the first block when none is active is deliberate:
+	// inventing a winner would hide the true finding, which is that the
+	// active-account check should fire.
+	chosen, _ := parseBlock(blocks[0])
+	for _, b := range blocks {
+		st, _ := parseBlock(b)
+		if st.Active {
+			chosen = st
+			break
+		}
+	}
+	chosen.Raw = out
+	return chosen, nil
 }
 
 // fieldValue returns what follows the first colon.
