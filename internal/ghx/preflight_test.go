@@ -324,3 +324,40 @@ func TestMissingScopesIsCaseInsensitive(t *testing.T) {
 		t.Errorf("missingScopes = %v, want [workflow]", got)
 	}
 }
+
+// TestMissingScopesHierarchy is facet#99: gh reports only the literal scope a
+// token holds, but GitHub's own scopes are hierarchical -- a broader scope
+// already grants the narrower ones it implies, and missingScopes must not
+// report the narrower one as missing.
+func TestMissingScopesHierarchy(t *testing.T) {
+	if got := missingScopes([]string{"admin:org"}, []string{"read:org"}); len(got) != 0 {
+		t.Errorf("admin:org must satisfy read:org, got missing: %v", got)
+	}
+	if got := missingScopes([]string{"admin:public_key"}, []string{"read:public_key"}); len(got) != 0 {
+		t.Errorf("admin:public_key must satisfy read:public_key, got missing: %v", got)
+	}
+	if got := missingScopes([]string{"admin:org"}, []string{"write:org"}); len(got) != 0 {
+		t.Errorf("admin:org must satisfy write:org, got missing: %v", got)
+	}
+}
+
+// TestMissingScopesHierarchyStillCatchesGaps guards against the fix
+// over-reaching: an implication table that is too generous would silently
+// mask a genuine gap, which is worse than the false refusal it replaces. A
+// held scope must satisfy only what it actually implies -- nothing else.
+func TestMissingScopesHierarchyStillCatchesGaps(t *testing.T) {
+	if got := missingScopes([]string{"repo"}, []string{"repo", "workflow"}); len(got) != 1 || got[0] != "workflow" {
+		t.Errorf("repo must not satisfy an unrelated scope like workflow, got missing: %v", got)
+	}
+	if got := missingScopes([]string{"read:org"}, []string{"admin:org"}); len(got) != 1 || got[0] != "admin:org" {
+		t.Errorf("a narrower scope must NOT satisfy a broader one, got missing: %v", got)
+	}
+}
+
+// TestMissingScopesHierarchyIsCaseInsensitive: implied scopes must be
+// resolved after the same case-fold/trim normalisation as literal ones.
+func TestMissingScopesHierarchyIsCaseInsensitive(t *testing.T) {
+	if got := missingScopes([]string{" Admin:Org "}, []string{"read:org"}); len(got) != 0 {
+		t.Errorf("case/whitespace must not defeat the hierarchy, got missing: %v", got)
+	}
+}

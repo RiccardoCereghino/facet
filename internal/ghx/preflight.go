@@ -221,11 +221,48 @@ func CheckSSHKey(path string) (probs []Problem, notApplicable string) {
 	return nil, why
 }
 
-// missingScopes returns the required scopes absent from have.
+// scopeImplies maps a GitHub OAuth scope to the narrower scopes it grants.
+// gh auth status reports only the LITERAL scope a token holds -- never the
+// scopes GitHub's own hierarchy implies -- so a credential holding admin:org
+// reports as missing read:org even though admin:org already grants it.
+//
+// Walked transitively by addImpliedScopes: an entry's own implied scopes are
+// expanded too, in case one of them implies further scopes of its own. None
+// in this table currently do, but the walk costs nothing and does not assume
+// the table stays flat.
+var scopeImplies = map[string][]string{
+	"admin:org":        {"write:org", "read:org"},
+	"write:org":        {"read:org"},
+	"admin:public_key": {"write:public_key", "read:public_key"},
+	"admin:repo_hook":  {"write:repo_hook", "read:repo_hook"},
+	"admin:org_hook":   {"read:org_hook"},
+	"admin:gpg_key":    {"write:gpg_key", "read:gpg_key"},
+	"project":          {"read:project"},
+	"user":             {"read:user", "user:email", "user:follow"},
+	"repo":             {"repo:status", "repo_deployment", "public_repo", "repo:invite", "security_events"},
+}
+
+// addImpliedScopes adds every scope that held (already in set) grants
+// transitively, per scopeImplies.
+func addImpliedScopes(set map[string]bool, held string) {
+	for _, implied := range scopeImplies[held] {
+		if !set[implied] {
+			set[implied] = true
+			addImpliedScopes(set, implied)
+		}
+	}
+}
+
+// missingScopes returns the required scopes absent from have, treating
+// GitHub's scope hierarchy as satisfying: a broader scope (admin:org)
+// satisfies a narrower one it implies (read:org), even though gh's own
+// output never states the implied grant.
 func missingScopes(have, want []string) []string {
 	set := make(map[string]bool, len(have))
 	for _, s := range have {
-		set[strings.ToLower(strings.TrimSpace(s))] = true
+		held := strings.ToLower(strings.TrimSpace(s))
+		set[held] = true
+		addImpliedScopes(set, held)
 	}
 	var missing []string
 	for _, w := range want {
