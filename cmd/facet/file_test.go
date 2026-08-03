@@ -27,6 +27,26 @@ type fakeGH struct {
 	// not about the preflight should not have to script one, and the zero value
 	// of a scripted status is logged out, which would fail every one of them.
 	auth *ghx.AuthStatus
+
+	// The issue graph. Keys are "owner/repo#n" throughout.
+	parents    map[string]ghx.IssueRef   // a miss means "no parent", not an error
+	parentErrs map[string]error          // "could not tell", which is a third state
+	children   map[string][]ghx.IssueRef // eventually consistent in reality
+	childErrs  map[string]error
+
+	addSubIssueCalls []string // "repo#number<-childID" per call
+	addSubIssueErr   error
+
+	// The dependency graph, which is not the issue graph.
+	blockedBy map[string][]ghx.IssueRef
+	blocking  map[string][]ghx.IssueRef
+
+	comments       map[string][]ghx.Comment
+	postedComments []string // "repo#number: body" per call
+	editedComments []string // "commentID: body" per call
+
+	statuses    map[string]string // "owner/repo#n" -> board status
+	statusesErr error
 }
 
 // Auth returns the scripted status, defaulting to a credential that satisfies
@@ -83,6 +103,67 @@ func (f *fakeGH) IssueID(repo string, number int) (int64, error) {
 func (f *fakeGH) AddBlockedBy(repo string, number int, blockingID int64) error {
 	f.addBlockedByCalls = append(f.addBlockedByCalls, f.key(repo, number)+"<-"+strconv.FormatInt(blockingID, 10))
 	return f.addBlockedByErr
+}
+
+// --- the issue graph -------------------------------------------------------
+//
+// Scripted separately from the dependency edges above because they are
+// different graphs: parents say what a thing is part of, blockers say what must
+// land first. A fake that conflated them would let a test pass that only works
+// because the two happen to agree.
+
+// IssueParent returns the scripted parent. A miss is "asked, and there is
+// none" -- NOT an error -- because that is the honest majority case and the
+// one the no-parent-is-valid rule turns on. An unreadable parent is scripted
+// explicitly via parentErrs.
+func (f *fakeGH) IssueParent(repo string, number int) (ghx.IssueRef, bool, error) {
+	k := f.key(repo, number)
+	if err, ok := f.parentErrs[k]; ok {
+		return ghx.IssueRef{}, false, err
+	}
+	p, ok := f.parents[k]
+	return p, ok, nil
+}
+
+func (f *fakeGH) IssueChildren(repo string, number int) ([]ghx.IssueRef, error) {
+	k := f.key(repo, number)
+	if err, ok := f.childErrs[k]; ok {
+		return nil, err
+	}
+	return f.children[k], nil
+}
+
+func (f *fakeGH) AddSubIssue(repo string, number int, childID int64) error {
+	f.addSubIssueCalls = append(f.addSubIssueCalls,
+		f.key(repo, number)+"<-"+strconv.FormatInt(childID, 10))
+	return f.addSubIssueErr
+}
+
+func (f *fakeGH) BlockedBy(repo string, number int) ([]ghx.IssueRef, error) {
+	return f.blockedBy[f.key(repo, number)], nil
+}
+
+func (f *fakeGH) Blocking(repo string, number int) ([]ghx.IssueRef, error) {
+	return f.blocking[f.key(repo, number)], nil
+}
+
+func (f *fakeGH) IssueComments(repo string, number int) ([]ghx.Comment, error) {
+	return f.comments[f.key(repo, number)], nil
+}
+
+func (f *fakeGH) PostComment(repo string, number int, body string) (string, error) {
+	f.postedComments = append(f.postedComments, f.key(repo, number)+": "+body)
+	return "https://github.com/" + f.key(repo, number) + "-comment", nil
+}
+
+func (f *fakeGH) EditComment(_ string, commentID int64, body string) (string, error) {
+	f.editedComments = append(f.editedComments,
+		strconv.FormatInt(commentID, 10)+": "+body)
+	return "https://github.com/edited-comment", nil
+}
+
+func (f *fakeGH) ProjectStatuses(_ string, _ int, _ string) (map[string]string, error) {
+	return f.statuses, f.statusesErr
 }
 
 var _ ghx.Client = (*fakeGH)(nil)

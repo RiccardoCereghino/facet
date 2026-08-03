@@ -121,6 +121,33 @@ type Client interface {
 	// AddBlockedBy declares repo#number is blocked by the issue with database
 	// id blockingID, as a native GitHub issue-dependency edge.
 	AddBlockedBy(repo string, number int, blockingID int64) error
+
+	// IssueParent reports an issue's parent under GitHub's sub-issues feature,
+	// and whether it has one. GraphQL-only and immediately consistent; see
+	// graph.go for why REST cannot answer this at all.
+	IssueParent(repo string, number int) (IssueRef, bool, error)
+	// IssueChildren lists an issue's sub-issues. Eventually consistent -- never
+	// use it to confirm an edge just written.
+	IssueChildren(repo string, number int) ([]IssueRef, error)
+	// AddSubIssue makes the issue with database id childID a sub-issue of
+	// repo#number, moving it if it already had a parent.
+	AddSubIssue(repo string, number int, childID int64) error
+	// BlockedBy lists what must land before repo#number can proceed.
+	BlockedBy(repo string, number int) ([]IssueRef, error)
+	// Blocking lists what cannot start until repo#number lands.
+	Blocking(repo string, number int) ([]IssueRef, error)
+
+	// IssueComments lists an issue's comments, oldest first.
+	IssueComments(repo string, number int) ([]Comment, error)
+	// PostComment adds a comment and returns its URL.
+	PostComment(repo string, number int, body string) (string, error)
+	// EditComment replaces one comment's body and returns its URL.
+	EditComment(repo string, commentID int64, body string) (string, error)
+
+	// ProjectStatuses maps "owner/repo#n" to the named single-select field's
+	// value for every item on the board. One call answers a whole tree, which
+	// is why it is a bulk read rather than a per-issue one.
+	ProjectStatuses(owner string, projectNumber int, field string) (map[string]string, error)
 }
 
 // CLI is the real client, backed by the gh binary.
