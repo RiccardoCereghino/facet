@@ -579,3 +579,205 @@ func TestDoctorExplainsAnUnplaceableStartNodeWithoutBlamingIt(t *testing.T) {
 		}
 	}
 }
+
+// THE STATE ENUMERATION. Level resolution has more reachable states than it
+// looks, and this branch has twice shipped a message written for a NEIGHBOURING
+// state -- once deriving an expectation from depth when the assignment used a
+// level, once giving a start node the wording meant for a child. Both produced
+// sentences that were confidently false about a real tree.
+//
+// So: every state a node can be in, what it must say, and what it must NOT.
+// The "must not" half is the load-bearing half. A message inherited from a
+// neighbour is still fluent, still specific, and still passes any test that
+// only counts defects -- which is exactly how the last one survived.
+//
+// Gated by five things: Err, LevelKnown, Assigned, HasParent, and whether the
+// parent's level has any rung below it.
+func TestEveryLevelResolutionStateHasItsOwnMessage(t *testing.T) {
+	route := routeWithStructure()
+	deepest := routeWithStructure()
+	// Constrain the skippable rung so a node can actually land on the deepest
+	// level and still have a child -- otherwise the unconstrained `block`
+	// absorbs everything and that state is unreachable.
+	deepest.Structure.Levels[2].Accepts = []routing.LevelMatch{{TitlePattern: "^block: "}}
+
+	cases := []struct {
+		state     string
+		node      *Node
+		structure *routing.Routing
+		wantSays  []string
+		wantNever []string
+	}{{
+		state: "S1 unreadable -- universal check owns it, structural must stay silent",
+		node: &Node{Ref: ref("acme", "lab", 1), LevelKnown: true,
+			Err: errors.New("404")},
+		structure: route,
+		wantSays:  []string{"could not be read"},
+		// It must not also be judged for shape: nothing is known about a node
+		// that could not be read, including where it belongs.
+		wantNever: []string{"could not be placed", "sits below", "no children"},
+	}, {
+		state:     "S2 level unknown -- no structure, or a parent that was itself unplaceable",
+		node:      &Node{Ref: ref("acme", "lab", 2), State: "OPEN"},
+		structure: route,
+		wantSays:  nil, // silence is the whole point
+		wantNever: []string{"could not be placed", "sits below"},
+	}, {
+		state: "S3 start node, unplaceable -- the walk began here so the culprit may be unseen",
+		node: &Node{Ref: ref("acme", "lab", 3), State: "OPEN",
+			LevelKnown: true, Assigned: false, HasParent: false},
+		structure: route,
+		wantSays:  []string{"could not be placed", "above it", "from the root"},
+		// It has no parent in this report, so it cannot claim one -- and it
+		// must not invert the structure by calling the shallowest rung deepest.
+		wantNever: []string{"sits below", "deepest declared level", "re-parent it"},
+	}, {
+		state: "S4 child at a rung its parent may not hold",
+		node: &Node{Ref: ref("acme", "lab", 4), State: "OPEN",
+			LevelKnown: true, Assigned: false, HasParent: true, ParentLevel: 0},
+		structure: route,
+		wantSays:  []string{"sits below", "commission", "may only hold", "seat"},
+		// The parent is at the shallowest rung, so nothing here is "deepest".
+		wantNever: []string{"deepest declared level", "could not be placed"},
+	}, {
+		state: "S5 child below the deepest rung -- nothing may hang there",
+		node: &Node{Ref: ref("acme", "lab", 5), State: "OPEN",
+			LevelKnown: true, Assigned: false, HasParent: true, ParentLevel: 3},
+		structure: deepest,
+		wantSays:  []string{"sits below", "issue", "deepest declared level"},
+		wantNever: []string{"may only hold", "could not be placed"},
+	}, {
+		state: "S6 placed, and a rung that must hold others is closed holding none",
+		node: &Node{Ref: ref("acme", "lab", 6), State: "CLOSED",
+			LevelKnown: true, Assigned: true, Level: 1, HasParent: true},
+		structure: route,
+		wantSays:  []string{"closed seat", "no children"},
+		wantNever: []string{"sits below", "could not be placed"},
+	}, {
+		state: "S7 placed, nothing to say",
+		node: &Node{Ref: ref("acme", "lab", 7), State: "OPEN",
+			LevelKnown: true, Assigned: true, Level: 3, HasParent: true},
+		structure: route,
+		wantSays:  nil,
+		wantNever: []string{"sits below", "could not be placed", "no children"},
+	}}
+
+	for _, c := range cases {
+		t.Run(c.state, func(t *testing.T) {
+			got := Doctor(c.node, c.structure)
+			var text string
+			for _, d := range got {
+				text += d.String() + "\n"
+			}
+			if len(c.wantSays) == 0 && len(got) != 0 {
+				t.Fatalf("state should be silent, got:\n%s", text)
+			}
+			for _, w := range c.wantSays {
+				if !strings.Contains(text, w) {
+					t.Errorf("missing %q:\n%s", w, text)
+				}
+			}
+			// The half that catches an inherited message. A sentence borrowed
+			// from a neighbouring state reads perfectly and says something
+			// false about this one.
+			for _, w := range c.wantNever {
+				if strings.Contains(text, w) {
+					t.Errorf("says %q, which is not true in this state:\n%s", w, text)
+				}
+			}
+		})
+	}
+}
+
+// The enumeration above is only worth having if those states are ALL of them.
+// These are the invariants that make it exhaustive rather than illustrative,
+// asserted over every node of several real-shaped trees.
+//
+// Without them the table is a list of cases someone thought of, which is the
+// same standard that produced the two inherited messages it exists to prevent.
+func TestTheStateSpaceIsClosed(t *testing.T) {
+	route := routeWithStructure()
+	constrained := routeWithStructure()
+	constrained.Structure.Levels[2].Accepts = []routing.LevelMatch{{TitlePattern: "^block: "}}
+
+	trees := []struct {
+		name  string
+		src   *fakeSource
+		start ghx.IssueRef
+		route *routing.Routing
+	}{
+		{"well formed, from the root", wellFormed(), ref("acme", "lab", 46), route},
+		{"well formed, no structure at all", wellFormed(), ref("acme", "lab", 46),
+			&routing.Routing{Repos: map[string]routing.Repo{"lab": {}}}},
+		{"a misplaced node with work beneath it", misplacedAncestorTree(), ref("acme", "lab", 46), route},
+		{"started inside a broken subtree", misplacedAncestorTree(), ref("acme", "harness", 121), route},
+		{"a skippable rung that is constrained", wellFormedWithParents(), ref("acme", "lab", 46), constrained},
+	}
+
+	for _, tc := range trees {
+		t.Run(tc.name, func(t *testing.T) {
+			root := mustWalk(t, tc.src, tc.start, tc.route)
+			for _, n := range append([]*Node{root}, root.Descendants()...) {
+				// 1. HasParent implies the level was resolved. assign() sets
+				//    both together or neither, so a node claiming a parent
+				//    level while its own level is unknown cannot exist -- and
+				//    if it did, ParentLevel would be read as a real index.
+				if n.HasParent && !n.LevelKnown {
+					t.Errorf("%s: HasParent without LevelKnown", n.Ref)
+				}
+				// 2. ParentLevel is only ever read for a node whose parent was
+				//    ASSIGNED, so it must always be a valid index. This is what
+				//    makes levelNameAt's out-of-range fallback unreachable
+				//    rather than load-bearing.
+				if n.HasParent && tc.route.Structure != nil {
+					if n.ParentLevel < 0 || n.ParentLevel >= len(tc.route.Structure.Levels) {
+						t.Errorf("%s: ParentLevel %d is not a valid level index", n.Ref, n.ParentLevel)
+					}
+				}
+				// 3. A node below an unplaceable one is never itself judged.
+				//    This is the cascade guard, and it is what keeps one
+				//    misplaced ancestor from producing a report full of
+				//    innocent issue numbers.
+				if n.LevelKnown && !n.Assigned {
+					for _, c := range n.Children {
+						if c.LevelKnown {
+							t.Errorf("%s: judged beneath the unplaceable %s", c.Ref, n.Ref)
+						}
+					}
+				}
+				// 4. With no structure, nothing is ever judged.
+				if tc.route.Structure == nil && n.LevelKnown {
+					t.Errorf("%s: a level was known with no structure declared", n.Ref)
+				}
+			}
+		})
+	}
+}
+
+func misplacedAncestorTree() *fakeSource {
+	return &fakeSource{
+		issues: map[string]*ghx.Issue{
+			"acme/lab#46":      issue("commission 1", "OPEN"),
+			"acme/lab#99":      issue("a stray that matches no seat shape", "OPEN"),
+			"acme/harness#121": issue("the work", "OPEN"),
+		},
+		children: map[string][]ghx.IssueRef{
+			"acme/lab#46": {ref("acme", "lab", 99)},
+			"acme/lab#99": {ref("acme", "harness", 121)},
+		},
+		parents: map[string]ghx.IssueRef{
+			"acme/lab#99":      ref("acme", "lab", 46),
+			"acme/harness#121": ref("acme", "lab", 99),
+		},
+	}
+}
+
+func wellFormedWithParents() *fakeSource {
+	s := wellFormed()
+	s.parents = map[string]ghx.IssueRef{
+		"acme/doctrine#282": ref("acme", "lab", 46),
+		"acme/lab#75":       ref("acme", "doctrine", 282),
+		"acme/harness#121":  ref("acme", "lab", 75),
+	}
+	return s
+}
