@@ -53,6 +53,45 @@ const unconfirmed = `github.com
   - To forget about this account, run: gh auth logout -h github.com -u RiccardoCereghino
 `
 
+// twoAccountsActiveFirst is the multi-login shape gh prints when several
+// accounts are logged into one host: consecutive blocks under a shared host
+// line. The ACTIVE account is printed first here -- this must still work,
+// since a naive whole-output accumulator would let the second, inactive
+// block's fields overwrite these.
+const twoAccountsActiveFirst = `github.com
+  ✓ Logged in to github.com account RiccardoCereghino (/Users/cerre/.config/gh/hosts.yml)
+  - Active account: true
+  - Git operations protocol: ssh
+  - Token: ghp_************************************
+  - Token scopes: 'read:org', 'repo', 'workflow'
+
+  ✓ Logged in to github.com account someone-else (/Users/cerre/.config/gh/hosts2.yml)
+  - Active account: false
+  - Git operations protocol: https
+  - Token: gho_************************************
+  - Token scopes: 'gist'
+`
+
+// twoAccountsActiveSecond is the same shape with the active account printed
+// SECOND. This is the dangerous ordering the issue calls out: if the parser
+// just took the last block's fields, it would happen to also report the
+// active account's fields correctly here by accident -- so the real test is
+// twoAccountsActiveFirst above. This fixture exists to pin the opposite case:
+// the FIRST (inactive) block's fields must not leak into the result either.
+const twoAccountsActiveSecond = `github.com
+  ✓ Logged in to github.com account someone-else (/Users/cerre/.config/gh/hosts2.yml)
+  - Active account: false
+  - Git operations protocol: https
+  - Token: gho_************************************
+  - Token scopes: 'gist'
+
+  ✓ Logged in to github.com account RiccardoCereghino (/Users/cerre/.config/gh/hosts.yml)
+  - Active account: true
+  - Git operations protocol: ssh
+  - Token: ghp_************************************
+  - Token scopes: 'read:org', 'repo', 'workflow'
+`
+
 // futureShape is a plausible rewording gh has not shipped. It exists because
 // gh's wording DOES move -- the logged-out message has already changed streams
 // across releases -- so some future output will match no shape this code knows.
@@ -207,6 +246,73 @@ func TestParseAuthStatusHTTPSFlip(t *testing.T) {
 	st, _ := parseAuthStatus(httpsFlip)
 	if st.GitProtocol != "https" {
 		t.Errorf("GitProtocol = %q, want https", st.GitProtocol)
+	}
+}
+
+// TestParseAuthStatusMultiAccount is facet#98: with several logins for one
+// host, the reported fields must all come from the ACTIVE block, regardless
+// of print order, and never be a smear of both blocks.
+func TestParseAuthStatusMultiAccount(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		out  string
+	}{
+		{"active printed first", twoAccountsActiveFirst},
+		{"active printed second", twoAccountsActiveSecond},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st, err := parseAuthStatus(tc.out)
+			if err != nil {
+				t.Fatalf("parseAuthStatus: %v", err)
+			}
+			if !st.Active {
+				t.Fatal("Active = false, want true -- the active block must be selected")
+			}
+			if st.Account != "RiccardoCereghino" {
+				t.Errorf("Account = %q, want RiccardoCereghino", st.Account)
+			}
+			if st.TokenType != "ghp_" {
+				t.Errorf("TokenType = %q, want ghp_ -- got the inactive block's token type", st.TokenType)
+			}
+			if st.GitProtocol != "ssh" {
+				t.Errorf("GitProtocol = %q, want ssh -- got the inactive block's protocol", st.GitProtocol)
+			}
+			if st.ConfigSource != "/Users/cerre/.config/gh/hosts.yml" {
+				t.Errorf("ConfigSource = %q, want the active account's source", st.ConfigSource)
+			}
+			if got := strings.Join(st.Scopes, ","); got != "read:org,repo,workflow" {
+				t.Errorf("Scopes = %q, want the active block's own scopes, not smeared with the inactive block's", got)
+			}
+			if st.Raw != tc.out {
+				t.Error("Raw must be gh's full original output, not just the chosen block")
+			}
+		})
+	}
+}
+
+// TestParseAuthStatusSingleAccountUnchanged pins that single-account fixtures
+// -- which is every fixture that predates facet#98 -- still take the
+// unsplit, whole-output parse path byte-for-byte. This is a property from
+// the issue, not merely a restatement of the other single-account tests in
+// this file: splitLoginBlocks must return the lines unsplit whenever fewer
+// than two login lines are present.
+func TestParseAuthStatusSingleAccountUnchanged(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		out  string
+	}{
+		{"healthy", healthy},
+		{"preIncident", preIncident},
+		{"httpsFlip", httpsFlip},
+		{"unconfirmed", unconfirmed},
+		{"futureShape", futureShape},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			blocks := splitLoginBlocks(strings.Split(tc.out, "\n"))
+			if len(blocks) != 1 {
+				t.Fatalf("splitLoginBlocks produced %d blocks for a single-account fixture, want 1", len(blocks))
+			}
+		})
 	}
 }
 
