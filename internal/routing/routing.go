@@ -108,6 +108,14 @@ type Routing struct {
 	Spawn *Spawn `json:"spawn,omitempty"`
 	// Conventions are the rules `facet file` enforces. Optional.
 	Conventions *Conventions `json:"conventions,omitempty"`
+	// Structure describes the levels an issue tree is expected to have.
+	// Optional, and its absence disables every structure check rather than
+	// softening it -- the hierarchy is an adopter's contract, not facet's.
+	Structure *Structure `json:"structure,omitempty"`
+	// CommentKinds maps a kind name ("plan") to a Go regexp matched against a
+	// comment body. Optional: facet knows that some comments have kinds, never
+	// which ones.
+	CommentKinds map[string]string `json:"commentKinds,omitempty"`
 	// OwnerRepoToKey maps "owner/name" as GitHub spells it to a repo key.
 	OwnerRepoToKey map[string]string `json:"ownerRepoToKey"`
 	// Aliases maps loose spellings in an issue body to a repo key.
@@ -177,7 +185,38 @@ func (r *Routing) Validate() error {
 	if err := r.Conventions.validate(); err != nil {
 		return err
 	}
+	if err := r.Structure.validate(r.Repos); err != nil {
+		return err
+	}
+	for kind, pattern := range r.CommentKinds {
+		if strings.TrimSpace(kind) == "" {
+			return fmt.Errorf("commentKinds has an empty kind name")
+		}
+		if _, err := regexp.Compile(pattern); err != nil {
+			return fmt.Errorf("commentKinds[%q] = %q: %w", kind, pattern, err)
+		}
+	}
 	return nil
+}
+
+// CommentKind compiles the pattern for one kind. It refuses an unknown kind by
+// naming the kinds that do exist, because the alternative -- matching nothing
+// and reporting no comments -- is indistinguishable from an issue that simply
+// has no plan on it.
+func (r *Routing) CommentKind(kind string) (*regexp.Regexp, error) {
+	if len(r.CommentKinds) == 0 {
+		return nil, fmt.Errorf("this routing file defines no comment kinds\n" +
+			"fix: add a `commentKinds` block mapping a name to a regexp, e.g. " +
+			"{\"plan\": \"(?mi)^#{1,6} +Plan\\\\b\"}\n" +
+			"note: anchor to the whole heading. A pattern like `^#+ .*plan` also matches a heading " +
+			"that merely CONTAINS the word, and returns the wrong comment as the latest")
+	}
+	pattern, ok := r.CommentKinds[kind]
+	if !ok {
+		return nil, fmt.Errorf("unknown comment kind %q; this routing file defines: %s",
+			kind, strings.Join(sortedKeys(r.CommentKinds), ", "))
+	}
+	return regexp.Compile(pattern)
 }
 
 // KeyForRepo resolves a GitHub "owner/name" to a repo key, case-insensitively.
