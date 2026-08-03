@@ -182,71 +182,11 @@ func refuseByStructure(gh treeGH, route *routing.Routing, child ghx.IssueRef, ch
 		parent, strings.Join(want, ", or "))
 }
 
-// levelOf resolves which declared level an issue occupies.
-//
-// IT IS NOT A DEPTH. A level is assigned by matching a node's shape against
-// the rungs its parent's level permits, so a tree that skips an optional rung
-// has nodes whose level exceeds their ancestor count. Every caller judging an
-// edge needs the level; the count is only ever a coincidence that holds until
-// the first skip.
-//
-// So this climbs to the root -- the child->parent direction, which is the
-// immediately consistent one, unlike listing children -- and then assigns back
-// down exactly as the walk does, reusing Structure.Assign so the two cannot
-// disagree about the same tree.
-//
-// ok is false when some ancestor sits at no declared level at all. That is not
-// this edge's fault and must not be reported as if it were: the tree above is
-// already wrong, and nothing below a misplaced node can be judged.
+// levelOf delegates to the walk's own resolver, so the edge check and the
+// walk cannot disagree about one tree. Kept as a named wrapper because the
+// refusal below reads better against a local name than an import path.
 func levelOf(gh treeGH, route *routing.Routing, ref ghx.IssueRef) (int, bool, error) {
-	s := route.Structure
-	if s == nil {
-		return 0, false, nil
-	}
-
-	// Climb, collecting the chain with ref first and the root last.
-	chain := []ghx.IssueRef{ref}
-	seen := map[string]bool{ref.String(): true}
-	at := ref
-	for {
-		parent, ok, err := gh.IssueParent(at.OwnerRepo(), at.Number)
-		if err != nil {
-			return 0, false, err
-		}
-		if !ok {
-			break
-		}
-		if seen[parent.String()] {
-			return 0, false, fmt.Errorf("cycle above %s: %s is its own ancestor", ref, parent)
-		}
-		seen[parent.String()] = true
-		chain = append(chain, parent)
-		at = parent
-	}
-
-	// Assign from the root down. The root takes the first level a root may
-	// occupy; everything under it is matched against what its parent permits.
-	roots := s.ChildLevels(-1)
-	if len(roots) == 0 {
-		return 0, false, nil
-	}
-	level := roots[0]
-	for i := len(chain) - 2; i >= 0; i-- {
-		n := chain[i]
-		iss, err := gh.ViewIssue(n.OwnerRepo(), n.Number)
-		if err != nil {
-			return 0, false, err
-		}
-		if iss == nil {
-			return 0, false, fmt.Errorf("%s: no such issue", n)
-		}
-		next, ok := s.Assign(level, route.KeyForRepo(n.OwnerRepo()), iss.Title)
-		if !ok {
-			return 0, false, nil
-		}
-		level = next
-	}
-	return level, true, nil
+	return tree.LevelOf(gh, route, ref)
 }
 
 func walk(gh treeGH, ref ghx.IssueRef, depth int) (*tree.Node, *routing.Routing, error) {

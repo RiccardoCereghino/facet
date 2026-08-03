@@ -13,6 +13,7 @@ import (
 type fakeSource struct {
 	issues   map[string]*ghx.Issue
 	children map[string][]ghx.IssueRef
+	parents  map[string]ghx.IssueRef
 	errs     map[string]error
 }
 
@@ -30,6 +31,13 @@ func (f *fakeSource) ViewIssue(repo string, number int) (*ghx.Issue, error) {
 
 func (f *fakeSource) IssueChildren(repo string, number int) ([]ghx.IssueRef, error) {
 	return f.children[key(repo, number)], nil
+}
+
+// A miss is "asked, and there is none" -- the ordinary case for a root, and
+// the one that must not be an error.
+func (f *fakeSource) IssueParent(repo string, number int) (ghx.IssueRef, bool, error) {
+	p, ok := f.parents[key(repo, number)]
+	return p, ok, nil
 }
 
 func key(repo string, n int) string { return repo + "#" + itoa(n) }
@@ -453,4 +461,72 @@ func mustWalkDepth(t *testing.T, src Source, r ghx.IssueRef, depth int, route *r
 		t.Fatalf("Walk: %v", err)
 	}
 	return n
+}
+
+// !! A WALK MUST ESTABLISH WHAT ITS STARTING NODE ACTUALLY IS. !! Assuming the
+// argument is a root is wrong for every subtree, and wrong in the direction
+// that does damage: a seat walked directly would be called a commission, and
+// every correctly-placed node beneath it reported as misplaced with a fix line
+// saying "re-parent it". A doctor's false positive that tells someone to break
+// a correct tree is worse than a missed defect.
+//
+// Measured on the live tree before the fix: doctoring the commission reported
+// no defects, and doctoring a seat inside that same clean tree reported five.
+func TestWalkFromASubtreeResolvesItsRealLevel(t *testing.T) {
+	src := wellFormed()
+	src.parents = map[string]ghx.IssueRef{
+		"acme/doctrine#282": ref("acme", "lab", 46),
+		"acme/lab#75":       ref("acme", "doctrine", 282),
+		"acme/harness#121":  ref("acme", "lab", 75),
+	}
+	route := routeWithStructure()
+
+	// Start at the seat, not the commission.
+	root := mustWalk(t, src, ref("acme", "doctrine", 282), route)
+
+	if !root.Assigned {
+		t.Fatal("the starting node was assigned no level")
+	}
+	if name := route.Structure.Levels[root.Level].Name; name != "seat" {
+		t.Errorf("walking from a seat calls it %q, want seat", name)
+	}
+	// And the subtree below it must come out clean, exactly as it does when
+	// the same nodes are reached from the commission.
+	if got := Doctor(root, route); len(got) != 0 {
+		t.Errorf("doctoring a correct subtree directly reported %d defect(s): %v", len(got), got)
+	}
+}
+
+// A node that genuinely sits at no declared level is still reported when it is
+// the one asked about -- but its children are NOT, because judging them
+// against the wrong rung would turn one defect into a cascade that all point
+// at the wrong issues.
+func TestWalkFromAMisplacedNodeDoesNotCascade(t *testing.T) {
+	src := &fakeSource{
+		issues: map[string]*ghx.Issue{
+			"acme/lab#46":      issue("commission 1", "OPEN"),
+			"acme/lab#72":      issue("not a seat record at all", "OPEN"),
+			"acme/harness#121": issue("work below it", "OPEN"),
+		},
+		children: map[string][]ghx.IssueRef{
+			"acme/lab#72": {ref("acme", "harness", 121)},
+		},
+		parents: map[string]ghx.IssueRef{
+			"acme/lab#72": ref("acme", "lab", 46),
+		},
+	}
+	route := routeWithStructure()
+	root := mustWalk(t, src, ref("acme", "lab", 72), route)
+
+	if root.Assigned {
+		t.Fatal("a node at no declared level was assigned one")
+	}
+	defects := Doctor(root, route)
+	if len(defects) != 1 {
+		t.Fatalf("got %d defects, want exactly 1 -- the misplaced node itself, not a cascade: %v",
+			len(defects), defects)
+	}
+	if defects[0].Ref.String() != "acme/lab#72" {
+		t.Errorf("the defect blames %s, want the misplaced node itself", defects[0].Ref)
+	}
 }

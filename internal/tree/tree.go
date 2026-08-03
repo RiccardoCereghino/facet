@@ -24,6 +24,10 @@ import (
 type Source interface {
 	ViewIssue(repo string, number int) (*ghx.Issue, error)
 	IssueChildren(repo string, number int) ([]ghx.IssueRef, error)
+	// IssueParent is needed to establish what the node a walk STARTS at
+	// actually is. Without it a walk can only assume its argument is a root,
+	// and that assumption is wrong for every subtree.
+	IssueParent(repo string, number int) (ghx.IssueRef, bool, error)
 }
 
 // Node is one issue in the tree.
@@ -92,10 +96,18 @@ func Walk(src Source, ref ghx.IssueRef, maxDepth int, route *routing.Routing) (*
 	if err != nil {
 		return nil, err
 	}
+	// ESTABLISH WHAT THE STARTING NODE ACTUALLY IS. Assuming it is a root is
+	// wrong for every subtree, and wrong in the direction that matters: a walk
+	// begun at a node three rungs down would call it a root, then report every
+	// correctly-placed node beneath it as misplaced and prescribe re-parenting
+	// a tree that was right. A doctor's false positive that tells someone to
+	// break a correct tree is worse than a missed defect.
 	if route != nil && route.Structure != nil {
-		if levels := route.Structure.ChildLevels(-1); len(levels) > 0 {
-			root.Level, root.Assigned, root.LevelKnown = levels[0], true, true
+		level, ok, err := LevelOf(src, route, ref)
+		if err != nil {
+			return nil, err
 		}
+		root.Level, root.Assigned, root.LevelKnown = level, ok, true
 	}
 	path := map[string]bool{ref.String(): true}
 	descend(src, root, maxDepth, route, path)
@@ -139,8 +151,14 @@ func descend(src Source, parent *Node, maxDepth int, route *routing.Routing, pat
 
 // assign settles a child's level from its parent's. With no structure
 // configured nothing is assigned and nothing is judged.
+//
+// A parent that sits at no declared level stops the assignment here rather
+// than passing its zero Level down: everything below a misplaced node would
+// otherwise be judged against the wrong rung and reported as misplaced too,
+// turning one defect into a cascade of them. The defect is the ancestor's, and
+// it is already reported as such.
 func assign(child, parent *Node, route *routing.Routing) {
-	if route == nil || route.Structure == nil || !parent.LevelKnown {
+	if route == nil || route.Structure == nil || !parent.LevelKnown || !parent.Assigned {
 		return
 	}
 	child.LevelKnown = true
@@ -215,4 +233,71 @@ func (c Counts) StatusNames() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// LevelOf resolves which declared level an issue occupies.
+//
+// IT IS NOT A DEPTH. A level is assigned by matching a node's shape against
+// the rungs its parent's level permits, so a tree that skips an optional rung
+// has nodes whose level exceeds their ancestor count. The count is only ever a
+// coincidence that holds until the first skip.
+//
+// It climbs to the root -- the child->parent direction, which is the
+// immediately consistent one, unlike listing children -- and then assigns back
+// down through the same Structure.Assign the walk uses. Both the walk and any
+// caller judging a single edge go through this one function, so they cannot
+// disagree about the same tree by construction rather than by having been
+// fixed to the same answer twice.
+//
+// ok is false when the node, or some ancestor of it, sits at no declared level.
+// That is a real finding about the tree rather than an error, and the caller
+// decides what to do with it: a walk reports the node it started at, while an
+// edge check refuses and points at the tree above.
+func LevelOf(src Source, route *routing.Routing, ref ghx.IssueRef) (int, bool, error) {
+	if route == nil || route.Structure == nil {
+		return 0, false, nil
+	}
+	s := route.Structure
+
+	// Climb, collecting the chain with ref first and the root last.
+	chain := []ghx.IssueRef{ref}
+	seen := map[string]bool{ref.String(): true}
+	at := ref
+	for {
+		parent, ok, err := src.IssueParent(at.OwnerRepo(), at.Number)
+		if err != nil {
+			return 0, false, err
+		}
+		if !ok {
+			break
+		}
+		if seen[parent.String()] {
+			return 0, false, fmt.Errorf("cycle above %s: %s is its own ancestor", ref, parent)
+		}
+		seen[parent.String()] = true
+		chain = append(chain, parent)
+		at = parent
+	}
+
+	roots := s.ChildLevels(-1)
+	if len(roots) == 0 {
+		return 0, false, nil
+	}
+	level := roots[0]
+	for i := len(chain) - 2; i >= 0; i-- {
+		n := chain[i]
+		iss, err := src.ViewIssue(n.OwnerRepo(), n.Number)
+		if err != nil {
+			return 0, false, err
+		}
+		if iss == nil {
+			return 0, false, fmt.Errorf("%s: no such issue", n)
+		}
+		next, ok := s.Assign(level, route.KeyForRepo(n.OwnerRepo()), iss.Title)
+		if !ok {
+			return 0, false, nil
+		}
+		level = next
+	}
+	return level, true, nil
 }
