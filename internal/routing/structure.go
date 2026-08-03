@@ -42,6 +42,11 @@ type Level struct {
 	// work -- and forcing an empty node in to satisfy a schema teaches people
 	// to file placeholder issues.
 	Optional bool `json:"optional,omitempty"`
+	// RequiresChildren marks a rung whose whole purpose is to hold others, so
+	// that one closed with none is reported. That is a real loss rather than a
+	// tidiness point: a record of who did some work, carrying nothing, means
+	// the work it accounted for can no longer be attributed to it.
+	RequiresChildren bool `json:"requiresChildren,omitempty"`
 }
 
 // LevelMatch is one accepted shape. An empty field does not constrain, so
@@ -81,6 +86,17 @@ func (s *Structure) ChildLevels(parentLevel int) []int {
 // catch: something at a depth where it does not belong. ok is false then, and
 // the caller reports it against the candidates -- naming what was expected
 // rather than only what was found.
+//
+// THE SHALLOWEST MATCH WINS, WHICH MATTERS WHEN A SKIPPABLE RUNG IS
+// UNCONSTRAINED. A level with no Accepts admits anything, so if it is also
+// Optional it absorbs everything that could have belonged to the rung below:
+// work hanging directly off the rung above is named for the skippable level
+// rather than the one under it. That is not a guess being made badly -- the
+// declared structure genuinely does not distinguish the two, and facet will
+// not invent a distinction its configuration does not express. It costs
+// nothing in correctness (no defect is reported either way, and the rungs
+// below stay right) and only shows up as a label in a report. Give the level
+// an Accepts if the difference matters.
 func (s *Structure) Assign(parentLevel int, repoKey, title string) (level int, ok bool) {
 	if s == nil {
 		return 0, false
