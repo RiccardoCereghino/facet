@@ -258,6 +258,72 @@ func verify(path string, want []byte) error {
 	return nil
 }
 
+// FindNearest resolves the directory that governs seat identity for start
+// (default: the working directory): the nearest ancestor holding a .seat
+// file. This is gad's own walk-up (documented in the lab's root CLAUDE.md:
+// "resolution walks up from the current directory to the nearest .seat
+// file"), and it is deliberately NOT the same walk config.FindWorkspace does
+// (nearest .workspace.json).
+//
+// The two disagree whenever .seat/.scope were seeded INSIDE a clone rather
+// than at the workspace root -- the standing remedy for gad#73's
+// stop-boundary gap (an unseeded workspace's walk-up has no stop boundary
+// and resolves to the lapidary), and now the standard shape whenever two
+// seats share one workspace root. Before facet#68, `facet scope` widened or
+// read the workspace-root .scope while gad enforced the clone-seeded one:
+// both exited 0, both silently disagreed about which file was authoritative.
+//
+// Returns an error when no ancestor holds .seat at all -- callers for whom
+// that is a legitimate state (an operator's own workspace, or one not yet
+// seeded) fall back to config.FindWorkspace rather than treating this as
+// fatal.
+func FindNearest(start string) (string, error) {
+	dir, err := absExistingDir(start)
+	if err != nil {
+		return "", err
+	}
+	from := dir
+	for {
+		if _, err := os.Stat(filepath.Join(dir, NameFile)); err == nil {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", fmt.Errorf("no %s in %s or any parent directory", NameFile, from)
+		}
+		dir = parent
+	}
+}
+
+// absExistingDir resolves start to an absolute path and confirms it names a
+// directory, defaulting to the working directory like config.ResolveWorkspace
+// does -- kept local rather than imported so this package does not need to
+// depend on config for one helper.
+func absExistingDir(start string) (string, error) {
+	if start == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return "", err
+		}
+		start = wd
+	}
+	abs, err := filepath.Abs(start)
+	if err != nil {
+		return "", err
+	}
+	fi, err := os.Stat(abs)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("path not found: %s", abs)
+		}
+		return "", fmt.Errorf("path %s: %w", abs, err)
+	}
+	if !fi.IsDir() {
+		return "", fmt.Errorf("not a directory: %s", abs)
+	}
+	return abs, nil
+}
+
 // ReadName returns the seat's name, and "" when the workspace has none.
 func ReadName(workspaceDir string) (string, error) {
 	b, err := os.ReadFile(filepath.Join(workspaceDir, NameFile))

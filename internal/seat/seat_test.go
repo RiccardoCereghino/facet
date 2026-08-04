@@ -396,3 +396,62 @@ func TestVerifyReportsAMissingFile(t *testing.T) {
 		t.Fatal("verify passed on a file that does not exist")
 	}
 }
+
+// FindNearest is gad's own walk, not config.FindWorkspace's (facet#68): the
+// nearest ancestor holding .seat, not the nearest .workspace.json.
+func TestFindNearestWalksUpToTheNearestSeatFile(t *testing.T) {
+	root := t.TempDir()
+	if err := Write(root, "w-outer", nil); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(root, "a", "b", "c")
+	if err := os.MkdirAll(sub, 0o777); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := FindNearest(sub)
+	if err != nil {
+		t.Fatalf("FindNearest: %v", err)
+	}
+	if got != root {
+		t.Errorf("FindNearest(%s) = %s, want %s", sub, got, root)
+	}
+}
+
+// A NEARER .seat below the walk's starting point must win over a farther one
+// -- this is the exact shape a clone-seeded seat has: its own .seat sits
+// between the working directory and the workspace root's.
+func TestFindNearestPrefersTheCloserSeatFile(t *testing.T) {
+	root := t.TempDir()
+	if err := Write(root, "w-outer", nil); err != nil {
+		t.Fatal(err)
+	}
+	inner := filepath.Join(root, "repo")
+	if err := os.MkdirAll(inner, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := Write(inner, "w-inner", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := FindNearest(inner)
+	if err != nil {
+		t.Fatalf("FindNearest: %v", err)
+	}
+	if got != inner {
+		t.Errorf("FindNearest(%s) = %s, want the nearer %s, not the outer one", inner, got, inner)
+	}
+}
+
+// No .seat anywhere in the ancestry must be a plain error, not a panic or a
+// silent empty string -- callers for whom this is a legitimate state (an
+// unseeded workspace) are expected to catch it and fall back.
+func TestFindNearestErrorsWhenNoSeatFileExistsAnywhere(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "no-seat-here")
+	if err := os.MkdirAll(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := FindNearest(dir); err == nil {
+		t.Fatal("FindNearest found a seat file that was never written")
+	}
+}

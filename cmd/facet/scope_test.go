@@ -221,3 +221,86 @@ func TestScopeListSaysSoWhenNothingIsRecorded(t *testing.T) {
 		}
 	}
 }
+
+// facet#68, the exact measured scenario: a seat's .seat/.scope were seeded
+// INSIDE its clone (the standing remedy for gad#73), not at the workspace
+// root. resolveScopeDir must land on the clone's own .seat -- matching gad's
+// walk -- rather than the workspace root's .workspace.json, which is what
+// `config.FindWorkspace` alone would find and what silently widened the
+// wrong file before this fix.
+func TestResolveScopeDirPrefersACloneSeededSeatOverTheWorkspaceRoot(t *testing.T) {
+	ws, repoDir := workspaceWithRepo(t)
+	// A DIFFERENT seat's identity sits at the workspace root -- the
+	// foreman's, in facet#68's own measured shape.
+	if err := seat.Write(ws, "w-m8-wave", []seat.Ref{{Repo: "acme/stele", Number: 90}}); err != nil {
+		t.Fatal(err)
+	}
+	// THIS seat's identity is seeded inside the clone it actually works in.
+	if err := seat.Write(repoDir, "w-stele-86", []seat.Ref{{Repo: "acme/stele", Number: 86}}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := resolveScopeDir(repoDir)
+	if err != nil {
+		t.Fatalf("resolveScopeDir: %v", err)
+	}
+	if got != repoDir {
+		t.Fatalf("resolveScopeDir(%s) = %s, want the clone-seeded dir %s -- it found the wrong seat's .scope",
+			repoDir, got, repoDir)
+	}
+
+	// scope list from inside the clone must report the CLONE's seat, not the
+	// workspace root's -- this was facet#68's "list names the wrong seat".
+	var buf bytes.Buffer
+	if err := runScopeList(&buf, got); err != nil {
+		t.Fatalf("runScopeList: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "w-stele-86") {
+		t.Errorf("scope list did not report the clone-seeded seat:\n%s", out)
+	}
+	if strings.Contains(out, "w-m8-wave") {
+		t.Errorf("scope list reported the WRONG (workspace-root) seat:\n%s", out)
+	}
+
+	// scope add from inside the clone must widen the CLONE's .scope -- this
+	// was facet#68's "add writes the wrong file", reporting success while
+	// the file gad reads stayed unchanged.
+	added, err := seat.AppendScope(got, []seat.Ref{{Repo: "acme/stele", Number: 95}})
+	if err != nil {
+		t.Fatalf("AppendScope: %v", err)
+	}
+	if len(added) != 1 {
+		t.Fatalf("AppendScope reported %v, want one new entry", added)
+	}
+	cloneScope, err := seat.ReadScope(repoDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cloneScope) != 2 {
+		t.Errorf("the clone's own .scope = %v, want 2 entries (the widening landed on the wrong file)", cloneScope)
+	}
+	rootScope, err := seat.ReadScope(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rootScope) != 1 {
+		t.Errorf("the workspace root's .scope = %v, want it UNCHANGED at 1 entry", rootScope)
+	}
+}
+
+// A workspace with no .seat anywhere in its ancestry -- the ordinary
+// facet-new case, and every workspace before .seat/.scope existed -- must
+// still resolve to the workspace root exactly as before this fix. This is
+// the regression guard for the fallback half of resolveScopeDir.
+func TestResolveScopeDirFallsBackToWorkspaceRootWithNoSeatAnywhere(t *testing.T) {
+	ws, repoDir := workspaceWithRepo(t)
+
+	got, err := resolveScopeDir(repoDir)
+	if err != nil {
+		t.Fatalf("resolveScopeDir: %v", err)
+	}
+	if got != ws {
+		t.Errorf("resolveScopeDir(%s) = %s, want the workspace root %s", repoDir, got, ws)
+	}
+}
