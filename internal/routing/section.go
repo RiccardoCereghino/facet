@@ -65,7 +65,15 @@ type section struct {
 func findScopeSection(body string) (section, bool) {
 	locs := sectionHeading.FindAllStringSubmatchIndex(body, -1)
 	for i, loc := range locs {
-		if !strings.EqualFold(strings.TrimSpace(body[loc[2]:loc[3]]), scopeHeading) {
+		heading := strings.TrimSpace(body[loc[2]:loc[3]])
+		matched := false
+		for _, name := range scopeHeadings {
+			if strings.EqualFold(heading, name) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
 			continue
 		}
 		s := section{headStart: loc[0], contentStart: loc[1], end: len(body)}
