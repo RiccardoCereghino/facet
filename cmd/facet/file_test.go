@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/RiccardoCereghino/facet/internal/config"
@@ -201,6 +202,48 @@ func withTempRouting(t *testing.T, repo string) {
 // runFile creates blocked-by edges for a bare `#n`, and for a same-owner
 // owner/repo#n, but skips a cross-owner ref -- and none of that stops the
 // issue from being filed.
+// facet#108: `facet file` no longer offers --body, matching `facet comment
+// post`'s refusal design -- a body comes from a file, never a shell
+// argument, because backticks in a shell argument run as command
+// substitution and silently eat the text around them.
+func TestFileCmdHasNoBodyFlag(t *testing.T) {
+	cmd := newFileCmd()
+	if f := cmd.Flags().Lookup("body"); f != nil {
+		t.Fatalf("--body still exists on facet file: %+v", f)
+	}
+	if f := cmd.Flags().Lookup("body-file"); f == nil {
+		t.Fatal("--body-file is missing from facet file")
+	}
+}
+
+// runFile must refuse a missing --body-file the same way readBodyFile
+// refuses one everywhere else, with the issue-specific wording ("an issue
+// with no body", not "a comment with no body").
+func TestRunFileRefusesAMissingBodyFile(t *testing.T) {
+	withTempRouting(t, "acme/gateway")
+	err := runFile(fileOpts{Repo: "acme/gateway", Title: "gateway: fix the thing"})
+	if err == nil {
+		t.Fatal("runFile proceeded with no --body-file at all")
+	}
+}
+
+// An empty body file is refused with wording naming an ISSUE, not a comment
+// -- readBodyFile's "what" parameter must actually be threaded through.
+func TestRunFileRefusesAnEmptyBodyFile(t *testing.T) {
+	withTempRouting(t, "acme/gateway")
+	path := t.TempDir() + "/empty.md"
+	if err := writeFile(path, "   \n"); err != nil {
+		t.Fatal(err)
+	}
+	err := runFile(fileOpts{Repo: "acme/gateway", Title: "gateway: fix the thing", BodyFile: path})
+	if err == nil {
+		t.Fatal("runFile accepted an empty body file")
+	}
+	if !strings.Contains(err.Error(), "issue") {
+		t.Errorf("error = %q, want it to say ISSUE, not comment", err)
+	}
+}
+
 func TestRunFile_BlockedByEdges_Mixed(t *testing.T) {
 	withTempRouting(t, "acme/gateway")
 	fake := &fakeGH{
@@ -221,11 +264,15 @@ func TestRunFile_BlockedByEdges_Mixed(t *testing.T) {
 
 	body := "### Blocked by / waiting on\n\n" +
 		"#5, acme/infra-core#41, other/thing#9, account creation (operator)\n"
+	bodyPath := t.TempDir() + "/body.md"
+	if err := writeFile(bodyPath, body); err != nil {
+		t.Fatal(err)
+	}
 
 	err := runFile(fileOpts{
-		Repo:  "acme/gateway",
-		Title: "gateway: fix the thing",
-		Body:  body,
+		Repo:     "acme/gateway",
+		Title:    "gateway: fix the thing",
+		BodyFile: bodyPath,
 	})
 	if err != nil {
 		t.Fatalf("runFile: %v", err)
@@ -255,11 +302,15 @@ func TestRunFile_BlockedByEdges_UnresolvableRefSkipped(t *testing.T) {
 	t.Cleanup(func() { gh = prevGH })
 
 	body := "### Blocked by / waiting on\n\n#404, #3\n"
+	bodyPath := t.TempDir() + "/body.md"
+	if err := writeFile(bodyPath, body); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := runFile(fileOpts{
-		Repo:  "acme/gateway",
-		Title: "gateway: fix the thing",
-		Body:  body,
+		Repo:     "acme/gateway",
+		Title:    "gateway: fix the thing",
+		BodyFile: bodyPath,
 	}); err != nil {
 		t.Fatalf("runFile: %v", err)
 	}
@@ -286,11 +337,15 @@ func TestRunFile_BlockedByEdges_DedupesResolvedIdentity(t *testing.T) {
 	t.Cleanup(func() { gh = prevGH })
 
 	body := "### Blocked by / waiting on\n\n#5, acme/gateway#5\n"
+	bodyPath := t.TempDir() + "/body.md"
+	if err := writeFile(bodyPath, body); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := runFile(fileOpts{
-		Repo:  "acme/gateway",
-		Title: "gateway: fix the thing",
-		Body:  body,
+		Repo:     "acme/gateway",
+		Title:    "gateway: fix the thing",
+		BodyFile: bodyPath,
 	}); err != nil {
 		t.Fatalf("runFile: %v", err)
 	}

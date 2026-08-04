@@ -150,10 +150,10 @@ func TestCommentPostRefusesAnEmptyBody(t *testing.T) {
 	if err := writeFile(path, "   \n"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := readBodyFile(path); err == nil {
+	if _, err := readBodyFile(path, "comment"); err == nil {
 		t.Error("an empty body was accepted: a comment with no body is a note to nobody")
 	}
-	if _, err := readBodyFile(""); err == nil {
+	if _, err := readBodyFile("", "comment"); err == nil {
 		t.Error("a missing --body-file was accepted")
 	}
 }

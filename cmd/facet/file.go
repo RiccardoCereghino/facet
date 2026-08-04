@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -15,7 +14,6 @@ func newFileCmd() *cobra.Command {
 	var (
 		repo     string
 		title    string
-		body     string
 		bodyFile string
 		labels   []string
 		repos    []string
@@ -31,11 +29,16 @@ func newFileCmd() *cobra.Command {
 			"Concurrent sessions file into the same repository and a duplicate has already\n" +
 			"happened, so the search is not optional -- `--force` files anyway, and says so.\n\n" +
 			"Do not pass a `bug` or `enhancement` label expecting a type: apply the label and\n" +
-			"let the intake workflow convert it. `gh` has no --type flag to give us.",
+			"let the intake workflow convert it. `gh` has no --type flag to give us.\n\n" +
+			"The body comes from a file, never an argument, exactly like `facet comment\n" +
+			"post` (facet#108): backticks in a shell argument run as command substitution\n" +
+			"and silently eat the text around them, which has mangled filed issues more\n" +
+			"than once -- an --body flag existed here until this was found, and was the\n" +
+			"one place in this CLI still offering it.",
 		Args: cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			return runFile(fileOpts{
-				Repo: repo, Title: title, Body: body, BodyFile: bodyFile,
+				Repo: repo, Title: title, BodyFile: bodyFile,
 				Labels: labels, Repos: repos, Force: force, DryRun: dryRun,
 			})
 		},
@@ -43,8 +46,7 @@ func newFileCmd() *cobra.Command {
 	f := cmd.Flags()
 	f.StringVar(&repo, "repo", "", "the repository to file in, as owner/name -- where the BRANCH will land (required)")
 	f.StringVar(&title, "title", "", "issue title: `component: imperative statement` (required)")
-	f.StringVar(&body, "body", "", "issue body")
-	f.StringVar(&bodyFile, "body-file", "", "read the body from a file, or - for stdin")
+	f.StringVar(&bodyFile, "body-file", "", "file holding the issue body; - for stdin (required)")
 	f.StringSliceVar(&labels, "label", nil, "labels to apply (repeatable)")
 	f.StringSliceVar(&repos, "repos", nil, "every repo the work touches, as routing keys; recorded in the body")
 	f.BoolVar(&force, "force", false, "file even when a similar issue already exists")
@@ -53,9 +55,9 @@ func newFileCmd() *cobra.Command {
 }
 
 type fileOpts struct {
-	Repo, Title, Body, BodyFile string
-	Labels, Repos               []string
-	Force, DryRun               bool
+	Repo, Title, BodyFile string
+	Labels, Repos         []string
+	Force, DryRun         bool
 }
 
 func runFile(o fileOpts) error {
@@ -64,9 +66,6 @@ func runFile(o fileOpts) error {
 	}
 	if o.Title == "" {
 		return fmt.Errorf("--title is required")
-	}
-	if o.Body != "" && o.BodyFile != "" {
-		return fmt.Errorf("pass --body or --body-file, not both")
 	}
 
 	route, err := routing.Load(roots.Routing)
@@ -82,12 +81,9 @@ func runFile(o fileOpts) error {
 		}
 	}
 
-	body, err := readBody(o)
+	body, err := readBodyFile(o.BodyFile, "issue")
 	if err != nil {
 		return err
-	}
-	if strings.TrimSpace(body) == "" {
-		return fmt.Errorf("an issue with no body is a note to nobody: pass --body or --body-file")
 	}
 
 	// Every violation at once. An agent that has to rediscover one rule per
@@ -197,17 +193,4 @@ func issueNumber(issueURL string) (int, error) {
 		return 0, fmt.Errorf("no / in %q", issueURL)
 	}
 	return strconv.Atoi(issueURL[i+1:])
-}
-
-func readBody(o fileOpts) (string, error) {
-	switch {
-	case o.BodyFile == "-":
-		b, err := io.ReadAll(os.Stdin)
-		return string(b), err
-	case o.BodyFile != "":
-		b, err := os.ReadFile(o.BodyFile)
-		return string(b), err
-	default:
-		return o.Body, nil
-	}
 }
