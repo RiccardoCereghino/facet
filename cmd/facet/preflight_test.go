@@ -95,11 +95,58 @@ func TestRequirePreflightDisplaysTheSkippedCheck(t *testing.T) {
 	withFakes(t, windowsNote)
 
 	var buf bytes.Buffer
-	if err := requirePreflight(&buf, "spawn"); err != nil {
+	if err := requirePreflight(&buf, "spawn", false); err != nil {
 		t.Fatalf("a sound credential must not block spawn: %v", err)
 	}
 	if !strings.Contains(buf.String(), windowsNote) {
 		t.Errorf("spawn proceeded without saying what went unchecked:\n%s", buf.String())
+	}
+}
+
+// TestRequirePreflightRefusesByDefault is the other half of the amendment on
+// facet#109: the bypass is opt-in, never the default. An unsound credential
+// with bypass=false must still refuse -- exactly as before the bypass existed.
+func TestRequirePreflightRefusesByDefault(t *testing.T) {
+	prevGH := gh
+	gh = &fakeGH{auth: &ghx.AuthStatus{State: ghx.StateAbsent}}
+	t.Cleanup(func() { gh = prevGH })
+
+	var buf bytes.Buffer
+	err := requirePreflight(&buf, "spawn", false)
+	if err == nil {
+		t.Fatal("an unsound credential was not refused")
+	}
+	if !strings.Contains(err.Error(), "spawn refused") {
+		t.Errorf("error = %q, want it to name spawn's own refusal", err)
+	}
+	if !strings.Contains(err.Error(), "--unsound-credential") {
+		t.Errorf("the refusal must name the bypass; got %q", err)
+	}
+}
+
+// TestRequirePreflightBypassProceedsAndSaysSo is the Sculptor's ruling on
+// facet#109 made concrete: bypass=true on an unsound credential proceeds
+// (returns nil) but says so out loud, naming the flag and what was skipped --
+// the whole point being that this is no longer an undocumented, silent
+// escape hatch like `facet new` used to be.
+func TestRequirePreflightBypassProceedsAndSaysSo(t *testing.T) {
+	prevGH := gh
+	gh = &fakeGH{auth: &ghx.AuthStatus{State: ghx.StateAbsent}}
+	t.Cleanup(func() { gh = prevGH })
+
+	var buf bytes.Buffer
+	if err := requirePreflight(&buf, "spawn", true); err != nil {
+		t.Fatalf("the bypass did not open the gate: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "UNSOUND") {
+		t.Errorf("bypass must say the credential was unsound; got %q", out)
+	}
+	if !strings.Contains(out, "--unsound-credential") {
+		t.Errorf("bypass must name the flag that authorised it; got %q", out)
+	}
+	if !strings.Contains(out, "spawn") {
+		t.Errorf("bypass must name which command proceeded unsound; got %q", out)
 	}
 }
 

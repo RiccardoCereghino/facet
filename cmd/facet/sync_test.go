@@ -42,12 +42,29 @@ func withSoundCredential(t *testing.T) {
 func TestSyncRefusesOnUnsoundCredential(t *testing.T) {
 	withUnsoundCredential(t)
 
-	err := runSync(t.TempDir()+"/does-not-exist", false, false, false)
+	err := runSync(t.TempDir()+"/does-not-exist", false, false, false, false)
 	if err == nil {
 		t.Fatal("sync proceeded on an unsound credential")
 	}
 	if !strings.Contains(err.Error(), "sync refused") {
 		t.Errorf("error = %q, want it to name sync's own refusal", err)
+	}
+}
+
+// --unsound-credential is the bypass the Sculptor ruled for on facet#109: an
+// explicit, auditable override, never a silent default. sync must actually
+// proceed past the credential gate when it is passed -- here that means
+// reaching (and failing on) ResolveWorkspace instead of being refused by the
+// credential check.
+func TestSyncBypassesOnUnsoundCredentialWhenAsked(t *testing.T) {
+	withUnsoundCredential(t)
+
+	err := runSync(t.TempDir()+"/does-not-exist", false, false, false, true)
+	if err == nil {
+		t.Fatal("sync succeeded against a path that does not exist")
+	}
+	if strings.Contains(err.Error(), "refused") {
+		t.Errorf("the bypass must open the gate rather than refuse: %v", err)
 	}
 }
 
@@ -60,7 +77,7 @@ func TestRestoreRefusesOnUnsoundCredential(t *testing.T) {
 	roots = config.Roots{Workspaces: t.TempDir()}
 	t.Cleanup(func() { roots = prev })
 
-	err := runRestore()
+	err := runRestore(false)
 	if err == nil {
 		t.Fatal("restore proceeded on an unsound credential")
 	}
@@ -76,7 +93,7 @@ func TestRestoreRefusesOnUnsoundCredential(t *testing.T) {
 func TestSyncProceedsOnASoundCredential(t *testing.T) {
 	withSoundCredential(t)
 
-	err := runSync(t.TempDir()+"/does-not-exist", false, false, false)
+	err := runSync(t.TempDir()+"/does-not-exist", false, false, false, false)
 	if err == nil {
 		t.Fatal("sync succeeded against a path that does not exist")
 	}
