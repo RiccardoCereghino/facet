@@ -66,6 +66,19 @@ func TestUpsertScope(t *testing.T) {
 			want:    "## Repos in scope\n\nplatform\n",
 			changed: true,
 		},
+		{
+			// facet#69's audit finding (round 1, L1): a hand-written "Repos
+			// involved" section is just as authoritative to READ as "Repos in
+			// scope" -- but rewriting its CONTENT must not silently rename the
+			// author's own heading text along with it. Only a brand new
+			// section (the "appends when absent" case above) gets the
+			// canonical name.
+			name:    "an existing Repos involved heading keeps its own name on a content rewrite",
+			body:    "### Repos involved\n\ngad\n",
+			repos:   []string{"gad", "facet"},
+			want:    "### Repos involved\n\ngad, facet\n",
+			changed: true,
+		},
 	}
 
 	for _, tt := range tests {

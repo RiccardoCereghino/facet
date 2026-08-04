@@ -42,7 +42,14 @@ func UpsertScope(body string, repos []string) (out string, changed bool) {
 		return body, false
 	}
 
-	head := strings.Repeat("#", s.level) + " " + scopeHeading
+	// The author's own heading text is kept exactly, alongside its level
+	// (already preserved below): "Repos involved" is just as authoritative
+	// to READ as "Repos in scope" (facet#69), and silently renaming it on a
+	// content-only rewrite would be the same defect writeback exists to
+	// avoid -- an edit to text the author chose, with nothing framing it as
+	// a write. Only a BRAND NEW section (the no-match branch above) uses the
+	// canonical name, since there is no existing author choice to preserve.
+	head := strings.Repeat("#", s.level) + " " + s.name
 	rest := body[s.end:] // begins at the next heading, or is empty
 	if rest == "" {
 		return body[:s.headStart] + head + "\n\n" + want + "\n", true
@@ -52,16 +59,17 @@ func UpsertScope(body string, repos []string) (out string, changed bool) {
 
 // section locates one markdown section of a body.
 type section struct {
-	headStart    int // offset of the '#' that opens the heading
-	contentStart int // offset just past the heading text
-	end          int // offset of the next heading, or len(body)
-	level        int // how many '#' the author used
+	headStart    int    // offset of the '#' that opens the heading
+	contentStart int    // offset just past the heading text
+	end          int    // offset of the next heading, or len(body)
+	level        int    // how many '#' the author used
+	name         string // the heading text exactly as the author wrote it
 }
 
-// findScopeSection locates the "Repos in scope" section, at whatever heading
-// level. Content bounds are kept apart from the heading: comparing the heading
-// itself against the desired content is how an "idempotent" rewrite ends up
-// rewriting on every run.
+// findScopeSection locates the repo-scope section (any name in scopeHeadings,
+// case-insensitively), at whatever heading level. Content bounds are kept
+// apart from the heading: comparing the heading itself against the desired
+// content is how an "idempotent" rewrite ends up rewriting on every run.
 func findScopeSection(body string) (section, bool) {
 	locs := sectionHeading.FindAllStringSubmatchIndex(body, -1)
 	for i, loc := range locs {
@@ -76,7 +84,7 @@ func findScopeSection(body string) (section, bool) {
 		if !matched {
 			continue
 		}
-		s := section{headStart: loc[0], contentStart: loc[1], end: len(body)}
+		s := section{headStart: loc[0], contentStart: loc[1], end: len(body), name: heading}
 		if i+1 < len(locs) {
 			s.end = locs[i+1][0]
 		}
