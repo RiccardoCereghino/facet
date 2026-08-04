@@ -119,6 +119,13 @@ func preflight(req ghx.Requirements) (probs []ghx.Problem, notes []string, st *g
 // requirePreflight is what commands that cannot work without a credential call
 // before doing anything else. It fails loudly and names the command, so the
 // refusal is legible at the point of use rather than three calls deeper.
+//
+// This is a capability gate, not a spawn-specific one -- what it guards is
+// "about to talk to GitHub with the ambient credential", so any verb in that
+// position calls it the same way (facet#109). Today that is spawn, sync and
+// restore. `new` and `add clone`/`add link` reach the same clone path
+// (workspace.Sync) unguarded, and for `new` that is deliberate for as long as
+// facet#107 is open -- see newNewCmd's comment.
 func requirePreflight(w io.Writer, what string) error {
 	probs, notes, _, err := preflight(ghx.DefaultRequirements())
 	if err != nil {

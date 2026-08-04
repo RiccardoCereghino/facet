@@ -23,6 +23,13 @@ func pairs(kind string, entries []string) (map[string]string, error) {
 	return out, nil
 }
 
+// newNewCmd is deliberately NOT gated by requirePreflight, unlike sync and
+// restore (facet#109). `new` clones with the same ambient credential and is
+// otherwise in the identical position -- but it is also the only way to seat
+// anything while facet#107 (spawn refusing on a sound-looking gho_ token) is
+// open: `facet new` + `seat.sh --workspace` is the escape hatch currently in
+// use. Guarding it here would close the one path left to fix #107 itself.
+// Add the gate once #107 is resolved, not before.
 func newNewCmd() *cobra.Command {
 	var (
 		desc      string
