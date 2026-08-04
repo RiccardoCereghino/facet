@@ -26,6 +26,11 @@ func newScopeCmd() *cobra.Command {
 			"describes the seat itself in .seat-issue. `facet spawn` writes all three;\n" +
 			"this reads them, and adds an issue to a workspace that has been given one\n" +
 			"after the fact.\n\n" +
+			"A line may also read landing:owner/repo -- a repo this workspace's PULL\n" +
+			"REQUESTS land in without claiming any issue there. Use it when a seat's\n" +
+			"issues are filed in one repo and its work lands in another: naming some\n" +
+			"unrelated issue in the landing repo would admit every PR there while\n" +
+			"asserting the seat covers work it does not (facet#97).\n\n" +
 			"Both subcommands find the workspace by walking UP from the working directory,\n" +
 			"because the work is done inside a repository subdirectory rather than at the\n" +
 			"workspace root.\n\n" +
@@ -105,10 +110,12 @@ func runScopeList(w io.Writer, ws string) error {
 func newScopeAddCmd() *cobra.Command {
 	var path string
 	cmd := &cobra.Command{
-		Use:   "add <owner/repo#n>...",
-		Short: "Record another issue this workspace covers",
-		Long: "Appends to .scope, creating it if the workspace has none. Adding an issue\n" +
-			"already recorded changes nothing, so this is safe to repeat.",
+		Use:   "add <owner/repo#n | landing:owner/repo>...",
+		Short: "Record another issue -- or landing repo -- this workspace covers",
+		Long: "Appends to .scope, creating it if the workspace has none. Adding an entry\n" +
+			"already recorded changes nothing, so this is safe to repeat.\n\n" +
+			"landing:owner/repo records a repo this workspace's pull requests land in\n" +
+			"without claiming any issue there (facet#97).",
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			refs, err := seat.ParseRefs(args)

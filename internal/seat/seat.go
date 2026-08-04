@@ -85,40 +85,78 @@ func ValidateName(name string) error {
 }
 
 // Ref is one issue a workspace legitimately covers, in the owner/repo#n form the
-// files on disk already use.
+// files on disk already use -- or, when Landing is true, a repo whose PULL
+// REQUESTS the workspace's work lands in without claiming any issue there.
+//
+// Landing exists for facet#97: a seat's issues are sometimes filed in one repo
+// while its work (and so its PRs) land in another, and there was no honest way
+// to write that -- naming some unrelated issue in the landing repo admitted
+// every PR there while asserting the seat covers work it does not. A landing
+// entry says the true thing directly, and Number is meaningless when it is set
+// (there is no issue to number).
 type Ref struct {
-	Repo   string // owner/name
-	Number int
+	Repo    string // owner/name
+	Number  int
+	Landing bool
 }
 
-func (r Ref) String() string { return fmt.Sprintf("%s#%d", r.Repo, r.Number) }
+// String renders the canonical form: owner/repo#n for an issue, or
+// landing:owner/repo for a landing-only entry. Both round-trip through
+// ParseRef.
+func (r Ref) String() string {
+	if r.Landing {
+		return "landing:" + r.Repo
+	}
+	return fmt.Sprintf("%s#%d", r.Repo, r.Number)
+}
+
+// refFix is the fix line every ParseRef refusal ends with.
+const refFix = "fix: write it as owner/repo#123, or landing:owner/repo for a repo with no issue of its own"
 
 // ParseRef reads one scope entry. It is strict about the form because the file
 // is a wire contract with a separate reader: an entry that is nearly right is
 // worse than one that is refused, since the reader will simply not match it and
 // the workspace will look out of scope for work it was created to do.
 func ParseRef(s string) (Ref, error) {
-	fix := "fix: write it as owner/repo#123"
 	t := strings.TrimSpace(s)
+
+	if repo, ok := strings.CutPrefix(t, "landing:"); ok {
+		return parseLandingRef(s, repo)
+	}
+
 	repo, num, ok := strings.Cut(t, "#")
 	if !ok {
-		return Ref{}, fmt.Errorf("scope entry %q has no '#'\n%s", s, fix)
+		return Ref{}, fmt.Errorf("scope entry %q has no '#'\n%s", s, refFix)
 	}
 	owner, name, ok := strings.Cut(repo, "/")
 	if !ok || owner == "" || name == "" {
-		return Ref{}, fmt.Errorf("scope entry %q does not name owner/repo before the '#'\n%s", s, fix)
+		return Ref{}, fmt.Errorf("scope entry %q does not name owner/repo before the '#'\n%s", s, refFix)
 	}
 	if strings.ContainsAny(repo, " \t") {
-		return Ref{}, fmt.Errorf("scope entry %q has whitespace inside owner/repo\n%s", s, fix)
+		return Ref{}, fmt.Errorf("scope entry %q has whitespace inside owner/repo\n%s", s, refFix)
 	}
 	n, err := strconv.Atoi(num)
 	if err != nil {
-		return Ref{}, fmt.Errorf("scope entry %q: %q is not an issue number\n%s", s, num, fix)
+		return Ref{}, fmt.Errorf("scope entry %q: %q is not an issue number\n%s", s, num, refFix)
 	}
 	if n < 1 {
-		return Ref{}, fmt.Errorf("scope entry %q: issue numbers start at 1\n%s", s, fix)
+		return Ref{}, fmt.Errorf("scope entry %q: issue numbers start at 1\n%s", s, refFix)
 	}
 	return Ref{Repo: repo, Number: n}, nil
+}
+
+// parseLandingRef reads the owner/repo half of a landing:owner/repo entry.
+// original is the whole entry, as given, for the error messages -- repo is
+// already the part after the prefix.
+func parseLandingRef(original, repo string) (Ref, error) {
+	owner, name, ok := strings.Cut(repo, "/")
+	if !ok || owner == "" || name == "" {
+		return Ref{}, fmt.Errorf("scope entry %q does not name owner/repo after 'landing:'\n%s", original, refFix)
+	}
+	if strings.ContainsAny(repo, " \t") {
+		return Ref{}, fmt.Errorf("scope entry %q has whitespace inside owner/repo\n%s", original, refFix)
+	}
+	return Ref{Repo: repo, Landing: true}, nil
 }
 
 // ParseRefs reads several entries, reporting the first that is wrong. Duplicates
