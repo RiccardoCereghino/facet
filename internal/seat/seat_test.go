@@ -218,6 +218,126 @@ func TestAppendScopeRefusesAnUnreadableFile(t *testing.T) {
 	}
 }
 
+// RemoveScope is add's opposite (facet#112): a boundary that could only
+// widen was a ratchet, and a wrong entry was permanent. This is the basic
+// shape -- drop one, keep the rest, report which was actually removed.
+func TestRemoveScopeDropsOnlyWhatWasAsked(t *testing.T) {
+	ws := t.TempDir()
+	if err := Write(ws, "w-example-12", []Ref{
+		{Repo: "owner/repo", Number: 12},
+		{Repo: "acme/tools", Number: 7},
+	}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	removed, remaining, err := RemoveScope(ws, []Ref{{Repo: "acme/tools", Number: 7}})
+	if err != nil {
+		t.Fatalf("RemoveScope: %v", err)
+	}
+	if len(removed) != 1 || removed[0].String() != "acme/tools#7" {
+		t.Errorf("removed = %v, want [acme/tools#7]", removed)
+	}
+	if len(remaining) != 1 || remaining[0].String() != "owner/repo#12" {
+		t.Errorf("remaining = %v, want [owner/repo#12]", remaining)
+	}
+
+	got, err := ReadScope(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].String() != "owner/repo#12" {
+		t.Errorf("scope on disk = %v, want [owner/repo#12]", got)
+	}
+}
+
+// Removing something never present is a no-op, matching AppendScope's
+// idempotence in the other direction.
+func TestRemoveScopeOfAnAbsentEntryIsANoOp(t *testing.T) {
+	ws := t.TempDir()
+	if err := Write(ws, "w-example-12", []Ref{{Repo: "owner/repo", Number: 12}}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	removed, remaining, err := RemoveScope(ws, []Ref{{Repo: "acme/tools", Number: 7}})
+	if err != nil {
+		t.Fatalf("RemoveScope: %v", err)
+	}
+	if len(removed) != 0 {
+		t.Errorf("removed = %v, want none", removed)
+	}
+	if len(remaining) != 1 || remaining[0].String() != "owner/repo#12" {
+		t.Errorf("remaining = %v, want [owner/repo#12] unchanged", remaining)
+	}
+}
+
+// Removing the last entry deletes .scope rather than leaving an empty file --
+// the same "absent means nothing recorded" rule Write follows.
+func TestRemoveScopeToEmptyDeletesTheFile(t *testing.T) {
+	ws := t.TempDir()
+	if err := Write(ws, "w-example-12", []Ref{{Repo: "owner/repo", Number: 12}}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	if _, _, err := RemoveScope(ws, []Ref{{Repo: "owner/repo", Number: 12}}); err != nil {
+		t.Fatalf("RemoveScope: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(ws, ScopeFile)); !os.IsNotExist(err) {
+		t.Errorf("stat %s = %v, want IsNotExist", ScopeFile, err)
+	}
+	got, err := ReadScope(ws)
+	if err != nil {
+		t.Fatalf("ReadScope after delete: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("ReadScope = %v, want none", got)
+	}
+}
+
+// SetScope always writes, even when the new value equals the old -- it is an
+// assignment, not a merge -- and reports the previous value the way tree
+// wire reports the parent an edge moved a child away from.
+func TestSetScopeReplacesAndReportsThePrevious(t *testing.T) {
+	ws := t.TempDir()
+	if err := Write(ws, "w-example-12", []Ref{
+		{Repo: "owner/repo", Number: 12},
+		{Repo: "acme/tools", Number: 7},
+	}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	previous, err := SetScope(ws, []Ref{{Repo: "acme/tools", Number: 99}})
+	if err != nil {
+		t.Fatalf("SetScope: %v", err)
+	}
+	if len(previous) != 2 {
+		t.Errorf("previous = %v, want the 2 original entries", previous)
+	}
+
+	got, err := ReadScope(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].String() != "acme/tools#99" {
+		t.Errorf("scope on disk = %v, want [acme/tools#99]", got)
+	}
+}
+
+// SetScope with no refs clears the scope entirely, deleting the file --
+// the documented way to empty a workspace's scope rather than hand-editing.
+func TestSetScopeToNothingDeletesTheFile(t *testing.T) {
+	ws := t.TempDir()
+	if err := Write(ws, "w-example-12", []Ref{{Repo: "owner/repo", Number: 12}}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	if _, err := SetScope(ws, nil); err != nil {
+		t.Fatalf("SetScope: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(ws, ScopeFile)); !os.IsNotExist(err) {
+		t.Errorf("stat %s = %v, want IsNotExist", ScopeFile, err)
+	}
+}
+
 func TestReadScopeIgnoresBlankLines(t *testing.T) {
 	ws := t.TempDir()
 	if err := os.WriteFile(filepath.Join(ws, ScopeFile), []byte("owner/repo#12\n\n  \nacme/tools#7\n"), 0o666); err != nil {

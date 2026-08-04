@@ -382,3 +382,73 @@ func AppendScope(workspaceDir string, add []Ref) ([]Ref, error) {
 	}
 	return added, nil
 }
+
+// writeScope replaces .scope's contents wholesale, deleting the file rather
+// than writing an empty one -- the same rule Write follows, for the same
+// reason: absent means "nothing to check here", a real state a workspace can
+// be in, and an empty file would be a hole with a name on it that ReadScope
+// cannot tell apart from "the writer meant to record something and did not".
+func writeScope(workspaceDir string, scope []Ref) error {
+	path := filepath.Join(workspaceDir, ScopeFile)
+	if len(scope) == 0 {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove %s: %w", path, err)
+		}
+		return nil
+	}
+	return writeAndVerify(path, marshalScope(scope))
+}
+
+// RemoveScope drops entries from a workspace's scope and reports what is left.
+// Removing an entry not present is a no-op for that entry, matching AppendScope's
+// idempotence in the other direction -- running it twice, or against a scope
+// that never had the entry, is safe.
+//
+// This is the verb `add` had no opposite for (facet#112): a boundary that can
+// only widen is a ratchet, and correcting a wrong entry required editing
+// .scope by hand -- exactly what these tools exist to make unnecessary.
+func RemoveScope(workspaceDir string, remove []Ref) (removed, remaining []Ref, err error) {
+	have, err := ReadScope(workspaceDir)
+	if err != nil {
+		return nil, nil, err
+	}
+	drop := map[string]bool{}
+	for _, r := range remove {
+		drop[r.String()] = true
+	}
+	remaining = have[:0:0] // never alias `have`'s backing array with the shrunk result
+	for _, r := range have {
+		if drop[r.String()] {
+			removed = append(removed, r)
+			continue
+		}
+		remaining = append(remaining, r)
+	}
+	if len(removed) == 0 {
+		return nil, have, nil
+	}
+	if err := writeScope(workspaceDir, remaining); err != nil {
+		return nil, nil, err
+	}
+	return removed, remaining, nil
+}
+
+// SetScope replaces a workspace's scope wholesale and reports what it
+// replaced, the way tree wire reports the parent an edge moved a child away
+// from -- so the previous state is not simply gone the moment the new one is
+// written.
+//
+// refs is deduplicated the same way AppendScope's input is; SetScope always
+// writes (even to the same value) so it is not idempotent in the sense
+// AppendScope is -- it is an assignment, not a merge, and the previous value
+// is returned specifically so a caller can tell whether anything changed.
+func SetScope(workspaceDir string, refs []Ref) (previous []Ref, err error) {
+	previous, err = ReadScope(workspaceDir)
+	if err != nil {
+		return nil, err
+	}
+	if err := writeScope(workspaceDir, Dedupe(refs)); err != nil {
+		return nil, err
+	}
+	return previous, nil
+}
