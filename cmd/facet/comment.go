@@ -99,7 +99,7 @@ func newCommentPostCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			body, err := readBodyFile(bodyFile)
+			body, err := readBodyFile(bodyFile, "comment")
 			if err != nil {
 				return err
 			}
@@ -129,7 +129,7 @@ func newCommentEditCmd() *cobra.Command {
 			if id == 0 {
 				return fmt.Errorf("--id is required: the comment's own id, which `facet comment list` prints")
 			}
-			body, err := readBodyFile(bodyFile)
+			body, err := readBodyFile(bodyFile, "comment")
 			if err != nil {
 				return err
 			}
@@ -141,7 +141,16 @@ func newCommentEditCmd() *cobra.Command {
 	return cmd
 }
 
-func readBodyFile(path string) (string, error) {
+// readBodyFile is the one body-resolution path in this package (facet#108):
+// a body comes from a file, never a shell argument, because backticks in a
+// shell argument run as command substitution and silently eat the text
+// around them -- measured mangling real filed issues more than once.
+// `facet file` used to carry its own --body escape hatch around this; it
+// does not any more.
+//
+// what names the artifact in the empty-body refusal ("a comment with no
+// body is a note to nobody" vs. "an issue with no body...").
+func readBodyFile(path, what string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("--body-file is required\nfix: write the body to a file and pass it, or pass - for stdin")
 	}
@@ -156,7 +165,7 @@ func readBodyFile(path string) (string, error) {
 		return "", err
 	}
 	if strings.TrimSpace(string(b)) == "" {
-		return "", fmt.Errorf("%s is empty: a comment with no body is a note to nobody", path)
+		return "", fmt.Errorf("%s is empty: a %s with no body is a note to nobody", path, what)
 	}
 	return string(b), nil
 }
