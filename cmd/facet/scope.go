@@ -35,15 +35,39 @@ func newScopeCmd() *cobra.Command {
 			"issues are filed in one repo and its work lands in another: naming some\n" +
 			"unrelated issue in the landing repo would admit every PR there while\n" +
 			"asserting the seat covers work it does not (facet#97).\n\n" +
-			"Both subcommands find the workspace by walking UP from the working directory,\n" +
-			"because the work is done inside a repository subdirectory rather than at the\n" +
-			"workspace root.\n\n" +
+			"Every subcommand resolves the SAME directory gad does: the nearest ancestor\n" +
+			"holding .seat, walking up from the working directory. This matters whenever\n" +
+			"a seat's .seat/.scope were seeded INSIDE a clone rather than at the workspace\n" +
+			"root -- two seats sharing one root is the normal shape now -- because gad\n" +
+			"enforces the clone-seeded file and this used to widen or read the\n" +
+			"workspace-root one instead, both exiting 0 while silently disagreeing about\n" +
+			"which file was authoritative (facet#68). A workspace with no .seat anywhere\n" +
+			"in its ancestry falls back to the workspace root: that is a real, unseeded\n" +
+			"state, not an error.\n\n" +
 			"A workspace with no .scope has no recorded scope, which means nothing to\n" +
 			"check rather than nothing permitted -- a workspace that covers no single\n" +
 			"issue is a real thing and must not need an exemption to exist.",
 	}
 	cmd.AddCommand(newScopeListCmd(), newScopeAddCmd(), newScopeRemoveCmd(), newScopeSetCmd())
 	return cmd
+}
+
+// resolveScopeDir is what every scope subcommand uses to find the directory
+// it reads and writes, instead of config.FindWorkspace alone (facet#68).
+//
+// It prefers the nearest .seat, matching gad's own resolution: that is the
+// fix, because a clone-seeded seat's .seat/.scope live inside the clone, not
+// at the workspace root, and gad already enforces the file it finds there.
+// A workspace with no .seat anywhere in its ancestry is a legitimate,
+// unproblematic state -- an operator's own workspace, or one `facet spawn`
+// simply has not seeded yet -- so that case falls back to the workspace
+// root exactly as every scope command did before this fix, rather than
+// refusing a state that was never an error.
+func resolveScopeDir(path string) (string, error) {
+	if dir, err := seat.FindNearest(path); err == nil {
+		return dir, nil
+	}
+	return config.FindWorkspace(path)
 }
 
 func newScopeListCmd() *cobra.Command {
@@ -53,7 +77,7 @@ func newScopeListCmd() *cobra.Command {
 		Short: "Print the seat and the issues this workspace covers",
 		Args:  cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error {
-			ws, err := config.FindWorkspace(path)
+			ws, err := resolveScopeDir(path)
 			if err != nil {
 				return err
 			}
@@ -126,7 +150,7 @@ func newScopeAddCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ws, err := config.FindWorkspace(path)
+			ws, err := resolveScopeDir(path)
 			if err != nil {
 				return err
 			}
@@ -178,7 +202,7 @@ func newScopeRemoveCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ws, err := config.FindWorkspace(path)
+			ws, err := resolveScopeDir(path)
 			if err != nil {
 				return err
 			}
@@ -219,7 +243,7 @@ func newScopeSetCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			ws, err := config.FindWorkspace(path)
+			ws, err := resolveScopeDir(path)
 			if err != nil {
 				return err
 			}
