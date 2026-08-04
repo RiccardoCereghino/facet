@@ -10,25 +10,25 @@ import (
 
 func newSpawnCmd() *cobra.Command {
 	var (
-		repo        string
-		clones      []string
-		addClones   []string
-		rmClones    []string
-		seatName    string
-		scope       []string
-		seatIssue   string
-		slug        string
-		base        string
-		yes         bool
-		noBranch    bool
-		dryRun      bool
-		attach      bool
-		noAttach    bool
-		ownSession  bool
-		muxName     string
-		noWriteback bool
-		unsound     bool
-		agent       agentFlags
+		repo       string
+		clones     []string
+		addClones  []string
+		rmClones   []string
+		seatName   string
+		scope      []string
+		seatIssue  string
+		slug       string
+		base       string
+		yes        bool
+		noBranch   bool
+		dryRun     bool
+		attach     bool
+		noAttach   bool
+		ownSession bool
+		muxName    string
+		writeback  bool
+		unsound    bool
+		agent      agentFlags
 	)
 	cmd := &cobra.Command{
 		Use:   "spawn <issue-number>",
@@ -62,7 +62,7 @@ func newSpawnCmd() *cobra.Command {
 				Seat: seatName, Scope: scope, SeatIssue: seatIssue,
 				Slug: slug, Base: base, Yes: yes, NoBranch: noBranch, DryRun: dryRun,
 				Attach: attach, NoAttach: noAttach, OwnSession: ownSession, Mux: muxName,
-				NoWriteback: noWriteback, UnsoundCredential: unsound, Agent: agent.resolve(cmd),
+				Writeback: writeback, UnsoundCredential: unsound, Agent: agent.resolve(cmd),
 			})
 		},
 	}
@@ -83,7 +83,9 @@ func newSpawnCmd() *cobra.Command {
 	f.BoolVar(&noAttach, "no-attach", false, "no-op; not opening is now the default")
 	f.BoolVar(&ownSession, "session", false, "with --attach, open in a session of its own rather than as a window")
 	f.StringVar(&muxName, "mux", "", "multiplexer to use: tmux, wt, or none")
-	f.BoolVar(&noWriteback, "no-writeback", false, "do not record the confirmed repo set in the issue body")
+	f.BoolVar(&writeback, "writeback", false,
+		"record the confirmed repo set in the issue body (default: off -- a wrong "+
+			"inference would otherwise write to someone else's issue, facet#69)")
 	f.BoolVar(&unsound, "unsound-credential", false,
 		"proceed even though the credential preflight found problems (prints what was skipped)")
 	agent.register(cmd)
@@ -112,9 +114,11 @@ type spawnOpts struct {
 	Yes, NoBranch, DryRun        bool
 	Attach, NoAttach, OwnSession bool
 	Mux                          string
-	// NoWriteback leaves the issue body alone. The confirmed repo set is then
-	// re-inferred on every spawn.
-	NoWriteback bool
+	// Writeback records the confirmed repo set in the issue body when true.
+	// Default is false (facet#69): a wrong inference used to write to
+	// someone else's issue silently, on by default. Leaving it off means the
+	// confirmed set is simply re-inferred on every spawn, which is cheap.
+	Writeback bool
 	// UnsoundCredential bypasses requirePreflight's refusal, deliberately and
 	// audibly (facet#109). Default is still refusing; this is never inferred.
 	UnsoundCredential bool

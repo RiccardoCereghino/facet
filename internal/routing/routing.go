@@ -259,6 +259,33 @@ var crossRef = regexp.MustCompile(`\b([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)#(\d+)\b`)
 // "Blocked by: o/r#1", "- **Blocked by** o/r#1", "## Blocked by o/r#1".
 var blockedByLine = regexp.MustCompile(`(?im)^\s*(?:#{1,6}\s*)?(?:[-*]\s*)?(?:\*\*)?blocked[ -]by(?:\*\*)?\s*:?(.*)$`)
 
+// fencedCode matches a ``` ... ``` block, opening and closing fences each at
+// the start of their own line.
+var fencedCode = regexp.MustCompile("(?ms)^```.*?^```[ \t]*$")
+
+// stripFences blanks fenced code blocks rather than deleting them, so every
+// other regex here still sees the same byte offsets and line numbers.
+//
+// facet#69, measured: an issue about routing.json quoted the file's own repo
+// list inside a fence as the DATA the installer must read, and every quoted
+// name was read back as a real cross-reference -- seven repos cloned and
+// written to the issue body for what should have been a one-repo spawn. A
+// snippet is an EXAMPLE; only prose outside it is a claim about this issue.
+func stripFences(body string) string {
+	return fencedCode.ReplaceAllStringFunc(body, func(block string) string {
+		var b strings.Builder
+		b.Grow(len(block))
+		for _, r := range block {
+			if r == '\n' {
+				b.WriteByte('\n')
+			} else {
+				b.WriteByte(' ')
+			}
+		}
+		return b.String()
+	})
+}
+
 // Infer chooses the repositories for an issue filed in homeRepo ("owner/name").
 //
 // The home repository is always included. Beyond that: an explicit "Repos in
@@ -280,13 +307,20 @@ func (r *Routing) Infer(homeRepo string, iss *ghx.Issue) ([]Selection, []Hint) {
 		reasons[key] = append(reasons[key], reason)
 	}
 
+	// Fenced examples are not claims about this issue -- see stripFences.
+	// Every scan below reads the cleaned body, including the scope field: an
+	// author's actual answer is never itself fenced, so nothing legitimate is
+	// lost, and a placeholder or sample quoted in the body cannot be misread
+	// as their answer either.
+	body := stripFences(iss.Body)
+
 	homeKey := r.KeyForRepo(homeRepo)
 	if homeKey != "" {
 		add(homeKey, "home")
 	}
 
 	// The form field wins over labels, when the author filled it in.
-	scoped := r.scopeField(iss.Body)
+	scoped := r.scopeField(body)
 	if len(scoped) > 0 {
 		for _, k := range scoped {
 			add(k, "scope-field")
@@ -300,8 +334,8 @@ func (r *Routing) Infer(homeRepo string, iss *ghx.Issue) ([]Selection, []Hint) {
 	}
 
 	// Cross-repo evidence applies either way.
-	blocked := blockedRefs(iss.Body)
-	for _, m := range crossRef.FindAllStringSubmatch(iss.Body, -1) {
+	blocked := blockedRefs(body)
+	for _, m := range crossRef.FindAllStringSubmatch(body, -1) {
 		ownerRepo, num := m[1], m[2]
 		key := r.KeyForRepo(ownerRepo)
 		if key == "" || key == homeKey {
@@ -327,7 +361,7 @@ func (r *Routing) Infer(homeRepo string, iss *ghx.Issue) ([]Selection, []Hint) {
 		}
 		return out[i].Key < out[j].Key
 	})
-	return out, r.hints(iss.Body, reasons)
+	return out, r.hints(body, reasons)
 }
 
 // blockedRefs returns the `owner/repo#n` an issue declares as dependencies,
@@ -380,11 +414,27 @@ func dropUnchecked(section string) string {
 	return strings.Join(out, "\n")
 }
 
-// scopeField reads the "Repos in scope" field an issue form produces. It returns
-// nil when the field is absent, empty, answered "unsure", or -- when rendered as a
-// task list -- has nothing ticked.
+// scopeHeadings are the section names scopeField accepts as the author's own
+// authoritative statement of intent. "Repos in scope" is the issue form's
+// field; "Repos involved" is accepted too (facet#69) because a hand-written
+// issue -- one never filed through the form -- routinely uses that name
+// instead (it is also what the Projects board itself calls the column), and
+// there is no reason to treat a hand-written answer as less authoritative
+// than a form-rendered one just because it used the other name.
+var scopeHeadings = []string{"Repos in scope", "Repos involved"}
+
+// scopeField reads the repo-scope field an issue form (or a hand-written
+// issue) produces. It returns nil when every accepted heading is absent,
+// empty, answered "unsure", or -- when rendered as a task list -- has
+// nothing ticked.
 func (r *Routing) scopeField(body string) []string {
-	section := findSection(body, "Repos in scope")
+	var section string
+	for _, name := range scopeHeadings {
+		if s := findSection(body, name); s != "" {
+			section = s
+			break
+		}
+	}
 	if section == "" {
 		return nil
 	}

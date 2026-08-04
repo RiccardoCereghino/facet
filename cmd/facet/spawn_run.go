@@ -230,7 +230,7 @@ func runSpawn(o spawnOpts) error {
 	// rather than inferring it again -- and so an issue never filed through the
 	// form still declares its scope. Same placement and the same rule as the
 	// board: after the workspace is real, and never fatal.
-	if !o.NoWriteback {
+	if o.Writeback {
 		if err := writeBackScope(gh, o.Repo, iss.Number, routing.Keys(sel), rep); err != nil {
 			rep.Warn("issue body: %v", err)
 		}

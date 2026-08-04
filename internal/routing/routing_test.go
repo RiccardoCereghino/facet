@@ -216,6 +216,77 @@ func TestUnknownRepoIsIgnored(t *testing.T) {
 	}
 }
 
+// facet#69, the measured case: an issue quoting routing.json's own repo list
+// as example DATA inside a fence must not have every quoted name read back
+// as a real cross-reference. Only prose outside the fence is evidence.
+func TestFencedCrossRefsAreNotEvidence(t *testing.T) {
+	r := load(t)
+	iss := &ghx.Issue{Body: "this issue is about acme/gateway#5 for real.\n\n" +
+		"```json\n" +
+		"{\"ownerRepoToKey\": {\"acme/infra-core\": \"infra\", \"acme/widgetapi\": \"widgetapi\"}}\n" +
+		"see also acme/infra-core#41 as an EXAMPLE only\n" +
+		"```\n"}
+	sel, _ := r.Infer("acme/platform", iss)
+	got := map[string]bool{}
+	for _, s := range sel {
+		got[s.Key] = true
+	}
+	if !got["gateway"] {
+		t.Errorf("the real, unfenced cross-ref was dropped: %v", Keys(sel))
+	}
+	if got["infra"] {
+		t.Errorf("a cross-ref INSIDE a fence was read as evidence: %v", Keys(sel))
+	}
+}
+
+// A fence containing the scope field's own heading must not resolve either
+// -- the field is never legitimately quoted as an example, but the general
+// rule (only prose outside a fence is a claim) has to hold for it too.
+func TestFencedScopeFieldIsNotEvidence(t *testing.T) {
+	r := load(t)
+	iss := &ghx.Issue{Body: "```\n### Repos in scope\n\ngateway, infra\n```\n"}
+	sel, _ := r.Infer("acme/platform", iss)
+	if got := Keys(sel); !reflect.DeepEqual(got, []string{"platform"}) {
+		t.Errorf("keys = %v, want only home -- the fenced scope field must not resolve", got)
+	}
+}
+
+// A fence must not disturb what comes after it -- stripFences blanks rather
+// than deletes, so a real cross-ref past the closing fence still matches at
+// its own, unmoved position.
+func TestUnfencedContentAfterAFenceStillResolves(t *testing.T) {
+	r := load(t)
+	iss := &ghx.Issue{Body: "```\nacme/infra-core#41 -- an example, ignore it\n```\n\n" +
+		"but this issue for real depends on acme/gateway#5.\n"}
+	sel, _ := r.Infer("acme/platform", iss)
+	got := map[string]bool{}
+	for _, s := range sel {
+		got[s.Key] = true
+	}
+	if got["infra"] {
+		t.Errorf("the fenced example resolved: %v", Keys(sel))
+	}
+	if !got["gateway"] {
+		t.Errorf("the real reference after the fence was lost: %v", Keys(sel))
+	}
+}
+
+// facet#69: a hand-written issue -- never filed through the form -- may use
+// "Repos involved" instead of "Repos in scope", and that must be just as
+// authoritative: it must win over the label-map fallback, exactly like the
+// form field does.
+func TestReposInvolvedHeadingIsAlsoAuthoritative(t *testing.T) {
+	r := load(t)
+	iss := &ghx.Issue{
+		Labels: []ghx.Label{{Name: "area/backups"}}, // would normally pull in "infra" too
+		Body:   "### Repos involved\n\ngateway\n",
+	}
+	sel, _ := r.Infer("acme/platform", iss)
+	if got := Keys(sel); !reflect.DeepEqual(got, []string{"platform", "gateway"}) {
+		t.Errorf("keys = %v, want [platform gateway] -- Repos involved did not override the label map", got)
+	}
+}
+
 func TestBlockedByVariants(t *testing.T) {
 	r := load(t)
 	for _, body := range []string{
