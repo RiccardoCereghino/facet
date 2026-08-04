@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/RiccardoCereghino/facet/internal/ghx"
 	"github.com/RiccardoCereghino/facet/internal/manifest"
 	"github.com/RiccardoCereghino/facet/internal/seat"
 )
@@ -84,6 +86,117 @@ func TestScopeAddAcceptsALandingEntry(t *testing.T) {
 	}
 	if len(got) != 2 || got[0].String() != "owner/repo#12" || got[1].String() != "landing:owner/other" {
 		t.Errorf("ReadScope = %v, want [owner/repo#12 landing:owner/other]", got)
+	}
+}
+
+// scopeIssueFake scripts ViewIssue for reportResultingTier, keyed the same
+// way treeFake keys its issues in tree_test.go.
+type scopeIssueFake struct {
+	fakeGH
+	issues map[string]*ghx.Issue
+}
+
+func (f *scopeIssueFake) ViewIssue(repo string, number int) (*ghx.Issue, error) {
+	iss, ok := f.issues[fmt.Sprintf("%s#%d", repo, number)]
+	if !ok {
+		return nil, fmt.Errorf("scopeIssueFake: no issue scripted for %s#%d", repo, number)
+	}
+	return iss, nil
+}
+
+// facet#112 asked that a scope edit state the worst-case tier the way `tree
+// wire` states merge authority on every edge -- a scope edit that silently
+// changes what a re-seed would derive is the same defect class.
+func TestReportResultingTierPrintsTheWorstCase(t *testing.T) {
+	f := &scopeIssueFake{issues: map[string]*ghx.Issue{
+		"acme/a#1": issueWith("small", "complexity/1"),
+		"acme/b#2": issueWith("bigger", "complexity/3"),
+	}}
+	refs, err := seat.ParseRefs([]string{"acme/a#1", "acme/b#2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	reportResultingTier(&buf, f, refs)
+	out := buf.String()
+	if !strings.Contains(out, "c3") {
+		t.Errorf("tier report does not name the worst case c3:\n%s", out)
+	}
+	if strings.Contains(out, "c1 (") {
+		t.Errorf("tier report named the WRONG entry's tier as the worst case:\n%s", out)
+	}
+}
+
+// An issue with no complexity label, or an unreadable one, must be named
+// rather than silently excluded from the worst case -- silence here would
+// make a scope edit's own report understate what it actually covers.
+func TestReportResultingTierNamesWhatItCouldNotJudge(t *testing.T) {
+	f := &scopeIssueFake{issues: map[string]*ghx.Issue{
+		"acme/a#1": issueWith("no label at all"),
+	}}
+	refs, err := seat.ParseRefs([]string{"acme/a#1", "acme/missing#9"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	reportResultingTier(&buf, f, refs)
+	out := buf.String()
+	if !strings.Contains(out, "acme/a#1") || !strings.Contains(out, "no complexity label") {
+		t.Errorf("did not name the unlabelled issue:\n%s", out)
+	}
+	if !strings.Contains(out, "acme/missing#9") {
+		t.Errorf("did not name the issue that could not be read:\n%s", out)
+	}
+}
+
+// A landing-only scope has no issue to judge a tier from at all -- it must
+// not print a misleading "tier: c0" or crash looking one up.
+func TestReportResultingTierSkipsLandingEntries(t *testing.T) {
+	f := &scopeIssueFake{issues: map[string]*ghx.Issue{}}
+	refs, err := seat.ParseRefs([]string{"landing:acme/a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	reportResultingTier(&buf, f, refs)
+	if buf.Len() != 0 {
+		t.Errorf("a landing-only scope printed a tier report:\n%s", buf.String())
+	}
+}
+
+// TestScopeRemoveThenListReflectsIt is the cobra-adjacent round trip: add two,
+// remove one via seat.RemoveScope (what newScopeRemoveCmd's RunE calls), and
+// confirm scope list -- the documented way to check a workspace's scope --
+// shows exactly what remains.
+func TestScopeRemoveThenListReflectsIt(t *testing.T) {
+	ws, _ := workspaceWithRepo(t)
+	if err := seat.Write(ws, "w-example-12", []seat.Ref{
+		{Repo: "owner/repo", Number: 12}, {Repo: "acme/tools", Number: 7},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, _, err := seat.RemoveScope(ws, []seat.Ref{{Repo: "acme/tools", Number: 7}})
+	if err != nil {
+		t.Fatalf("RemoveScope: %v", err)
+	}
+	if len(removed) != 1 {
+		t.Fatalf("removed = %v, want 1 entry", removed)
+	}
+
+	var buf bytes.Buffer
+	if err := runScopeList(&buf, ws); err != nil {
+		t.Fatalf("runScopeList: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "owner/repo#12") {
+		t.Errorf("surviving entry missing from scope list:\n%s", out)
+	}
+	if strings.Contains(out, "acme/tools#7") {
+		t.Errorf("removed entry still shows in scope list:\n%s", out)
 	}
 }
 
