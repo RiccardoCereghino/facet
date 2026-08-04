@@ -64,7 +64,7 @@ func runSpawn(o spawnOpts) error {
 	// leaves a workspace whose branch was never linked, which is worse than a
 	// refusal -- and a credential fault like this is worst found mid-operation,
 	// by trying to use it, rather than checked first.
-	if err := requirePreflight(os.Stderr, "spawn"); err != nil {
+	if err := requirePreflight(os.Stderr, "spawn", o.UnsoundCredential); err != nil {
 		return err
 	}
 	route, err := routing.Load(roots.Routing)

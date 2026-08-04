@@ -119,7 +119,24 @@ func preflight(req ghx.Requirements) (probs []ghx.Problem, notes []string, st *g
 // requirePreflight is what commands that cannot work without a credential call
 // before doing anything else. It fails loudly and names the command, so the
 // refusal is legible at the point of use rather than three calls deeper.
-func requirePreflight(w io.Writer, what string) error {
+//
+// This is a capability gate, not a spawn-specific one -- what it guards is
+// "about to talk to GitHub with the ambient credential", so every verb in
+// that position calls it the same way (facet#109): spawn, new, sync,
+// restore, add clone, add link.
+//
+// bypass is the escape hatch the Sculptor ruled for on facet#109 ("for which
+// I would add a bypass honestly"), amending this issue's own earlier plan to
+// leave `new` unguarded so facet#107 (spawn refusing on a sound-looking
+// token) stayed reachable. The bypass dissolves that sequencing hazard: it
+// has no ordering constraint, because it is available on every guarded verb
+// including spawn, so nothing needs a permanently-unguarded sibling to route
+// around the gate through. `facet new` used to BE that undocumented,
+// unlogged bypass; now the bypass is a real flag, and using it says so out
+// loud in the output rather than leaving no trace that a guarded operation
+// ran unguarded. The default stays refusing either way -- bypass is
+// something an operator types, never a fallback the tool takes on its own.
+func requirePreflight(w io.Writer, what string, bypass bool) error {
 	probs, notes, _, err := preflight(ghx.DefaultRequirements())
 	if err != nil {
 		return err
@@ -133,10 +150,16 @@ func requirePreflight(w io.Writer, what string) error {
 	for _, p := range probs {
 		_, _ = fmt.Fprintf(w, "✗ %s\n", p)
 	}
+	if bypass {
+		_, _ = fmt.Fprintf(w, "\n! %s proceeding on an UNSOUND credential (%d %s) -- "+
+			"--unsound-credential was passed, so this is deliberate\n",
+			what, len(probs), plural(len(probs), "problem", "problems"))
+		return nil
+	}
 	_, _ = fmt.Fprintln(w)
 	return fmt.Errorf("%s refused: the GitHub credential is not sound (%d %s). "+
-		"Run `facet preflight` for the full report. There is no skip flag: this is "+
-		"exactly the failure that went unnoticed until it was mid-operation",
+		"Run `facet preflight` for the full report, or pass --unsound-credential to "+
+		"proceed anyway -- deliberately, and it will say so",
 		what, len(probs), plural(len(probs), "problem", "problems"))
 }
 

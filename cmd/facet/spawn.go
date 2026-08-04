@@ -27,6 +27,7 @@ func newSpawnCmd() *cobra.Command {
 		ownSession  bool
 		muxName     string
 		noWriteback bool
+		unsound     bool
 		agent       agentFlags
 	)
 	cmd := &cobra.Command{
@@ -61,7 +62,7 @@ func newSpawnCmd() *cobra.Command {
 				Seat: seatName, Scope: scope, SeatIssue: seatIssue,
 				Slug: slug, Base: base, Yes: yes, NoBranch: noBranch, DryRun: dryRun,
 				Attach: attach, NoAttach: noAttach, OwnSession: ownSession, Mux: muxName,
-				NoWriteback: noWriteback, Agent: agent.resolve(cmd),
+				NoWriteback: noWriteback, UnsoundCredential: unsound, Agent: agent.resolve(cmd),
 			})
 		},
 	}
@@ -83,6 +84,8 @@ func newSpawnCmd() *cobra.Command {
 	f.BoolVar(&ownSession, "session", false, "with --attach, open in a session of its own rather than as a window")
 	f.StringVar(&muxName, "mux", "", "multiplexer to use: tmux, wt, or none")
 	f.BoolVar(&noWriteback, "no-writeback", false, "do not record the confirmed repo set in the issue body")
+	f.BoolVar(&unsound, "unsound-credential", false,
+		"proceed even though the credential preflight found problems (prints what was skipped)")
 	agent.register(cmd)
 	return cmd
 }
@@ -112,6 +115,9 @@ type spawnOpts struct {
 	// NoWriteback leaves the issue body alone. The confirmed repo set is then
 	// re-inferred on every spawn.
 	NoWriteback bool
+	// UnsoundCredential bypasses requirePreflight's refusal, deliberately and
+	// audibly (facet#109). Default is still refusing; this is never inferred.
+	UnsoundCredential bool
 	// Agent is what to run for the operator once the workspace is ready: in the
 	// pane when --attach opened one, in this terminal otherwise.
 	Agent agentChoice

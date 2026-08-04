@@ -23,6 +23,15 @@ func pairs(kind string, entries []string) (map[string]string, error) {
 	return out, nil
 }
 
+// newNewCmd is gated by requirePreflight, like every other verb that clones
+// with the ambient credential (facet#109). It used to be deliberately left
+// unguarded, because it was also the only way to seat anything while
+// facet#107 (spawn refusing on a sound-looking gho_ token) was open --
+// guarding it would have closed the one path left to fix #107 itself. The
+// Sculptor ruled a bypass instead of that carve-out ("for which I would add
+// a bypass honestly"): --unsound-credential proceeds anyway, deliberately
+// and audibly, which dissolves the sequencing hazard without leaving `new`
+// permanently unguarded.
 func newNewCmd() *cobra.Command {
 	var (
 		desc      string
@@ -30,6 +39,7 @@ func newNewCmd() *cobra.Command {
 		links     []string
 		transient []string
 		viaMirror bool
+		unsound   bool
 	)
 	cmd := &cobra.Command{
 		Use:   "new <name>",
@@ -40,6 +50,9 @@ func newNewCmd() *cobra.Command {
 			"linking workspace sees at once.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
+			if err := requirePreflight(os.Stderr, "new", unsound); err != nil {
+				return err
+			}
 			cl, err := pairs("clone", clones)
 			if err != nil {
 				return err
@@ -66,6 +79,8 @@ func newNewCmd() *cobra.Command {
 	f.StringSliceVar(&links, "link", nil, "dir=ProjectFolder (repeatable)")
 	f.StringSliceVar(&transient, "transient", nil, "entries here for now, likely to be swapped out")
 	f.BoolVar(&viaMirror, "via-mirror", false, "clone from a local bare mirror")
+	f.BoolVar(&unsound, "unsound-credential", false,
+		"proceed even though the credential preflight found problems (prints what was skipped)")
 	return cmd
 }
 
@@ -82,12 +97,16 @@ func newAddCloneCmd() *cobra.Command {
 		noLFS     bool
 		transient bool
 		viaMirror bool
+		unsound   bool
 	)
 	cmd := &cobra.Command{
 		Use:   "clone <dir> <giturl>",
 		Short: "Add a checkout the workspace owns outright",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(_ *cobra.Command, args []string) error {
+			if err := requirePreflight(os.Stderr, "add clone", unsound); err != nil {
+				return err
+			}
 			ws, err := config.ResolveWorkspace(path)
 			if err != nil {
 				return err
@@ -112,6 +131,8 @@ func newAddCloneCmd() *cobra.Command {
 	f.BoolVar(&noLFS, "no-lfs", false, "fetch Git-LFS pointers rather than blobs")
 	f.BoolVar(&transient, "transient", false, "mark as here for now, likely to be swapped out")
 	f.BoolVar(&viaMirror, "via-mirror", false, "clone from a local bare mirror")
+	f.BoolVar(&unsound, "unsound-credential", false,
+		"proceed even though the credential preflight found problems (prints what was skipped)")
 	return cmd
 }
 
@@ -120,6 +141,7 @@ func newAddLinkCmd() *cobra.Command {
 		path      string
 		origin    string
 		transient bool
+		unsound   bool
 	)
 	cmd := &cobra.Command{
 		Use:   "link <dir> <ProjectFolder>",
@@ -128,6 +150,9 @@ func newAddLinkCmd() *cobra.Command {
 			"dirty index. Use a clone when a workspace must not share.",
 		Args: cobra.ExactArgs(2),
 		RunE: func(_ *cobra.Command, args []string) error {
+			if err := requirePreflight(os.Stderr, "add link", unsound); err != nil {
+				return err
+			}
 			ws, err := config.ResolveWorkspace(path)
 			if err != nil {
 				return err
@@ -141,6 +166,8 @@ func newAddLinkCmd() *cobra.Command {
 	f.StringVar(&path, "path", "", "workspace directory (default: working directory)")
 	f.StringVar(&origin, "origin", "", "git URL to clone the project from if it is missing")
 	f.BoolVar(&transient, "transient", false, "mark as here for now, likely to be swapped out")
+	f.BoolVar(&unsound, "unsound-credential", false,
+		"proceed even though the credential preflight found problems (prints what was skipped)")
 	return cmd
 }
 
