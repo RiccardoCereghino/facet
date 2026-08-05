@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The acceptance clause that is easiest to get wrong: a generation failure
@@ -91,5 +92,76 @@ func TestWriteCatalogTreatsANonZeroGeneratorAsAFailure(t *testing.T) {
 	}
 	if !strings.Contains(res.Detail, "could not introspect facet") {
 		t.Fatalf("detail = %q, want the generator's own stderr", res.Detail)
+	}
+}
+
+// The verbatim test's first fixture was compact single-line JSON, while the
+// real generator emits MarshalIndent'ed output -- so it could not have noticed
+// a re-serialisation, which is the one property it existed to protect.
+// Indented, multi-line, with the exact spacing json.MarshalIndent produces.
+func TestWriteCatalogDoesNotReformatIndentedJSON(t *testing.T) {
+	payload := "{\n  \"complete\": true,\n  \"tools\": [\n    {\n      \"name\": \"gad\"\n    }\n  ]\n}"
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "argano")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\ncat <<'JSONEOF'\n"+payload+"\nJSONEOF\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	ws := t.TempDir()
+	if _, err := WriteCatalog(ws, bin); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(ws, CatalogFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimRight(string(b), "\n") != payload {
+		t.Fatalf("catalog was re-serialised.\n got: %q\nwant: %q", b, payload)
+	}
+}
+
+// The deadline's stated purpose is that a spawn must not be able to hang on an
+// introspection, and spawn is what seats every banco. A hang there is a
+// workspace nobody can tell is finished.
+func TestWriteCatalogKillsAGeneratorThatHangs(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "argano")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nsleep 600\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan CatalogResult, 1)
+	go func() {
+		res, _ := writeCatalogWithin(t.TempDir(), bin, 200*time.Millisecond)
+		done <- res
+	}()
+	select {
+	case res := <-done:
+		if res.OK {
+			t.Fatal("a generator that never returns was reported as OK")
+		}
+		if !strings.Contains(res.Detail, "did not finish") {
+			t.Fatalf("detail = %q, want it to name the timeout", res.Detail)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the deadline did not fire: a spawn can hang on an introspection")
+	}
+}
+
+// A generator that reads stdin must not be handed the terminal.
+func TestWriteCatalogGivesTheGeneratorNoStdin(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "argano")
+	// Echoes whatever it reads. With no stdin it reads nothing and emits {}.
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nprintf '{\"read\":\"'; head -c 20; printf '\"}'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ws := t.TempDir()
+	if _, err := WriteCatalog(ws, bin); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(filepath.Join(ws, CatalogFile))
+	if !strings.Contains(string(b), `"read":""`) {
+		t.Fatalf("the generator read something from stdin: %s", b)
 	}
 }

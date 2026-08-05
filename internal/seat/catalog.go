@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 	"time"
 )
 
@@ -49,10 +50,16 @@ type CatalogResult struct {
 // bin is the argano binary. An empty bin, a missing binary, a non-zero exit or
 // a timeout all produce a file explaining the failure rather than no file.
 func WriteCatalog(workspaceDir, bin string) (CatalogResult, error) {
+	return writeCatalogWithin(workspaceDir, bin, catalogTimeout)
+}
+
+// writeCatalogWithin is WriteCatalog with the deadline handed in, so a test can
+// prove the deadline FIRES in milliseconds rather than in a minute.
+func writeCatalogWithin(workspaceDir, bin string, timeout time.Duration) (CatalogResult, error) {
 	path := filepath.Join(workspaceDir, CatalogFile)
 	res := CatalogResult{Path: path}
 
-	out, err := generateCatalog(bin)
+	out, err := generateCatalog(bin, timeout)
 	if err != nil {
 		res.Detail = err.Error()
 		// The failure goes in the FILE, in a shape a reader meets before any
@@ -74,7 +81,7 @@ func WriteCatalog(workspaceDir, bin string) (CatalogResult, error) {
 	return res, nil
 }
 
-func generateCatalog(bin string) ([]byte, error) {
+func generateCatalog(bin string, timeout time.Duration) ([]byte, error) {
 	if bin == "" {
 		return nil, fmt.Errorf("no argano binary to generate it with")
 	}
@@ -83,8 +90,20 @@ func generateCatalog(bin string) ([]byte, error) {
 	}
 
 	cmd := exec.Command(bin, "catalog", "--json")
-	// No stdin: this is a probe, and a probe that can read the terminal can
-	// block a spawn on a prompt nobody can see.
+	// Its own process group, so the deadline can take the whole tree.
+	//
+	// Without it the deadline DOES NOT BOUND ANYTHING: killing the generator
+	// leaves any grandchild it spawned holding the output pipe, cmd.Wait never
+	// returns, and the spawn hangs exactly as if there were no timeout. Found
+	// by writing the test an audit asked for -- the 60s deadline was measured
+	// not firing at all. Same mechanism as argano#6, one repo over.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// No stdin, stated rather than inherited. Go's default for a nil Stdin is
+	// /dev/null, so this line changes nothing today -- it exists so that a
+	// later refactor setting os.Stdin has to delete an explicit decision
+	// rather than fill a silence. That silence is exactly what argano#6 was
+	// filed for one repo over.
+	cmd.Stdin = nil
 	var buf, errBuf bytes.Buffer
 	cmd.Stdout = &buf
 	cmd.Stderr = &errBuf
@@ -103,11 +122,16 @@ func generateCatalog(bin string) ([]byte, error) {
 			return nil, fmt.Errorf("%s catalog --json failed: %w: %s", bin, err, errBuf.String())
 		}
 		return buf.Bytes(), nil
-	case <-time.After(catalogTimeout):
+	case <-time.After(timeout):
 		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
+			// The GROUP, not the process. A negative pid is the group, and it
+			// is safe here only because Setpgid above gave the child one of
+			// its own -- without that it would name facet's own group.
+			if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
+				_ = cmd.Process.Kill()
+			}
 		}
 		<-done
-		return nil, fmt.Errorf("%s catalog --json did not finish within %s", bin, catalogTimeout)
+		return nil, fmt.Errorf("%s catalog --json did not finish within %s", bin, timeout)
 	}
 }

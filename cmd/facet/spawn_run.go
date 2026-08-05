@@ -198,7 +198,7 @@ func runSpawn(o spawnOpts) error {
 	// for zero sessions and zero turns (facet#118). Written AFTER identity and
 	// before the clones: it needs nothing from them, and a slow probe should
 	// not sit between a workspace being created and it saying whose it is.
-	catRes, err := seat.WriteCatalog(ws, aranoBin())
+	catRes, err := seat.WriteCatalog(ws, arganoBin())
 	if err != nil {
 		return err
 	}
@@ -320,12 +320,12 @@ func runSpawn(o spawnOpts) error {
 	return nil
 }
 
-// aranoBin is where the catalog generator lives.
+// arganoBin is where the catalog generator lives.
 //
 // $ARGANO_BIN first so a test, or a machine that installs elsewhere, can point
 // at its own. facet does NOT refuse when argano is absent: the catalog is a
 // convenience for the seat, and a spawn is the thing being asked for.
-func aranoBin() string {
+func arganoBin() string {
 	if v := os.Getenv("ARGANO_BIN"); v != "" {
 		return v
 	}
