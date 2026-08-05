@@ -42,6 +42,16 @@ type Level struct {
 	// work -- and forcing an empty node in to satisfy a schema teaches people
 	// to file placeholder issues.
 	Optional bool `json:"optional,omitempty"`
+	// Label is the label that RECORDS this level on the issue, e.g.
+	// "type/block". Optional: a structure that declares none keeps working
+	// exactly as before, because the level stays derivable from the title --
+	// it just stays underivable by anything that is not facet.
+	//
+	// It exists because a level parsed out of a title prefix is invisible to
+	// every other tool, and a retitled issue silently changes level. A label
+	// is read by `gh issue list --label`, by a GraphQL filter, and by an actor
+	// with no title-parsing rules at all.
+	Label string `json:"label,omitempty"`
 	// RequiresChildren marks a rung whose whole purpose is to hold others, so
 	// that one closed with none is reported. That is a real loss rather than a
 	// tidiness point: a record of who did some work, carrying nothing, means
@@ -56,6 +66,13 @@ type LevelMatch struct {
 	Repo string `json:"repo,omitempty"`
 	// TitlePattern is a Go regexp the issue title must match.
 	TitlePattern string `json:"titlePattern,omitempty"`
+	// Label overrides the level's own Label when THIS shape is what matched.
+	//
+	// It is needed because one rung can be spelled differently per repo: the
+	// same "seat" level is `seat: …` in stele and `maquette: …` in
+	// lab-workspaces, and those are recorded as type/seat and type/maquette.
+	// Deriving the label from the level NAME could not express that.
+	Label string `json:"label,omitempty"`
 }
 
 // ChildLevels returns the level indices a child of a node at parentLevel may
@@ -107,6 +124,61 @@ func (s *Structure) Assign(parentLevel int, repoKey, title string) (level int, o
 		}
 	}
 	return 0, false
+}
+
+// LabelFor returns the label that records a node's level, and whether one is
+// declared at all.
+//
+// The MATCHED shape decides: a level whose accepts carry their own labels is
+// how one rung gets a different name per repo. A level with no accepts, or an
+// accept with no label, falls back to the level's own.
+func (s *Structure) LabelFor(level int, repoKey, title string) (string, bool) {
+	if s == nil || level < 0 || level >= len(s.Levels) {
+		return "", false
+	}
+	l := s.Levels[level]
+	for _, m := range l.Accepts {
+		if m.Repo != "" && m.Repo != repoKey {
+			continue
+		}
+		if m.TitlePattern != "" {
+			re, err := regexp.Compile(m.TitlePattern)
+			if err != nil || !re.MatchString(title) {
+				continue
+			}
+		}
+		if m.Label != "" {
+			return m.Label, true
+		}
+		break
+	}
+	return l.Label, l.Label != ""
+}
+
+// Labels returns every label the structure can apply, so a caller can tell a
+// level label apart from any other label an issue happens to carry. Without
+// it, "the type/* label disagrees" could not be distinguished from "this issue
+// has a label facet has never heard of".
+func (s *Structure) Labels() []string {
+	if s == nil {
+		return nil
+	}
+	var out []string
+	seen := map[string]bool{}
+	add := func(v string) {
+		if v == "" || seen[v] {
+			return
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	for _, l := range s.Levels {
+		add(l.Label)
+		for _, m := range l.Accepts {
+			add(m.Label)
+		}
+	}
+	return out
 }
 
 // accepts reports whether a node could be this level. Patterns are compiled

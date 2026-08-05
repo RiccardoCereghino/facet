@@ -323,7 +323,7 @@ func TestTreeDoctorSaysWhatItDidNotCheck(t *testing.T) {
 	f.children = map[string][]ghx.IssueRef{}
 	var out bytes.Buffer
 
-	if err := runTreeDoctor(&out, f, iref("acme", "lab", 46)); err != nil {
+	if err := runTreeDoctor(&out, f, iref("acme", "lab", 46), false); err != nil {
 		t.Fatalf("doctor: %v", err)
 	}
 	if !strings.Contains(out.String(), "shape was not checked") {
@@ -464,7 +464,7 @@ func TestTreeAndCommentWorkWithNoRoutingFileAtAll(t *testing.T) {
 	if err := runTreeShow(&out, f, iref("acme", "lab", 46), -1); err != nil {
 		t.Errorf("tree show refused without a routing file: %v", err)
 	}
-	if err := runTreeDoctor(&bytes.Buffer{}, f, iref("acme", "lab", 46)); err != nil {
+	if err := runTreeDoctor(&bytes.Buffer{}, f, iref("acme", "lab", 46), false); err != nil {
 		t.Errorf("tree doctor refused without a routing file: %v", err)
 	}
 	// --grep needs no configuration, so it must work here too.

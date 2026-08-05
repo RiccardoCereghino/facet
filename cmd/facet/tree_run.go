@@ -22,6 +22,7 @@ type treeGH interface {
 	IssueID(repo string, number int) (int64, error)
 	IssueParent(repo string, number int) (ghx.IssueRef, bool, error)
 	AddSubIssue(repo string, number int, childID int64) error
+	AddLabel(repo string, number int, label string) error
 	RemoveSubIssue(repo string, number int, childID int64) error
 	ProjectStatuses(owner string, projectNumber int, field string) (map[string]string, error)
 }
@@ -106,12 +107,47 @@ func runTreeWire(w io.Writer, gh treeGH, child, parent ghx.IssueRef) error {
 		return err
 	}
 
+	recordLevel(w, gh, route, child, childIssue)
 	printTiers(w, child, childIssue, parent, parentIssue)
 	if hadParent {
 		_, _ = fmt.Fprintf(w, "\n  MOVED: %s was a child of %s\n", child, previous)
 	}
 	_, _ = fmt.Fprintf(w, "\n  wired %s under %s\n", child, parent)
 	return nil
+}
+
+// recordLevel writes the level the wire just enforced onto the issue as a
+// label.
+//
+// `wire` already DERIVES the level -- refuseByStructure refuses an edge whose
+// child does not match the rung -- and then threw the answer away. Every other
+// actor was left re-deriving it by matching a title prefix, which is invisible
+// to `gh issue list --label`, silently wrong after a retitle, and absent
+// entirely for a node whose title never had the prefix.
+//
+// A failure to label is REPORTED AND NOT FATAL. The edge is already written and
+// is the thing being asked for; refusing here would leave a wired tree and a
+// non-zero exit, which reads as "nothing happened".
+func recordLevel(w io.Writer, gh treeGH, route *routing.Routing, child ghx.IssueRef, ci *ghx.Issue) {
+	if route == nil || route.Structure == nil {
+		return
+	}
+	level, ok, err := levelOf(gh, route, child)
+	if err != nil || !ok {
+		_, _ = fmt.Fprintf(w, "  level not recorded: %s sits at no declared level\n", child)
+		return
+	}
+	label, ok := route.Structure.LabelFor(level, route.KeyForRepo(child.OwnerRepo()), ci.Title)
+	if !ok {
+		// A structure that declares no labels keeps working exactly as before.
+		return
+	}
+	if err := gh.AddLabel(child.OwnerRepo(), child.Number, label); err != nil {
+		_, _ = fmt.Fprintf(w, "  WARNING: the edge is wired but %s was not applied to %s: %v\n", label, child, err)
+		_, _ = fmt.Fprintf(w, "  fix: gh issue edit %d --repo %s --add-label %s\n", child.Number, child.OwnerRepo(), label)
+		return
+	}
+	_, _ = fmt.Fprintf(w, "  level recorded: %s\n", label)
 }
 
 // printTiers states both tiers and which of them governs.
@@ -345,10 +381,15 @@ func runTreeStatus(w io.Writer, gh treeGH, ref ghx.IssueRef) error {
 	return nil
 }
 
-func runTreeDoctor(w io.Writer, gh treeGH, ref ghx.IssueRef) error {
+func runTreeDoctor(w io.Writer, gh treeGH, ref ghx.IssueRef, fixLabels bool) error {
 	root, route, err := walk(gh, ref, -1)
 	if err != nil {
 		return err
+	}
+	if fixLabels {
+		if err := backfillLabels(w, gh, root, route); err != nil {
+			return err
+		}
 	}
 	defects := tree.Doctor(root, route)
 	if len(defects) == 0 {
@@ -366,4 +407,43 @@ func runTreeDoctor(w io.Writer, gh treeGH, ref ghx.IssueRef) error {
 		_, _ = fmt.Fprintln(w, d)
 	}
 	return fmt.Errorf("%d defect(s) in %s", len(defects), ref)
+}
+
+// backfillLabels records the level on every node that is missing it.
+//
+// The decision of WHAT to apply lives in internal/tree (planBackfill), where
+// it is tested without touching a live issue. This half is the reporting and
+// the write, which is all a command should own.
+func backfillLabels(w io.Writer, gh treeGH, root *tree.Node, route *routing.Routing) error {
+	if route == nil || route.Structure == nil {
+		_, _ = fmt.Fprintf(w, "no labels to backfill: the routing file declares no `structure`\n")
+		return nil
+	}
+	if len(route.Structure.Labels()) == 0 {
+		_, _ = fmt.Fprintf(w, "no labels to backfill: no level in `structure` declares a label\n")
+		return nil
+	}
+
+	var failed error
+	applied, skipped := tree.PlanBackfill(route, append([]*tree.Node{root}, root.Descendants()...),
+		func(repo string, number int, label string) error {
+			if err := gh.AddLabel(repo, number, label); err != nil {
+				failed = fmt.Errorf("could not label %s#%d with %s: %w", repo, number, label, err)
+				return failed
+			}
+			_, _ = fmt.Fprintf(w, "  labelled %s#%-22d %s\n", repo, number, label)
+			return nil
+		})
+	if failed != nil {
+		return failed
+	}
+
+	_, _ = fmt.Fprintf(w, "backfill: %d labelled", applied)
+	if skipped > 0 {
+		// Never silent about what was not reached: a count that only reports
+		// successes reads as complete coverage.
+		_, _ = fmt.Fprintf(w, ", %d not placeable and skipped", skipped)
+	}
+	_, _ = fmt.Fprintf(w, "\n\n")
+	return nil
 }

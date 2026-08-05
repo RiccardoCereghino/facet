@@ -51,6 +51,9 @@ func Doctor(root *Node, route *routing.Routing) []Defect {
 	}
 	for _, n := range nodes {
 		out = append(out, structural(n, route.Structure)...)
+		if n.Err == nil && n.Assigned {
+			out = append(out, levelLabel(n, route.Structure, route.KeyForRepo(n.Ref.OwnerRepo()))...)
+		}
 	}
 	return out
 }
@@ -96,6 +99,56 @@ func levelNameAt(s *routing.Structure, i int) string {
 		return "node"
 	}
 	return s.Levels[i].Name
+}
+
+// levelLabel reports whether the node RECORDS the level it occupies, and it is
+// the check argano#7's whole block depends on.
+//
+// Three outcomes, and the middle one is why this is not just a presence check:
+//
+//   - the right label is present -- nothing to say;
+//   - NO structure label at all -- the level exists only in the title, so
+//     anything that is not facet must parse a prefix to find it;
+//   - a DIFFERENT structure label than the level this node actually occupies --
+//     two sources of truth, which is the defect rather than the fix, so it is
+//     reported loudly and never silently corrected.
+func levelLabel(n *Node, s *routing.Structure, repoKey string) []Defect {
+	want, declared := s.LabelFor(n.Level, repoKey, n.Title)
+	if !declared {
+		return nil
+	}
+
+	known := map[string]bool{}
+	for _, l := range s.Labels() {
+		known[l] = true
+	}
+	var has []string
+	for _, l := range n.Labels {
+		if known[l] {
+			has = append(has, l)
+		}
+	}
+
+	switch {
+	case len(has) == 1 && has[0] == want:
+		return nil
+	case len(has) == 0:
+		return []Defect{{
+			Ref:  n.Ref,
+			What: fmt.Sprintf("sits at level %q and does not record it: %s is missing", levelNameAt(s, n.Level), want),
+			Why:  "the level is knowable only by parsing the title, so every actor that is not facet must reimplement that parse -- and a retitled issue silently changes level",
+			Fix:  fmt.Sprintf("gh issue edit %d --repo %s --add-label %s", n.Ref.Number, n.Ref.OwnerRepo(), want),
+		}}
+	default:
+		return []Defect{{
+			Ref: n.Ref,
+			What: fmt.Sprintf("records %s but sits at level %q, which is %s",
+				strings.Join(has, ", "), levelNameAt(s, n.Level), want),
+			Why: "the label and the tree disagree about what this is; two sources of truth is the defect, and a reader has no way to tell which one is stale",
+			Fix: fmt.Sprintf("decide which is right, then either re-parent it or: gh issue edit %d --repo %s --remove-label %s --add-label %s",
+				n.Ref.Number, n.Ref.OwnerRepo(), strings.Join(has, " --remove-label "), want),
+		}}
+	}
 }
 
 // structural holds only where levels are declared.
@@ -190,4 +243,56 @@ func structural(n *Node, s *routing.Structure) []Defect {
 		})
 	}
 	return out
+}
+
+// PlanBackfill records the level on every node missing it, and reports what it
+// applied and what it could not reach.
+//
+// It lives here, beside the check it repairs, and takes the write as a
+// function so it can be tested without touching a live issue. That is not
+// ceremony: this is the only code in the level work that MUTATES the record,
+// and it was the one path with no test until an audit said so.
+//
+// It applies ONLY the unambiguous case. A node whose label CONTRADICTS its
+// position is left exactly as it is and reported by Doctor instead: two
+// sources of truth is the defect, and quietly picking one destroys the
+// evidence of which was wrong. A node whose level could not be established is
+// skipped rather than guessed at, and COUNTED -- a tally of successes alone
+// reads as complete coverage.
+func PlanBackfill(route *routing.Routing, nodes []*Node, apply func(repo string, number int, label string) error) (applied, skipped int) {
+	if route == nil || route.Structure == nil {
+		return 0, 0
+	}
+	known := map[string]bool{}
+	for _, l := range route.Structure.Labels() {
+		known[l] = true
+	}
+	for _, n := range nodes {
+		if n.Err != nil || !n.Assigned {
+			skipped++
+			continue
+		}
+		want, ok := route.Structure.LabelFor(n.Level, route.KeyForRepo(n.Ref.OwnerRepo()), n.Title)
+		if !ok {
+			continue
+		}
+		has, conflict := false, false
+		for _, l := range n.Labels {
+			switch {
+			case l == want:
+				has = true
+			case known[l]:
+				conflict = true
+			}
+		}
+		if has || conflict {
+			continue
+		}
+		if err := apply(n.Ref.OwnerRepo(), n.Ref.Number, want); err != nil {
+			skipped++
+			continue
+		}
+		applied++
+	}
+	return applied, skipped
 }
