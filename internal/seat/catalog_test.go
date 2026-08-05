@@ -148,20 +148,45 @@ func TestWriteCatalogKillsAGeneratorThatHangs(t *testing.T) {
 	}
 }
 
-// A generator that reads stdin must not be handed the terminal.
+// A generator that reads stdin must not be handed the CALLER'S stdin.
+//
+// os.Stdin is REPLACED with a pipe holding a byte, and that is the whole point
+// of this test: under `go test` the binary's own stdin is already /dev/null
+// whatever the caller has, so a version that merely runs a reader and sees
+// nothing passes against the defect. Measured twice -- once here, and once as
+// argano!11's round-1 finding on TestNonInteractiveChildGetsDevNull, which is
+// the same mechanism.
 func TestWriteCatalogGivesTheGeneratorNoStdin(t *testing.T) {
-	dir := t.TempDir()
-	bin := filepath.Join(dir, "argano")
-	// Echoes whatever it reads. With no stdin it reads nothing and emits {}.
-	if err := os.WriteFile(bin, []byte("#!/bin/sh\nprintf '{\"read\":\"'; head -c 20; printf '\"}'\n"), 0o755); err != nil {
+	r, w, err := os.Pipe()
+	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := w.WriteString("swallowed\n"); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	old := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = old; r.Close() }()
+
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "argano")
+	// Echoes whatever it can read. Handed the caller's stdin it echoes the
+	// byte above; handed /dev/null it echoes nothing.
+	script := "#!/bin/sh\nprintf '{\"read\":\"'\nhead -c 20\nprintf '\"}'\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
 	ws := t.TempDir()
 	if _, err := WriteCatalog(ws, bin); err != nil {
 		t.Fatal(err)
 	}
-	b, _ := os.ReadFile(filepath.Join(ws, CatalogFile))
+	b, rerr := os.ReadFile(filepath.Join(ws, CatalogFile))
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
 	if !strings.Contains(string(b), `"read":""`) {
-		t.Fatalf("the generator read something from stdin: %s", b)
+		t.Fatalf("the generator was handed the caller's stdin and read from it: %s", b)
 	}
 }
