@@ -164,10 +164,17 @@ func TestWriteCatalogGivesTheGeneratorNoStdin(t *testing.T) {
 	if _, err := w.WriteString("swallowed\n"); err != nil {
 		t.Fatal(err)
 	}
-	w.Close()
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
 	old := os.Stdin
 	os.Stdin = r
-	defer func() { os.Stdin = old; r.Close() }()
+	defer func() {
+		os.Stdin = old
+		if err := r.Close(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	}()
 
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "argano")
