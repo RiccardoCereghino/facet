@@ -1,6 +1,7 @@
 package tree
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -117,5 +118,62 @@ func TestLabelsListsEveryDeclaredLabel(t *testing.T) {
 		if !found {
 			t.Fatalf("Labels() = %v, missing %q -- doctor cannot tell a level label from any other", got, want)
 		}
+	}
+}
+
+// labelRecorder is a Source that also records every label write, so the
+// backfill can be tested without touching a live issue.
+type labelRecorder struct{ applied []string }
+
+func (l *labelRecorder) AddLabel(repo string, number int, label string) error {
+	l.applied = append(l.applied, fmt.Sprintf("%s#%d+%s", repo, number, label))
+	return nil
+}
+
+// The audit's finding: backfillLabels is the only code here that MUTATES real
+// issues, and it had no test at all. It is also the one path an auditor cannot
+// exercise -- running it writes to live issues across the tree.
+func TestBackfillLabelsAppliesOnlyTheUnambiguousCase(t *testing.T) {
+	s := levelStructure()
+	route := routeFor(s)
+
+	missing := labelNode("gad", 1, "some work", 3)
+	right := labelNode("gad", 2, "more work", 3, "type/work")
+	conflict := labelNode("gad", 3, "third", 3, "type/block")
+	unplaceable := labelNode("gad", 4, "fourth", 3)
+	unplaceable.Assigned = false
+
+	rec := &labelRecorder{}
+	applied, skipped := PlanBackfill(route, []*Node{missing, right, conflict, unplaceable}, rec.AddLabel)
+
+	if len(rec.applied) != 1 || rec.applied[0] != "o/gad#1+type/work" {
+		t.Fatalf("applied = %v, want exactly the unlabelled node", rec.applied)
+	}
+	if applied != 1 {
+		t.Fatalf("applied count = %d, want 1", applied)
+	}
+	// A node whose label CONTRADICTS its position is left exactly as it is:
+	// two sources of truth is the defect, and quietly picking one destroys the
+	// evidence of which was wrong.
+	for _, a := range rec.applied {
+		if strings.Contains(a, "#3") {
+			t.Fatal("the backfill overwrote a contradicting label instead of leaving it for the doctor")
+		}
+	}
+	// And it is never silent about what it did not reach: a count of successes
+	// alone reads as complete coverage.
+	if skipped != 1 {
+		t.Fatalf("skipped = %d, want the unplaceable node counted", skipped)
+	}
+}
+
+// A structure declaring no labels backfills nothing and says so, rather than
+// writing a label it invented.
+func TestBackfillLabelsDoesNothingWithNoLabelsDeclared(t *testing.T) {
+	s := &routing.Structure{Levels: []routing.Level{{Name: "commission"}, {Name: "issue"}}}
+	rec := &labelRecorder{}
+	applied, _ := PlanBackfill(routeFor(s), []*Node{labelNode("gad", 1, "w", 1)}, rec.AddLabel)
+	if applied != 0 || len(rec.applied) != 0 {
+		t.Fatalf("it wrote %v with no labels declared", rec.applied)
 	}
 }

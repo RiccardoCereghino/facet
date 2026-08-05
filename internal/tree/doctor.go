@@ -244,3 +244,55 @@ func structural(n *Node, s *routing.Structure) []Defect {
 	}
 	return out
 }
+
+// PlanBackfill records the level on every node missing it, and reports what it
+// applied and what it could not reach.
+//
+// It lives here, beside the check it repairs, and takes the write as a
+// function so it can be tested without touching a live issue. That is not
+// ceremony: this is the only code in the level work that MUTATES the record,
+// and it was the one path with no test until an audit said so.
+//
+// It applies ONLY the unambiguous case. A node whose label CONTRADICTS its
+// position is left exactly as it is and reported by Doctor instead: two
+// sources of truth is the defect, and quietly picking one destroys the
+// evidence of which was wrong. A node whose level could not be established is
+// skipped rather than guessed at, and COUNTED -- a tally of successes alone
+// reads as complete coverage.
+func PlanBackfill(route *routing.Routing, nodes []*Node, apply func(repo string, number int, label string) error) (applied, skipped int) {
+	if route == nil || route.Structure == nil {
+		return 0, 0
+	}
+	known := map[string]bool{}
+	for _, l := range route.Structure.Labels() {
+		known[l] = true
+	}
+	for _, n := range nodes {
+		if n.Err != nil || !n.Assigned {
+			skipped++
+			continue
+		}
+		want, ok := route.Structure.LabelFor(n.Level, route.KeyForRepo(n.Ref.OwnerRepo()), n.Title)
+		if !ok {
+			continue
+		}
+		has, conflict := false, false
+		for _, l := range n.Labels {
+			switch {
+			case l == want:
+				has = true
+			case known[l]:
+				conflict = true
+			}
+		}
+		if has || conflict {
+			continue
+		}
+		if err := apply(n.Ref.OwnerRepo(), n.Ref.Number, want); err != nil {
+			skipped++
+			continue
+		}
+		applied++
+	}
+	return applied, skipped
+}

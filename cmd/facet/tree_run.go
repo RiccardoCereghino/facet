@@ -411,14 +411,9 @@ func runTreeDoctor(w io.Writer, gh treeGH, ref ghx.IssueRef, fixLabels bool) err
 
 // backfillLabels records the level on every node that is missing it.
 //
-// It applies ONLY the unambiguous case. A node whose label CONTRADICTS its
-// position is left exactly as it is and reported by the doctor pass that
-// follows: two sources of truth is the defect, and quietly picking one is how
-// a backfill destroys the evidence of which was wrong. Same reason a node whose
-// level could not be established is skipped rather than guessed at.
-//
-// The tree is re-walked by the caller's doctor pass afterwards, so what this
-// printed and what the report then says cannot disagree.
+// The decision of WHAT to apply lives in internal/tree (planBackfill), where
+// it is tested without touching a live issue. This half is the reporting and
+// the write, which is all a command should own.
 func backfillLabels(w io.Writer, gh treeGH, root *tree.Node, route *routing.Routing) error {
 	if route == nil || route.Structure == nil {
 		_, _ = fmt.Fprintf(w, "no labels to backfill: the routing file declares no `structure`\n")
@@ -429,40 +424,20 @@ func backfillLabels(w io.Writer, gh treeGH, root *tree.Node, route *routing.Rout
 		return nil
 	}
 
-	known := map[string]bool{}
-	for _, l := range route.Structure.Labels() {
-		known[l] = true
+	var failed error
+	applied, skipped := tree.PlanBackfill(route, append([]*tree.Node{root}, root.Descendants()...),
+		func(repo string, number int, label string) error {
+			if err := gh.AddLabel(repo, number, label); err != nil {
+				failed = fmt.Errorf("could not label %s#%d with %s: %w", repo, number, label, err)
+				return failed
+			}
+			_, _ = fmt.Fprintf(w, "  labelled %s#%-22d %s\n", repo, number, label)
+			return nil
+		})
+	if failed != nil {
+		return failed
 	}
 
-	applied, skipped := 0, 0
-	for _, n := range append([]*tree.Node{root}, root.Descendants()...) {
-		if n.Err != nil || !n.Assigned {
-			skipped++
-			continue
-		}
-		want, ok := route.Structure.LabelFor(n.Level, route.KeyForRepo(n.Ref.OwnerRepo()), n.Title)
-		if !ok {
-			continue
-		}
-		has := false
-		conflict := false
-		for _, l := range n.Labels {
-			switch {
-			case l == want:
-				has = true
-			case known[l]:
-				conflict = true
-			}
-		}
-		if has || conflict {
-			continue
-		}
-		if err := gh.AddLabel(n.Ref.OwnerRepo(), n.Ref.Number, want); err != nil {
-			return fmt.Errorf("could not label %s with %s: %w", n.Ref, want, err)
-		}
-		_, _ = fmt.Fprintf(w, "  labelled %-28s %s\n", n.Ref, want)
-		applied++
-	}
 	_, _ = fmt.Fprintf(w, "backfill: %d labelled", applied)
 	if skipped > 0 {
 		// Never silent about what was not reached: a count that only reports
