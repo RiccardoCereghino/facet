@@ -27,6 +27,10 @@ import (
 )
 
 func runSpawn(o spawnOpts) error {
+	// catalogFailed carries a non-fatal failure to the end of the function, so
+	// the exit code can be non-zero without abandoning a workspace that is
+	// otherwise complete.
+	var catalogFailed string
 	if o.Repo == "" {
 		return fmt.Errorf("--repo is required (owner/name): more than one repo may host issues, and gh's notion of the current repo is not it")
 	}
@@ -190,6 +194,23 @@ func runSpawn(o spawnOpts) error {
 		}
 		rep.Created("%s: %s", seat.SeatIssueFile, seatIssueRef)
 	}
+	// The command catalog, so every seat has the whole tool surface at spawn
+	// for zero sessions and zero turns (facet#118). Written AFTER identity and
+	// before the clones: it needs nothing from them, and a slow probe should
+	// not sit between a workspace being created and it saying whose it is.
+	catRes, err := seat.WriteCatalog(ws, arganoBin())
+	if err != nil {
+		return err
+	}
+	if catRes.OK {
+		rep.Created("%s: the command catalog", seat.CatalogFile)
+	} else {
+		// Named, not silent, and the exit is non-zero at the end. A spawn that
+		// half-worked must not read as one that worked.
+		rep.Created("%s: GENERATION FAILED -- %s", seat.CatalogFile, catRes.Detail)
+		catalogFailed = catRes.Detail
+	}
+
 	if err := workspace.Sync(roots, ws, git, rep, workspace.SyncOptions{Source: sourceFor(true, rep)}); err != nil {
 		return err
 	}
@@ -285,7 +306,34 @@ func runSpawn(o spawnOpts) error {
 				claudex.Exe, err, workDir)
 		}
 	}
+
+	// The workspace is complete and usable, and one thing in it is not what it
+	// claims to be. Non-zero LAST rather than early, so the spawn is not
+	// abandoned over a probe -- but non-zero, because a seat reading a catalog
+	// that says "generation failed" should have been told at spawn time, not
+	// discovered it later.
+	if catalogFailed != "" {
+		return fmt.Errorf("the workspace is ready, but %s says it could not be generated: %s\n"+
+			"fix: install argano and regenerate it: argano catalog --json > %s",
+			seat.CatalogFile, catalogFailed, filepath.Join(ws, seat.CatalogFile))
+	}
 	return nil
+}
+
+// arganoBin is where the catalog generator lives.
+//
+// $ARGANO_BIN first so a test, or a machine that installs elsewhere, can point
+// at its own. facet does NOT refuse when argano is absent: the catalog is a
+// convenience for the seat, and a spawn is the thing being asked for.
+func arganoBin() string {
+	if v := os.Getenv("ARGANO_BIN"); v != "" {
+		return v
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, "go", "bin", "argano")
 }
 
 // resolveLaunch decides whether to start claude in this terminal. A named flag
