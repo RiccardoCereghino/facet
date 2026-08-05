@@ -132,7 +132,8 @@ func newTreeStatusCmd() *cobra.Command {
 }
 
 func newTreeDoctorCmd() *cobra.Command {
-	return &cobra.Command{
+	var fixLabels bool
+	cmd := &cobra.Command{
 		Use:   "doctor <owner/repo#n>",
 		Short: "Report defects in a tree's shape",
 		Long: "Two sets of checks.\n\n" +
@@ -147,9 +148,12 @@ func newTreeDoctorCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runTreeDoctor(cmd.OutOrStdout(), gh, ref)
+			return runTreeDoctor(cmd.OutOrStdout(), gh, ref, fixLabels)
 		},
 	}
+	cmd.Flags().BoolVar(&fixLabels, "fix-labels", false,
+		"record the level on every node missing its type label; never touches one that CONTRADICTS the tree")
+	return cmd
 }
 
 // parseIssueRef reads "owner/repo#n".

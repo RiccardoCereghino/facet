@@ -22,6 +22,7 @@ type treeGH interface {
 	IssueID(repo string, number int) (int64, error)
 	IssueParent(repo string, number int) (ghx.IssueRef, bool, error)
 	AddSubIssue(repo string, number int, childID int64) error
+	AddLabel(repo string, number int, label string) error
 	RemoveSubIssue(repo string, number int, childID int64) error
 	ProjectStatuses(owner string, projectNumber int, field string) (map[string]string, error)
 }
@@ -106,12 +107,47 @@ func runTreeWire(w io.Writer, gh treeGH, child, parent ghx.IssueRef) error {
 		return err
 	}
 
+	recordLevel(w, gh, route, child, childIssue)
 	printTiers(w, child, childIssue, parent, parentIssue)
 	if hadParent {
 		_, _ = fmt.Fprintf(w, "\n  MOVED: %s was a child of %s\n", child, previous)
 	}
 	_, _ = fmt.Fprintf(w, "\n  wired %s under %s\n", child, parent)
 	return nil
+}
+
+// recordLevel writes the level the wire just enforced onto the issue as a
+// label.
+//
+// `wire` already DERIVES the level -- refuseByStructure refuses an edge whose
+// child does not match the rung -- and then threw the answer away. Every other
+// actor was left re-deriving it by matching a title prefix, which is invisible
+// to `gh issue list --label`, silently wrong after a retitle, and absent
+// entirely for a node whose title never had the prefix.
+//
+// A failure to label is REPORTED AND NOT FATAL. The edge is already written and
+// is the thing being asked for; refusing here would leave a wired tree and a
+// non-zero exit, which reads as "nothing happened".
+func recordLevel(w io.Writer, gh treeGH, route *routing.Routing, child ghx.IssueRef, ci *ghx.Issue) {
+	if route == nil || route.Structure == nil {
+		return
+	}
+	level, ok, err := levelOf(gh, route, child)
+	if err != nil || !ok {
+		_, _ = fmt.Fprintf(w, "  level not recorded: %s sits at no declared level\n", child)
+		return
+	}
+	label, ok := route.Structure.LabelFor(level, route.KeyForRepo(child.OwnerRepo()), ci.Title)
+	if !ok {
+		// A structure that declares no labels keeps working exactly as before.
+		return
+	}
+	if err := gh.AddLabel(child.OwnerRepo(), child.Number, label); err != nil {
+		_, _ = fmt.Fprintf(w, "  WARNING: the edge is wired but %s was not applied to %s: %v\n", label, child, err)
+		_, _ = fmt.Fprintf(w, "  fix: gh issue edit %d --repo %s --add-label %s\n", child.Number, child.OwnerRepo(), label)
+		return
+	}
+	_, _ = fmt.Fprintf(w, "  level recorded: %s\n", label)
 }
 
 // printTiers states both tiers and which of them governs.
@@ -345,10 +381,15 @@ func runTreeStatus(w io.Writer, gh treeGH, ref ghx.IssueRef) error {
 	return nil
 }
 
-func runTreeDoctor(w io.Writer, gh treeGH, ref ghx.IssueRef) error {
+func runTreeDoctor(w io.Writer, gh treeGH, ref ghx.IssueRef, fixLabels bool) error {
 	root, route, err := walk(gh, ref, -1)
 	if err != nil {
 		return err
+	}
+	if fixLabels {
+		if err := backfillLabels(w, gh, root, route); err != nil {
+			return err
+		}
 	}
 	defects := tree.Doctor(root, route)
 	if len(defects) == 0 {
@@ -366,4 +407,68 @@ func runTreeDoctor(w io.Writer, gh treeGH, ref ghx.IssueRef) error {
 		_, _ = fmt.Fprintln(w, d)
 	}
 	return fmt.Errorf("%d defect(s) in %s", len(defects), ref)
+}
+
+// backfillLabels records the level on every node that is missing it.
+//
+// It applies ONLY the unambiguous case. A node whose label CONTRADICTS its
+// position is left exactly as it is and reported by the doctor pass that
+// follows: two sources of truth is the defect, and quietly picking one is how
+// a backfill destroys the evidence of which was wrong. Same reason a node whose
+// level could not be established is skipped rather than guessed at.
+//
+// The tree is re-walked by the caller's doctor pass afterwards, so what this
+// printed and what the report then says cannot disagree.
+func backfillLabels(w io.Writer, gh treeGH, root *tree.Node, route *routing.Routing) error {
+	if route == nil || route.Structure == nil {
+		_, _ = fmt.Fprintf(w, "no labels to backfill: the routing file declares no `structure`\n")
+		return nil
+	}
+	if len(route.Structure.Labels()) == 0 {
+		_, _ = fmt.Fprintf(w, "no labels to backfill: no level in `structure` declares a label\n")
+		return nil
+	}
+
+	known := map[string]bool{}
+	for _, l := range route.Structure.Labels() {
+		known[l] = true
+	}
+
+	applied, skipped := 0, 0
+	for _, n := range append([]*tree.Node{root}, root.Descendants()...) {
+		if n.Err != nil || !n.Assigned {
+			skipped++
+			continue
+		}
+		want, ok := route.Structure.LabelFor(n.Level, route.KeyForRepo(n.Ref.OwnerRepo()), n.Title)
+		if !ok {
+			continue
+		}
+		has := false
+		conflict := false
+		for _, l := range n.Labels {
+			switch {
+			case l == want:
+				has = true
+			case known[l]:
+				conflict = true
+			}
+		}
+		if has || conflict {
+			continue
+		}
+		if err := gh.AddLabel(n.Ref.OwnerRepo(), n.Ref.Number, want); err != nil {
+			return fmt.Errorf("could not label %s with %s: %w", n.Ref, want, err)
+		}
+		_, _ = fmt.Fprintf(w, "  labelled %-28s %s\n", n.Ref, want)
+		applied++
+	}
+	_, _ = fmt.Fprintf(w, "backfill: %d labelled", applied)
+	if skipped > 0 {
+		// Never silent about what was not reached: a count that only reports
+		// successes reads as complete coverage.
+		_, _ = fmt.Fprintf(w, ", %d not placeable and skipped", skipped)
+	}
+	_, _ = fmt.Fprintf(w, "\n\n")
+	return nil
 }

@@ -51,6 +51,9 @@ func Doctor(root *Node, route *routing.Routing) []Defect {
 	}
 	for _, n := range nodes {
 		out = append(out, structural(n, route.Structure)...)
+		if n.Err == nil && n.Assigned {
+			out = append(out, levelLabel(n, route.Structure, route.KeyForRepo(n.Ref.OwnerRepo()))...)
+		}
 	}
 	return out
 }
@@ -96,6 +99,56 @@ func levelNameAt(s *routing.Structure, i int) string {
 		return "node"
 	}
 	return s.Levels[i].Name
+}
+
+// levelLabel reports whether the node RECORDS the level it occupies, and it is
+// the check argano#7's whole block depends on.
+//
+// Three outcomes, and the middle one is why this is not just a presence check:
+//
+//   - the right label is present -- nothing to say;
+//   - NO structure label at all -- the level exists only in the title, so
+//     anything that is not facet must parse a prefix to find it;
+//   - a DIFFERENT structure label than the level this node actually occupies --
+//     two sources of truth, which is the defect rather than the fix, so it is
+//     reported loudly and never silently corrected.
+func levelLabel(n *Node, s *routing.Structure, repoKey string) []Defect {
+	want, declared := s.LabelFor(n.Level, repoKey, n.Title)
+	if !declared {
+		return nil
+	}
+
+	known := map[string]bool{}
+	for _, l := range s.Labels() {
+		known[l] = true
+	}
+	var has []string
+	for _, l := range n.Labels {
+		if known[l] {
+			has = append(has, l)
+		}
+	}
+
+	switch {
+	case len(has) == 1 && has[0] == want:
+		return nil
+	case len(has) == 0:
+		return []Defect{{
+			Ref:  n.Ref,
+			What: fmt.Sprintf("sits at level %q and does not record it: %s is missing", levelNameAt(s, n.Level), want),
+			Why:  "the level is knowable only by parsing the title, so every actor that is not facet must reimplement that parse -- and a retitled issue silently changes level",
+			Fix:  fmt.Sprintf("gh issue edit %d --repo %s --add-label %s", n.Ref.Number, n.Ref.OwnerRepo(), want),
+		}}
+	default:
+		return []Defect{{
+			Ref: n.Ref,
+			What: fmt.Sprintf("records %s but sits at level %q, which is %s",
+				strings.Join(has, ", "), levelNameAt(s, n.Level), want),
+			Why: "the label and the tree disagree about what this is; two sources of truth is the defect, and a reader has no way to tell which one is stale",
+			Fix: fmt.Sprintf("decide which is right, then either re-parent it or: gh issue edit %d --repo %s --remove-label %s --add-label %s",
+				n.Ref.Number, n.Ref.OwnerRepo(), strings.Join(has, " --remove-label "), want),
+		}}
+	}
 }
 
 // structural holds only where levels are declared.

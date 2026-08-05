@@ -16,7 +16,9 @@ import (
 // so tests can assert exactly which edges runFile attempted, without ever
 // shelling out to gh.
 type fakeGH struct {
-	createURL string
+	addedLabels []string
+	addLabelErr error
+	createURL   string
 
 	issueIDs  map[string]int64 // "owner/repo#n" -> id
 	issueErrs map[string]error // "owner/repo#n" -> error from IssueID
@@ -102,6 +104,13 @@ func (f *fakeGH) IssueID(repo string, number int) (int64, error) {
 		return 0, fmt.Errorf("fakeGH.IssueID: no issue id scripted for %s", k)
 	}
 	return id, nil
+}
+
+// addedLabels records every label write, so a test can assert that `tree wire`
+// RECORDED the level rather than merely derived it.
+func (f *fakeGH) AddLabel(repo string, number int, label string) error {
+	f.addedLabels = append(f.addedLabels, f.key(repo, number)+"+"+label)
+	return f.addLabelErr
 }
 
 func (f *fakeGH) AddBlockedBy(repo string, number int, blockingID int64) error {

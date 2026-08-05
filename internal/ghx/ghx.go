@@ -120,6 +120,7 @@ type Client interface {
 	IssueID(repo string, number int) (int64, error)
 	// AddBlockedBy declares repo#number is blocked by the issue with database
 	// id blockingID, as a native GitHub issue-dependency edge.
+	AddLabel(repo string, number int, label string) error
 	AddBlockedBy(repo string, number int, blockingID int64) error
 
 	// IssueParent reports an issue's parent under GitHub's sub-issues feature,
@@ -289,6 +290,14 @@ func (CLI) IssueID(repo string, number int) (int64, error) {
 		return 0, fmt.Errorf("parse database id of %s#%d: %w", repo, number, err)
 	}
 	return id, nil
+}
+
+// AddLabel applies a label to an issue. It is idempotent -- gh does not
+// complain about a label already present -- which is what lets the level label
+// be re-applied on every wire without a read first.
+func (CLI) AddLabel(repo string, number int, label string) error {
+	_, err := run("issue", "edit", strconv.Itoa(number), "--repo", repo, "--add-label", label)
+	return err
 }
 
 // AddBlockedBy creates the native dependency edge. Like IssueID, there is no
