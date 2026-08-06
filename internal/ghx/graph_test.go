@@ -89,6 +89,75 @@ func TestParseDependencyEdges(t *testing.T) {
 	})
 }
 
+// facet#105: title/state/labels must come back from THIS query, or the whole
+// point -- one call per parent instead of two per node -- is lost the moment
+// a caller reaches for a second read to fill them in.
+func TestParseIssueChildrenPageCarriesTitleStateAndLabels(t *testing.T) {
+	out := []byte(`{"data":{"repository":{"issue":{"subIssues":{
+		"pageInfo": {"hasNextPage": false, "endCursor": ""},
+		"nodes": [
+			{"number": 121, "state": "OPEN", "title": "the work",
+			 "repository": {"owner": {"login": "acme"}, "name": "harness"},
+			 "labels": {"nodes": [{"name": "complexity/1"}, {"name": "fleet"}]}}
+		]
+	}}}}}`)
+	page, err := parseIssueChildrenPage(out)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if len(page.nodes) != 1 {
+		t.Fatalf("got %d node(s), want 1", len(page.nodes))
+	}
+	n := page.nodes[0]
+	if n.Ref.String() != "acme/harness#121" {
+		t.Errorf("ref = %q", n.Ref)
+	}
+	if n.Title != "the work" || n.State != "OPEN" {
+		t.Errorf("title/state = %q/%q, want %q/%q", n.Title, n.State, "the work", "OPEN")
+	}
+	if len(n.Labels) != 2 || n.Labels[0] != "complexity/1" || n.Labels[1] != "fleet" {
+		t.Errorf("labels = %v, want [complexity/1 fleet]", n.Labels)
+	}
+}
+
+func TestParseIssueChildrenPageCarriesPagination(t *testing.T) {
+	out := []byte(`{"data":{"repository":{"issue":{"subIssues":{
+		"pageInfo": {"hasNextPage": true, "endCursor": "cursor-2"},
+		"nodes": []
+	}}}}}`)
+	page, err := parseIssueChildrenPage(out)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if !page.hasNextPage || page.endCursor != "cursor-2" {
+		t.Errorf("hasNextPage/endCursor = %v/%q, want true/%q", page.hasNextPage, page.endCursor, "cursor-2")
+	}
+}
+
+// A node GraphQL could not fully resolve reads as an empty State -- the same
+// non-nullable enum a real issue always has one of -- which is the signal a
+// tree walk reads as "could not be read" rather than silently dropping it.
+func TestParseIssueChildrenPageAnUnresolvedNodeHasNoState(t *testing.T) {
+	out := []byte(`{"data":{"repository":{"issue":{"subIssues":{
+		"pageInfo": {"hasNextPage": false, "endCursor": ""},
+		"nodes": [
+			{"number": 99, "state": "", "title": "",
+			 "repository": {"owner": {"login": "acme"}, "name": "lab"},
+			 "labels": {"nodes": []}}
+		]
+	}}}}}`)
+	page, err := parseIssueChildrenPage(out)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if len(page.nodes) != 1 || page.nodes[0].State != "" {
+		t.Fatalf("nodes = %v, want one node with an empty state", page.nodes)
+	}
+	if page.nodes[0].Ref.String() != "acme/lab#99" {
+		t.Errorf("ref = %q, want the node identified even though its fields did not resolve", page.nodes[0].Ref)
+	}
+}
+
 func TestSplitRepoRefusesAmbiguity(t *testing.T) {
 	for _, bad := range []string{"", "lab", "/lab", "acme/"} {
 		if _, _, err := splitRepo("test", bad); err == nil {

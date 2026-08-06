@@ -22,8 +22,10 @@ import (
 // rather than reusing the full client so a test can script two methods instead
 // of twenty.
 type Source interface {
+	// ViewIssue is called exactly once per walk, for the root -- every other
+	// node's title/state/labels comes from IssueChildren directly (facet#105).
 	ViewIssue(repo string, number int) (*ghx.Issue, error)
-	IssueChildren(repo string, number int) ([]ghx.IssueRef, error)
+	IssueChildren(repo string, number int) ([]ghx.SubIssue, error)
 	// IssueParent is needed to establish what the node a walk STARTS at
 	// actually is. Without it a walk can only assume its argument is a root,
 	// and that assumption is wrong for every subtree.
@@ -140,21 +142,31 @@ func descend(src Source, parent *Node, maxDepth int, route *routing.Routing, pat
 		return
 	}
 	for _, k := range kids {
-		key := k.String()
+		key := k.Ref.String()
 		if path[key] {
 			// Self-ancestry. Record it as a childless node so the report can
 			// name it, and do not follow it.
 			parent.Children = append(parent.Children, &Node{
-				Ref: k, Depth: parent.Depth + 1,
+				Ref: k.Ref, Depth: parent.Depth + 1,
 				Err: fmt.Errorf("cycle: %s is its own ancestor", key),
 			})
 			continue
 		}
-		child, err := node(src, k, parent.Depth+1, route)
-		if err != nil {
-			child = &Node{Ref: k, Depth: parent.Depth + 1, Err: err}
-			parent.Children = append(parent.Children, child)
+		if k.State == "" {
+			// The child's fields did not come back with the parent's
+			// IssueChildren read -- GraphQL can return a list entry it could
+			// not resolve. Same fact ViewIssue failing for a child used to
+			// carry: the node is known to exist (it has a ref) but could not
+			// be read, so it is reported and not descended into.
+			parent.Children = append(parent.Children, &Node{
+				Ref: k.Ref, Depth: parent.Depth + 1,
+				Err: fmt.Errorf("%s: its title/state/labels did not come back from the parent's children read", k.Ref),
+			})
 			continue
+		}
+		child := &Node{
+			Ref: k.Ref, Title: k.Title, State: k.State,
+			Labels: k.Labels, Depth: parent.Depth + 1,
 		}
 		assign(child, parent, route)
 		parent.Children = append(parent.Children, child)

@@ -138,12 +138,24 @@ func (f *fakeGH) IssueParent(repo string, number int) (ghx.IssueRef, bool, error
 	return p, ok, nil
 }
 
-func (f *fakeGH) IssueChildren(repo string, number int) ([]ghx.IssueRef, error) {
+// IssueChildren returns each scripted child ref with no title/state/labels
+// attached -- fakeGH's own ViewIssue is a no-op stub, so a bare fakeGH has
+// never been able to name a child's fields; the empty State reads as
+// "unreadable" exactly as it did before facet#105, when a child's Node came
+// from a separate node()/ViewIssue call that this same stub also blanked.
+// treeFake (below) overrides this to attach real fields from its own issues
+// map.
+func (f *fakeGH) IssueChildren(repo string, number int) ([]ghx.SubIssue, error) {
 	k := f.key(repo, number)
 	if err, ok := f.childErrs[k]; ok {
 		return nil, err
 	}
-	return f.children[k], nil
+	refs := f.children[k]
+	out := make([]ghx.SubIssue, 0, len(refs))
+	for _, r := range refs {
+		out = append(out, ghx.SubIssue{Ref: r})
+	}
+	return out, nil
 }
 
 func (f *fakeGH) AddSubIssue(repo string, number int, childID int64) error {

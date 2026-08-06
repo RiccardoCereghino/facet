@@ -128,10 +128,20 @@ func (g graphIssueRef) ref() IssueRef {
 	return IssueRef{Owner: g.Repository.Owner.Login, Repo: g.Repository.Name, Number: g.Number}
 }
 
-// issueChildrenQuery lists an issue's sub-issues, one page at a time. It is
-// paginated rather than capped at `first: 100` because a silent truncation
-// reads exactly like a complete answer, and this result is what shape reports
-// are built from.
+// issueChildrenQuery lists an issue's sub-issues, one page at a time, with the
+// three fields a tree walk needs to render a child WITHOUT a second read.
+//
+// facet#105: this used to return only the ref, so a walk paid a second `gh`
+// process (ViewIssue) per child just to learn its title/state/labels --
+// two processes per node instead of one query per PARENT. Those fields are
+// GitHub's own on subIssues, so asking for them here removes the second call
+// entirely rather than tuning it.
+//
+// It is paginated rather than capped at `first: 100` because a silent
+// truncation reads exactly like a complete answer, and this result is what
+// shape reports are built from. `labels(first: 20)` is not paginated: a
+// truncated label list only means a rarely-used label goes unseen, not a
+// missing child, and no issue in this bottega carries anywhere near 20.
 const issueChildrenQuery = `query($owner: String!, $repo: String!, $number: Int!, $after: String) {
   repository(owner: $owner, name: $repo) {
     issue(number: $number) {
@@ -139,27 +149,80 @@ const issueChildrenQuery = `query($owner: String!, $repo: String!, $number: Int!
         pageInfo { hasNextPage endCursor }
         nodes {
           number
+          state
+          title
           repository { owner { login } name }
+          labels(first: 20) { nodes { name } }
         }
       }
     }
   }
 }`
 
-// IssueChildren lists an issue's sub-issues, in the order GitHub returns them.
+// SubIssue is one child returned by [CLI.IssueChildren]: the ref plus the
+// fields a tree walk needs to render it, read in the SAME call rather than a
+// second `gh issue view` per child (facet#105).
+type SubIssue struct {
+	Ref    IssueRef
+	Title  string
+	// State is GitHub's non-nullable OPEN/CLOSED enum on a real issue. Empty
+	// here means the node's fields could not be resolved -- GraphQL can
+	// return a partial response with some list entries unresolved -- and is
+	// read as "unreadable", the same fact [CLI.ViewIssue] failing used to
+	// carry for a child.
+	State  string
+	Labels []string
+}
+
+// graphSubIssue is the shape issueChildrenQuery's nodes return.
+type graphSubIssue struct {
+	Number     int    `json:"number"`
+	State      string `json:"state"`
+	Title      string `json:"title"`
+	Repository struct {
+		Owner struct {
+			Login string `json:"login"`
+		} `json:"owner"`
+		Name string `json:"name"`
+	} `json:"repository"`
+	Labels struct {
+		Nodes []struct {
+			Name string `json:"name"`
+		} `json:"nodes"`
+	} `json:"labels"`
+}
+
+func (g graphSubIssue) subIssue() SubIssue {
+	labels := make([]string, 0, len(g.Labels.Nodes))
+	for _, l := range g.Labels.Nodes {
+		labels = append(labels, l.Name)
+	}
+	return SubIssue{
+		Ref:    IssueRef{Owner: g.Repository.Owner.Login, Repo: g.Repository.Name, Number: g.Number},
+		Title:  g.Title,
+		State:  g.State,
+		Labels: labels,
+	}
+}
+
+// IssueChildren lists an issue's sub-issues, in the order GitHub returns
+// them, each carrying the title/state/labels a tree walk needs -- no second
+// call per child.
 //
 // EVENTUALLY CONSISTENT, unlike [CLI.IssueParent]. An edge written moments ago
 // may not appear here yet, so this must never be used to confirm a write just
 // made -- it will report a false failure and invite wiring the edge twice.
 // Nothing in GitHub's schema offers an immediately-consistent way to list
 // children; only reading a parent from a known child's side is immediate.
-func (CLI) IssueChildren(repo string, number int) ([]IssueRef, error) {
+// Requesting more fields on subIssues does not change this: the consistency
+// behaviour belongs to the edge, not to which fields are read off it.
+func (CLI) IssueChildren(repo string, number int) ([]SubIssue, error) {
 	owner, name, err := splitRepo("IssueChildren", repo)
 	if err != nil {
 		return nil, err
 	}
 
-	var out []IssueRef
+	var out []SubIssue
 	after := ""
 	for {
 		args := []string{"api", "graphql",
@@ -177,33 +240,58 @@ func (CLI) IssueChildren(repo string, number int) ([]IssueRef, error) {
 		if err != nil {
 			return nil, err
 		}
-		var resp struct {
-			Data struct {
-				Repository struct {
-					Issue struct {
-						SubIssues struct {
-							PageInfo struct {
-								HasNextPage bool   `json:"hasNextPage"`
-								EndCursor   string `json:"endCursor"`
-							} `json:"pageInfo"`
-							Nodes []graphIssueRef `json:"nodes"`
-						} `json:"subIssues"`
-					} `json:"issue"`
-				} `json:"repository"`
-			} `json:"data"`
-		}
-		if err := json.Unmarshal(raw, &resp); err != nil {
+		page, err := parseIssueChildrenPage(raw)
+		if err != nil {
 			return nil, fmt.Errorf("parse children of %s#%d: %w", repo, number, err)
 		}
-		page := resp.Data.Repository.Issue.SubIssues
-		for _, n := range page.Nodes {
-			out = append(out, n.ref())
-		}
-		if !page.PageInfo.HasNextPage || page.PageInfo.EndCursor == "" {
+		out = append(out, page.nodes...)
+		if !page.hasNextPage || page.endCursor == "" {
 			return out, nil
 		}
-		after = page.PageInfo.EndCursor
+		after = page.endCursor
 	}
+}
+
+// issueChildrenPage is one page of issueChildrenQuery's answer, decoded.
+type issueChildrenPage struct {
+	nodes       []SubIssue
+	hasNextPage bool
+	endCursor   string
+}
+
+// parseIssueChildrenPage is split out so the field mapping -- especially an
+// unresolved node's empty State reading as "could not be read" -- can be
+// tested directly against a fixture, the same reason [parseIssueParent] is
+// its own function.
+func parseIssueChildrenPage(raw []byte) (issueChildrenPage, error) {
+	var resp struct {
+		Data struct {
+			Repository struct {
+				Issue struct {
+					SubIssues struct {
+						PageInfo struct {
+							HasNextPage bool   `json:"hasNextPage"`
+							EndCursor   string `json:"endCursor"`
+						} `json:"pageInfo"`
+						Nodes []graphSubIssue `json:"nodes"`
+					} `json:"subIssues"`
+				} `json:"issue"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return issueChildrenPage{}, err
+	}
+	page := resp.Data.Repository.Issue.SubIssues
+	nodes := make([]SubIssue, 0, len(page.Nodes))
+	for _, n := range page.Nodes {
+		nodes = append(nodes, n.subIssue())
+	}
+	return issueChildrenPage{
+		nodes:       nodes,
+		hasNextPage: page.PageInfo.HasNextPage,
+		endCursor:   page.PageInfo.EndCursor,
+	}, nil
 }
 
 // AddSubIssue makes child a sub-issue of repo#number.
