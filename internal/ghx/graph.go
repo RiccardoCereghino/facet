@@ -163,8 +163,8 @@ const issueChildrenQuery = `query($owner: String!, $repo: String!, $number: Int!
 // fields a tree walk needs to render it, read in the SAME call rather than a
 // second `gh issue view` per child (facet#105).
 type SubIssue struct {
-	Ref    IssueRef
-	Title  string
+	Ref   IssueRef
+	Title string
 	// State is GitHub's non-nullable OPEN/CLOSED enum on a real issue. Empty
 	// here means the node's fields could not be resolved -- GraphQL can
 	// return a partial response with some list entries unresolved -- and is
