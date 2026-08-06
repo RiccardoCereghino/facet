@@ -127,9 +127,10 @@ type Client interface {
 	// and whether it has one. GraphQL-only and immediately consistent; see
 	// graph.go for why REST cannot answer this at all.
 	IssueParent(repo string, number int) (IssueRef, bool, error)
-	// IssueChildren lists an issue's sub-issues. Eventually consistent -- never
-	// use it to confirm an edge just written.
-	IssueChildren(repo string, number int) ([]IssueRef, error)
+	// IssueChildren lists an issue's sub-issues, each already carrying its
+	// title/state/labels -- no second read is needed to render one. Eventually
+	// consistent -- never use it to confirm an edge just written.
+	IssueChildren(repo string, number int) ([]SubIssue, error)
 	// AddSubIssue makes the issue with database id childID a sub-issue of
 	// repo#number. Refuses (422) if the child already has a parent -- call
 	// RemoveSubIssue against the old parent first.

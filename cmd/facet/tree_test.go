@@ -63,6 +63,29 @@ func (f *treeFake) ViewIssue(repo string, number int) (*ghx.Issue, error) {
 	return f.issues[repo+"#"+itoa(number)], nil
 }
 
+// IssueChildren attaches each scripted child's title/state/labels from
+// f.issues, the same map ViewIssue reads -- mirroring the real IssueChildren,
+// which now returns those fields in the same call rather than a second one
+// (facet#105). A child missing from f.issues comes back with an empty State,
+// which the walker reads as "could not be read".
+func (f *treeFake) IssueChildren(repo string, number int) ([]ghx.SubIssue, error) {
+	k := f.key(repo, number)
+	if err, ok := f.childErrs[k]; ok {
+		return nil, err
+	}
+	refs := f.children[k]
+	out := make([]ghx.SubIssue, 0, len(refs))
+	for _, r := range refs {
+		iss, ok := f.issues[r.OwnerRepo()+"#"+itoa(r.Number)]
+		if !ok {
+			out = append(out, ghx.SubIssue{Ref: r})
+			continue
+		}
+		out = append(out, ghx.SubIssue{Ref: r, Title: iss.Title, State: iss.State, Labels: iss.LabelNames()})
+	}
+	return out, nil
+}
+
 func itoa(n int) string {
 	if n == 0 {
 		return "0"

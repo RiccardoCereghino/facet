@@ -21,9 +21,15 @@ type fakeSource struct {
 	// failure branch was unreachable by construction rather than untested by
 	// oversight. cmd/facet's double has carried this since round 1.
 	parentErrs map[string]error
+
+	// viewIssueCalls counts every ViewIssue call. facet#105's whole point: a
+	// walk must call it once, for the root, and never again per child -- every
+	// child's title/state/labels comes from IssueChildren directly.
+	viewIssueCalls int
 }
 
 func (f *fakeSource) ViewIssue(repo string, number int) (*ghx.Issue, error) {
+	f.viewIssueCalls++
 	k := key(repo, number)
 	if err, ok := f.errs[k]; ok {
 		return nil, err
@@ -35,8 +41,28 @@ func (f *fakeSource) ViewIssue(repo string, number int) (*ghx.Issue, error) {
 	return iss, nil
 }
 
-func (f *fakeSource) IssueChildren(repo string, number int) ([]ghx.IssueRef, error) {
-	return f.children[key(repo, number)], nil
+// IssueChildren mirrors the real IssueChildren: each child comes back with
+// its title/state/labels already attached, read from f.issues. A child whose
+// key is in f.errs, or that has no entry in f.issues, comes back with an
+// empty State -- the fake's way of expressing "this child's fields did not
+// resolve", the same fact ViewIssue failing used to carry before facet#105.
+func (f *fakeSource) IssueChildren(repo string, number int) ([]ghx.SubIssue, error) {
+	refs := f.children[key(repo, number)]
+	out := make([]ghx.SubIssue, 0, len(refs))
+	for _, r := range refs {
+		k := key(r.OwnerRepo(), r.Number)
+		if _, bad := f.errs[k]; bad {
+			out = append(out, ghx.SubIssue{Ref: r})
+			continue
+		}
+		iss, ok := f.issues[k]
+		if !ok {
+			out = append(out, ghx.SubIssue{Ref: r})
+			continue
+		}
+		out = append(out, ghx.SubIssue{Ref: r, Title: iss.Title, State: iss.State, Labels: iss.LabelNames()})
+	}
+	return out, nil
 }
 
 // A miss is "asked, and there is none" -- the ordinary case for a root, and
@@ -109,6 +135,22 @@ func wellFormed() *fakeSource {
 			"acme/doctrine#282": {ref("acme", "lab", 75)},
 			"acme/lab#75":       {ref("acme", "harness", 121)},
 		},
+	}
+}
+
+// facet#105: ViewIssue must be called exactly ONCE per walk, for the root.
+// Before this, it was called once per node -- a second `gh` process on top
+// of IssueChildren's -- because a child's title/state/labels came from a
+// separate read instead of the same call that listed it.
+func TestWalkCallsViewIssueOnlyOnceForTheRoot(t *testing.T) {
+	src := wellFormed()
+	route := routeWithStructure()
+	if _, err := Walk(src, ref("acme", "lab", 46), -1, route); err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+	if src.viewIssueCalls != 1 {
+		t.Errorf("ViewIssue was called %d time(s), want exactly 1 (the root only) -- "+
+			"a tree of N nodes must cost O(parents) requests, not O(2N)", src.viewIssueCalls)
 	}
 }
 
