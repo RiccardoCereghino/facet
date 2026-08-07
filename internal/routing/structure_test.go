@@ -26,21 +26,116 @@ func TestAssignAcceptsTheRealShape(t *testing.T) {
 	s := fourLevels()
 
 	// A seat record under the commission.
-	lvl, ok := s.Assign(0, "doctrine", "seat: c1-structure — the commands")
+	lvl, ok := s.Assign(0, "doctrine", "seat: c1-structure — the commands", nil)
 	if !ok || s.Levels[lvl].Name != "seat" {
 		t.Fatalf("seat record assigned to %d (ok=%v), want the seat level", lvl, ok)
 	}
 
 	// The planning issue sits at the same rung, in a different repo.
-	lvl, ok = s.Assign(0, "lab", "maquette: the strikers")
+	lvl, ok = s.Assign(0, "lab", "maquette: the strikers", nil)
 	if !ok || s.Levels[lvl].Name != "seat" {
 		t.Fatalf("maquette assigned to %d (ok=%v), want the seat level", lvl, ok)
 	}
 
 	// A block under a seat.
-	lvl, ok = s.Assign(1, "lab", "commands and the skill that drives them")
+	lvl, ok = s.Assign(1, "lab", "commands and the skill that drives them", nil)
 	if !ok || s.Levels[lvl].Name != "block" {
 		t.Fatalf("block assigned to %d (ok=%v), want the block level", lvl, ok)
+	}
+}
+
+// labelledLevels mirrors the real routing file's shape (routing.json): every
+// level declares the label that records it, and the seat level's two shapes
+// each override it per repo -- type/seat in doctrine, type/maquette in lab.
+func labelledLevels() *Structure {
+	return &Structure{Levels: []Level{
+		{Name: "commission", Label: "type/commission"},
+		{Name: "seat", Accepts: []LevelMatch{
+			{Repo: "doctrine", TitlePattern: "^seat: ", Label: "type/seat"},
+			{Repo: "lab", TitlePattern: "maquette", Label: "type/maquette"},
+		}},
+		{Name: "block", Optional: true, Label: "type/block"},
+		{Name: "issue", Label: "type/work"},
+	}}
+}
+
+// A label satisfies a candidate whose TITLE would not have -- proving label
+// and title are alternative ways to satisfy the SAME candidate (checked
+// together, shallowest-first), not two separate passes where a deeper
+// candidate's label could win over a shallower candidate's title.
+func TestAssignAcceptsALabelWhereTitleWouldNotHaveMatched(t *testing.T) {
+	s := labelledLevels()
+	lvl, ok := s.Assign(0, "doctrine", "a retitled seat record with no prefix at all", []string{"type/seat"})
+	if !ok || s.Levels[lvl].Name != "seat" {
+		t.Fatalf("label-only match assigned to %d (ok=%v), want the seat level", lvl, ok)
+	}
+}
+
+func TestLevelForLabels(t *testing.T) {
+	s := labelledLevels()
+
+	t.Run("a single matching label is authoritative", func(t *testing.T) {
+		lvl, ok, ambiguous := s.LevelForLabels("lab", []string{"fleet", "type/block", "complexity/3"})
+		if ambiguous {
+			t.Fatal("one level's label present, reported ambiguous")
+		}
+		if !ok || s.Levels[lvl].Name != "block" {
+			t.Fatalf("LevelForLabels = %d, %v, want the block level", lvl, ok)
+		}
+	})
+
+	t.Run("no declared label present falls through", func(t *testing.T) {
+		_, ok, ambiguous := s.LevelForLabels("lab", []string{"fleet", "priority/now"})
+		if ok || ambiguous {
+			t.Fatalf("LevelForLabels ok=%v ambiguous=%v on unlabelled input, want both false", ok, ambiguous)
+		}
+	})
+
+	t.Run("two different levels' labels at once is a conflict, not a pick", func(t *testing.T) {
+		_, ok, ambiguous := s.LevelForLabels("lab", []string{"type/block", "type/work"})
+		if ok {
+			t.Fatal("LevelForLabels silently picked one of two conflicting level labels")
+		}
+		if !ambiguous {
+			t.Fatal("two conflicting level labels were present but not reported ambiguous")
+		}
+	})
+
+	t.Run("a seat's per-repo label is found via Accepts, not just the level's own", func(t *testing.T) {
+		lvl, ok, ambiguous := s.LevelForLabels("lab", []string{"type/maquette"})
+		if ambiguous || !ok || s.Levels[lvl].Name != "seat" {
+			t.Fatalf("LevelForLabels(type/maquette) = %d, %v, %v, want the seat level", lvl, ok, ambiguous)
+		}
+	})
+
+	// The defect an audit of this feature found: a label match must be scoped
+	// exactly as tightly as the title pattern it stands in for. type/maquette's
+	// Accepts entry names "lab" specifically; a node in a third repo carrying
+	// that label must fall through, exactly as its title ("maquette: ...")
+	// would have failed to match there too.
+	t.Run("a label scoped to another repo does not match here", func(t *testing.T) {
+		_, ok, ambiguous := s.LevelForLabels("harness", []string{"type/maquette"})
+		if ok || ambiguous {
+			t.Fatalf("LevelForLabels(harness, type/maquette) = ok=%v ambiguous=%v, want both false -- "+
+				"type/maquette is lab-scoped and harness is a different repo", ok, ambiguous)
+		}
+	})
+
+	t.Run("the same repo-scoped label matches its own repo", func(t *testing.T) {
+		lvl, ok, ambiguous := s.LevelForLabels("doctrine", []string{"type/seat"})
+		if ambiguous || !ok || s.Levels[lvl].Name != "seat" {
+			t.Fatalf("LevelForLabels(doctrine, type/seat) = %d, %v, %v, want the seat level", lvl, ok, ambiguous)
+		}
+	})
+}
+
+// The same repo-scoping gap, on the non-root path: Assign must not let a
+// label from one repo's convention satisfy a candidate declared for another.
+func TestAssignDoesNotHonourALabelFromTheWrongRepo(t *testing.T) {
+	s := labelledLevels()
+	if lvl, ok := s.Assign(0, "harness", "no seat convention in this title at all", []string{"type/maquette"}); ok {
+		t.Fatalf("Assign(harness, ..., type/maquette) = %d, true -- "+
+			"type/maquette is lab-scoped and must not satisfy a harness-repo node", lvl)
 	}
 }
 
@@ -50,7 +145,7 @@ func TestAssignAcceptsTheRealShape(t *testing.T) {
 // individual edge looks reasonable.
 func TestAssignRefusesABlockDirectlyUnderTheRoot(t *testing.T) {
 	s := fourLevels()
-	if _, ok := s.Assign(0, "lab", "await.sh: four defects, three issues"); ok {
+	if _, ok := s.Assign(0, "lab", "await.sh: four defects, three issues", nil); ok {
 		t.Fatal("a loose issue was accepted directly under the root; the seat rung is required and cannot be skipped")
 	}
 }
@@ -95,8 +190,11 @@ func TestNilStructureChecksNothing(t *testing.T) {
 	if got := s.ChildLevels(0); got != nil {
 		t.Errorf("ChildLevels on a nil structure = %v, want nil", got)
 	}
-	if _, ok := s.Assign(0, "anything", "anything"); ok {
+	if _, ok := s.Assign(0, "anything", "anything", nil); ok {
 		t.Error("a nil structure assigned a level; it must have no opinion at all")
+	}
+	if _, ok, ambiguous := s.LevelForLabels("anything", []string{"type/block"}); ok || ambiguous {
+		t.Error("a nil structure resolved a label to a level; it must have no opinion at all")
 	}
 	if err := s.validate(nil); err != nil {
 		t.Errorf("validate on a nil structure = %v, want nil", err)
@@ -160,6 +258,19 @@ func TestLevelDescribeNamesTheFix(t *testing.T) {
 	for _, want := range []string{"seat", "doctrine", "^seat: ", "lab", "maquette", " or "} {
 		if !strings.Contains(got, want) {
 			t.Errorf("Describe() = %q, missing %q -- a refusal must name what was expected", got, want)
+		}
+	}
+}
+
+// A refusal must also name the label alternative, not only the title
+// convention -- the exact gap facet#133's GAP002 found: the refusal message
+// named a title prefix and said nothing about the label the wire check could
+// equally have accepted.
+func TestLevelDescribeNamesTheLabelAlternative(t *testing.T) {
+	got := labelledLevels().Levels[1].Describe()
+	for _, want := range []string{"type/seat", "type/maquette", "or labelled"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("Describe() = %q, missing %q -- a refusal must also name the label alternative", got, want)
 		}
 	}
 }

@@ -48,6 +48,18 @@ const fourLevelStructure = `,
 		{"name": "issue"}
 	]}`
 
+// labelledFourLevelStructure is fourLevelStructure with the type/* labels
+// facet#129 backfilled onto the real corpus -- each level declares the label
+// that records it, same as routing.json's actual structure block.
+const labelledFourLevelStructure = `,
+	"structure": {"levels": [
+		{"name": "commission", "label": "type/commission"},
+		{"name": "seat", "requiresChildren": true,
+		 "accepts": [{"repo": "doctrine", "titlePattern": "^seat: ", "label": "type/seat"}]},
+		{"name": "block", "optional": true, "label": "type/block"},
+		{"name": "issue", "label": "type/work"}
+	]}`
+
 func iref(owner, repo string, n int) ghx.IssueRef {
 	return ghx.IssueRef{Owner: owner, Repo: repo, Number: n}
 }
@@ -166,6 +178,26 @@ func TestTreeWireRefusesABlockDirectlyUnderTheCommission(t *testing.T) {
 	}
 }
 
+// GAP002: the refusal named only a title prefix ("must be seat (stele
+// matching ^seat: ...)"), which told a reader to retitle an issue when
+// labelling it would have worked too, and said nothing about the label at
+// all. With a labelled structure, the same refusal must also name the label.
+func TestTreeWireRefusalNamesTheLabelAlternative(t *testing.T) {
+	withRouting(t, labelledFourLevelStructure)
+	f := wireFake()
+	var out bytes.Buffer
+
+	err := runTreeWire(&out, f, iref("acme", "lab", 75), iref("acme", "lab", 46))
+	if err == nil {
+		t.Fatal("wire accepted a block directly under the commission")
+	}
+	for _, want := range []string{"type/seat", "or labelled"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal is missing %q -- it must also name the label alternative:\n%s", want, err)
+		}
+	}
+}
+
 func TestTreeWireAcceptsTheCorrectShape(t *testing.T) {
 	withRouting(t, fourLevelStructure)
 	f := wireFake()
@@ -174,6 +206,60 @@ func TestTreeWireAcceptsTheCorrectShape(t *testing.T) {
 	// A block under a seat record, which is where a block belongs.
 	if err := runTreeWire(&out, f, iref("acme", "lab", 75), iref("acme", "doctrine", 282)); err != nil {
 		t.Fatalf("wire refused a well-formed edge: %v", err)
+	}
+	want := "acme/doctrine#282<-5049244556"
+	if len(f.addSubIssueCalls) != 1 || f.addSubIssueCalls[0] != want {
+		t.Errorf("calls = %v, want [%s]", f.addSubIssueCalls, want)
+	}
+}
+
+// orphanBlockFake reproduces lab-workspaces#118/#119's exact shape: a
+// parentless node labelled type/block, with a title no convention
+// distinguishes ("WIP seed: ..."), and a type/work child whose title has no
+// recognised prefix either.
+func orphanBlockFake() *treeFake {
+	f := &treeFake{issues: map[string]*ghx.Issue{
+		"acme/lab#118": issueWith(
+			"WIP seed: the bottega's core function, and the outside concepts that sharpen it",
+			"type/block"),
+		"acme/lab#119": issueWith(
+			"WIP: a session that reasons about a refusal, on a deliberately narrow corpus",
+			"type/work"),
+	}}
+	f.issueIDs = map[string]int64{
+		"acme/lab#119": 5049244600,
+	}
+	return f
+}
+
+// facet#133: lab-workspaces#118-#122's exact shape -- a parentless
+// type/block "future commission seed" holding type/work children -- could
+// not be wired at all. The refusal named "must be seat", the rule for a
+// COMMISSION's children, because a parentless node's own type/* label was
+// never consulted and it defaulted to commission unconditionally.
+func TestTreeWireAcceptsAnOrphanedBlockAsParent(t *testing.T) {
+	withRouting(t, labelledFourLevelStructure)
+	f := orphanBlockFake()
+	var out bytes.Buffer
+
+	if err := runTreeWire(&out, f, iref("acme", "lab", 119), iref("acme", "lab", 118)); err != nil {
+		t.Fatalf("wire refused a work child under an orphaned, correctly-labelled block: %v", err)
+	}
+	want := "acme/lab#118<-5049244600"
+	if len(f.addSubIssueCalls) != 1 || f.addSubIssueCalls[0] != want {
+		t.Errorf("calls = %v, want [%s]", f.addSubIssueCalls, want)
+	}
+}
+
+// The normal path must be unaffected: a block correctly parented under a
+// seat still wires exactly as before, label or no label.
+func TestTreeWireStillAcceptsTheCorrectShapeWithLabels(t *testing.T) {
+	withRouting(t, labelledFourLevelStructure)
+	f := wireFake()
+	var out bytes.Buffer
+
+	if err := runTreeWire(&out, f, iref("acme", "lab", 75), iref("acme", "doctrine", 282)); err != nil {
+		t.Fatalf("wire refused a well-formed edge under a labelled structure: %v", err)
 	}
 	want := "acme/doctrine#282<-5049244556"
 	if len(f.addSubIssueCalls) != 1 || f.addSubIssueCalls[0] != want {

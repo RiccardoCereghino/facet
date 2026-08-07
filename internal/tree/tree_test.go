@@ -548,6 +548,127 @@ func TestWalkFromASubtreeResolvesItsRealLevel(t *testing.T) {
 	}
 }
 
+// labelledRouteWithStructure mirrors routeWithStructure, but with the type/*
+// labels facet#129 backfilled onto the real corpus this bug was found in --
+// the same four rungs, each carrying the label that records it.
+func labelledRouteWithStructure() *routing.Routing {
+	return &routing.Routing{
+		Repos: map[string]routing.Repo{"lab": {}, "doctrine": {}, "harness": {}},
+		OwnerRepoToKey: map[string]string{
+			"acme/lab": "lab", "acme/doctrine": "doctrine", "acme/harness": "harness",
+		},
+		Structure: &routing.Structure{Levels: []routing.Level{
+			{Name: "commission", Label: "type/commission"},
+			{Name: "seat", RequiresChildren: true, Accepts: []routing.LevelMatch{
+				{Repo: "doctrine", TitlePattern: "^seat: ", Label: "type/seat"},
+			}},
+			{Name: "block", Optional: true, Label: "type/block"},
+			{Name: "issue", Label: "type/work"},
+		}},
+	}
+}
+
+// facet#133, GAP001: a parentless "future commission seed" labelled
+// type/block was always reported [commission]. ChildLevels(-1) can only ever
+// be the shallowest non-optional level (position 0, "commission"), because
+// that is the sole rung reachable from a hypothetical parent at -1 -- so no
+// title convention and no amount of position logic could ever let a root be
+// "block". Only reading the label can, which is what this pins.
+func TestLevelOfReadsALabelForAParentlessNode(t *testing.T) {
+	src := &fakeSource{
+		issues: map[string]*ghx.Issue{
+			"acme/lab#118": issue(
+				"WIP seed: the bottega's core function, and the outside concepts that sharpen it",
+				"OPEN", "type/block"),
+		},
+	}
+	route := labelledRouteWithStructure()
+	root := ref("acme", "lab", 118)
+	level, ok, err := LevelOf(src, route, root, src.issues["acme/lab#118"].LabelNames())
+	if err != nil {
+		t.Fatalf("LevelOf: %v", err)
+	}
+	if !ok || route.Structure.Levels[level].Name != "block" {
+		t.Fatalf("LevelOf(#118) = %d (ok=%v), want the block level -- its type/block label was not consulted",
+			level, ok)
+	}
+}
+
+// The fallback this must not regress: a root with no matching type/* label
+// resolves exactly as it always has, unconditionally.
+func TestLevelOfFallsBackToPositionWhenNoLabelMatches(t *testing.T) {
+	src := &fakeSource{
+		issues: map[string]*ghx.Issue{
+			"acme/lab#46": issue("commission 1", "OPEN"),
+		},
+	}
+	route := labelledRouteWithStructure()
+	root := ref("acme", "lab", 46)
+	level, ok, err := LevelOf(src, route, root, src.issues["acme/lab#46"].LabelNames())
+	if err != nil {
+		t.Fatalf("LevelOf: %v", err)
+	}
+	if !ok || route.Structure.Levels[level].Name != "commission" {
+		t.Fatalf("LevelOf(#46) = %d (ok=%v), want commission -- the unlabelled fallback regressed",
+			level, ok)
+	}
+}
+
+// A root carrying labels for two different declared levels at once is a real
+// data conflict; LevelOf must refuse rather than silently pick one.
+func TestLevelOfRefusesAmbiguousRootLabels(t *testing.T) {
+	src := &fakeSource{
+		issues: map[string]*ghx.Issue{
+			"acme/lab#9": issue("conflicting", "OPEN", "type/block", "type/work"),
+		},
+	}
+	route := labelledRouteWithStructure()
+	root := ref("acme", "lab", 9)
+	_, ok, err := LevelOf(src, route, root, src.issues["acme/lab#9"].LabelNames())
+	if err == nil {
+		t.Fatal("LevelOf accepted a root carrying two conflicting level labels")
+	}
+	if ok {
+		t.Error("LevelOf reported ok=true alongside an error")
+	}
+}
+
+// The full reproduction, end to end through Walk: lab-workspaces#118's exact
+// shape (a parentless type/block seed) with lab-workspaces#119's exact shape
+// (a type/work child, titled with no convention the structure recognises) --
+// previously #119 could not be wired under #118 at all.
+func TestWalkResolvesAnOrphanedBlockAndItsWorkChild(t *testing.T) {
+	src := &fakeSource{
+		issues: map[string]*ghx.Issue{
+			"acme/lab#118": issue(
+				"WIP seed: the bottega's core function, and the outside concepts that sharpen it",
+				"OPEN", "type/block"),
+			"acme/lab#119": issue(
+				"WIP: a session that reasons about a refusal, on a deliberately narrow corpus",
+				"OPEN", "type/work"),
+		},
+		children: map[string][]ghx.IssueRef{
+			"acme/lab#118": {ref("acme", "lab", 119)},
+		},
+	}
+	route := labelledRouteWithStructure()
+	root := mustWalk(t, src, ref("acme", "lab", 118), route)
+
+	if !root.Assigned || route.Structure.Levels[root.Level].Name != "block" {
+		t.Fatalf("root: assigned=%v level=%v, want the block level", root.Assigned, root.Level)
+	}
+	if len(root.Children) != 1 {
+		t.Fatalf("got %d children, want 1", len(root.Children))
+	}
+	child := root.Children[0]
+	if !child.Assigned || route.Structure.Levels[child.Level].Name != "issue" {
+		t.Errorf("child: assigned=%v level=%v, want the issue level", child.Assigned, child.Level)
+	}
+	if got := Doctor(root, route); len(got) != 0 {
+		t.Errorf("the worked example was reported as a defect: %v", got)
+	}
+}
+
 // A node that genuinely sits at no declared level is still reported when it is
 // the one asked about -- but its children are NOT, because judging them
 // against the wrong rung would turn one defect into a cascade that all point

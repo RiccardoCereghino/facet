@@ -81,7 +81,7 @@ func runTreeWire(w io.Writer, gh treeGH, child, parent ghx.IssueRef) error {
 	if err != nil {
 		return err
 	}
-	if err := refuseByStructure(gh, route, child, childIssue, parent); err != nil {
+	if err := refuseByStructure(gh, route, child, childIssue, parent, parentIssue); err != nil {
 		return err
 	}
 
@@ -132,7 +132,7 @@ func recordLevel(w io.Writer, gh treeGH, route *routing.Routing, child ghx.Issue
 	if route == nil || route.Structure == nil {
 		return
 	}
-	level, ok, err := levelOf(gh, route, child)
+	level, ok, err := levelOf(gh, route, child, ci.LabelNames())
 	if err != nil || !ok {
 		_, _ = fmt.Fprintf(w, "  level not recorded: %s sits at no declared level\n", child)
 		return
@@ -180,7 +180,7 @@ func describeTier(n *tree.Node) string {
 // refuseByStructure rejects an edge the declared levels forbid. With no
 // structure configured it permits everything, which is the point: the shape is
 // an adopter's contract and facet imposes none of its own.
-func refuseByStructure(gh treeGH, route *routing.Routing, child ghx.IssueRef, childIssue *ghx.Issue, parent ghx.IssueRef) error {
+func refuseByStructure(gh treeGH, route *routing.Routing, child ghx.IssueRef, childIssue *ghx.Issue, parent ghx.IssueRef, parentIssue *ghx.Issue) error {
 	s := route.Structure
 	if s == nil {
 		return nil
@@ -193,7 +193,7 @@ func refuseByStructure(gh treeGH, route *routing.Routing, child ghx.IssueRef, ch
 	// than its ancestor count. Judging by depth there would let `wire` write
 	// the very edge `doctor` reports as a defect, in the command whose whole
 	// purpose is making the wrong shape unrepresentable.
-	level, ok, err := levelOf(gh, route, parent)
+	level, ok, err := levelOf(gh, route, parent, parentIssue.LabelNames())
 	if err != nil {
 		// Refuse when you cannot tell. A probe that errors is not a pass, and
 		// silently skipping the check is how a wrong edge gets written by the
@@ -210,7 +210,7 @@ func refuseByStructure(gh treeGH, route *routing.Routing, child ghx.IssueRef, ch
 	}
 
 	key := route.KeyForRepo(child.OwnerRepo())
-	if _, ok := s.Assign(level, key, childIssue.Title); ok {
+	if _, ok := s.Assign(level, key, childIssue.Title, childIssue.LabelNames()); ok {
 		return nil
 	}
 
@@ -236,8 +236,8 @@ func refuseByStructure(gh treeGH, route *routing.Routing, child ghx.IssueRef, ch
 // levelOf delegates to the walk's own resolver, so the edge check and the
 // walk cannot disagree about one tree. Kept as a named wrapper because the
 // refusal below reads better against a local name than an import path.
-func levelOf(gh treeGH, route *routing.Routing, ref ghx.IssueRef) (int, bool, error) {
-	return tree.LevelOf(gh, route, ref)
+func levelOf(gh treeGH, route *routing.Routing, ref ghx.IssueRef, refLabels []string) (int, bool, error) {
+	return tree.LevelOf(gh, route, ref, refLabels)
 }
 
 func walk(gh treeGH, ref ghx.IssueRef, depth int) (*tree.Node, *routing.Routing, error) {
