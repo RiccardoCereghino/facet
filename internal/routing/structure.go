@@ -114,16 +114,76 @@ func (s *Structure) ChildLevels(parentLevel int) []int {
 // nothing in correctness (no defect is reported either way, and the rungs
 // below stay right) and only shows up as a label in a report. Give the level
 // an Accepts if the difference matters.
-func (s *Structure) Assign(parentLevel int, repoKey, title string) (level int, ok bool) {
+func (s *Structure) Assign(parentLevel int, repoKey, title string, labels []string) (level int, ok bool) {
 	if s == nil {
 		return 0, false
 	}
+	have := make(map[string]bool, len(labels))
+	for _, l := range labels {
+		have[l] = true
+	}
 	for _, i := range s.ChildLevels(parentLevel) {
-		if s.Levels[i].accepts(repoKey, title) {
+		lvl := s.Levels[i]
+		labelled := lvl.Label != "" && have[lvl.Label]
+		if !labelled {
+			for _, m := range lvl.Accepts {
+				if m.Label != "" && have[m.Label] {
+					labelled = true
+					break
+				}
+			}
+		}
+		if labelled || lvl.accepts(repoKey, title) {
 			return i, true
 		}
 	}
 	return 0, false
+}
+
+// LevelForLabels reports the level a node's own labels assert, independent of
+// position or title. It exists for the case ChildLevels can never reach: a
+// root's candidate set is always just the shallowest non-optional level (in
+// practice "commission"), because that is the only rung reachable by walking
+// forward from a hypothetical parent at -1 -- so no title convention, and no
+// change to ChildLevels, could ever let a node like "block" be a root. A node
+// carrying that level's own Label (or one of its Accepts' Labels) asserts it
+// directly, out of band from position.
+//
+// ok is false when no declared level's label is present. ambiguous is true
+// when labels for more than one DIFFERENT level are present at once -- a real
+// data conflict the caller must not silently resolve by picking one.
+func (s *Structure) LevelForLabels(labels []string) (level int, ok bool, ambiguous bool) {
+	if s == nil {
+		return 0, false, false
+	}
+	have := make(map[string]bool, len(labels))
+	for _, l := range labels {
+		have[l] = true
+	}
+	matched := -1
+	for i, lvl := range s.Levels {
+		hit := lvl.Label != "" && have[lvl.Label]
+		if !hit {
+			for _, m := range lvl.Accepts {
+				if m.Label != "" && have[m.Label] {
+					hit = true
+					break
+				}
+			}
+		}
+		if !hit {
+			continue
+		}
+		if matched == -1 {
+			matched = i
+		} else if matched != i {
+			return 0, false, true
+		}
+	}
+	if matched == -1 {
+		return 0, false, false
+	}
+	return matched, true, false
 }
 
 // LabelFor returns the label that records a node's level, and whether one is
@@ -215,16 +275,21 @@ func (l Level) Describe() string {
 	}
 	parts := make([]string, 0, len(l.Accepts))
 	for _, m := range l.Accepts {
+		var part string
 		switch {
 		case m.Repo != "" && m.TitlePattern != "":
-			parts = append(parts, fmt.Sprintf("%s matching %s", m.Repo, m.TitlePattern))
+			part = fmt.Sprintf("%s matching %s", m.Repo, m.TitlePattern)
 		case m.Repo != "":
-			parts = append(parts, "anything in "+m.Repo)
+			part = "anything in " + m.Repo
 		case m.TitlePattern != "":
-			parts = append(parts, "a title matching "+m.TitlePattern)
+			part = "a title matching " + m.TitlePattern
 		default:
-			parts = append(parts, "anything")
+			part = "anything"
 		}
+		if m.Label != "" {
+			part += fmt.Sprintf(" (or labelled %s)", m.Label)
+		}
+		parts = append(parts, part)
 	}
 	return l.Name + " (" + strings.Join(parts, ", or ") + ")"
 }

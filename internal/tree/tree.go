@@ -112,7 +112,7 @@ func Walk(src Source, ref ghx.IssueRef, maxDepth int, route *routing.Routing) (*
 	// a tree that was right. A doctor's false positive that tells someone to
 	// break a correct tree is worse than a missed defect.
 	if route != nil && route.Structure != nil {
-		level, ok, err := LevelOf(src, route, ref)
+		level, ok, err := LevelOf(src, route, ref, root.Labels)
 		switch {
 		case err != nil:
 			// CARRY IT, DO NOT BLANK THE REPORT. The same principle the child
@@ -192,7 +192,7 @@ func assign(child, parent *Node, route *routing.Routing) {
 	child.LevelKnown = true
 	child.ParentLevel, child.HasParent = parent.Level, true
 	key := route.KeyForRepo(child.Ref.OwnerRepo())
-	child.Level, child.Assigned = route.Structure.Assign(parent.Level, key, child.Title)
+	child.Level, child.Assigned = route.Structure.Assign(parent.Level, key, child.Title, child.Labels)
 }
 
 func node(src Source, ref ghx.IssueRef, depth int, _ *routing.Routing) (*Node, error) {
@@ -299,7 +299,15 @@ func (e *ParentCycleError) Error() string {
 // That is a real finding about the tree rather than an error, and the caller
 // decides what to do with it: a walk reports the node it started at, while an
 // edge check refuses and points at the tree above.
-func LevelOf(src Source, route *routing.Routing, ref ghx.IssueRef) (int, bool, error) {
+//
+// refLabels is ref's own labels, when the caller already has them (every
+// caller does -- a walk from node(), a wire check from the issue it already
+// fetched to build its refusal). Passing them avoids a second ViewIssue call
+// for ref in the common case where ref turns out to be its own root
+// (facet#105: a walk costs exactly one ViewIssue call, for the root). nil is
+// fine when the caller has nothing on hand; it only costs a fetch when ref
+// actually has no parent.
+func LevelOf(src Source, route *routing.Routing, ref ghx.IssueRef, refLabels []string) (int, bool, error) {
 	if route == nil || route.Structure == nil {
 		return 0, false, nil
 	}
@@ -329,7 +337,36 @@ func LevelOf(src Source, route *routing.Routing, ref ghx.IssueRef) (int, bool, e
 	if len(roots) == 0 {
 		return 0, false, nil
 	}
+
+	// A root's own level is not just "the shallowest candidate" -- it is
+	// whatever the root's own type/* label asserts, when it asserts one.
+	// ChildLevels(-1) can only ever name the sole non-optional level at
+	// position 0 (in practice "commission"), so position alone could never
+	// let a root be reported as, say, "block" -- only reading the label can.
+	rootRef := chain[len(chain)-1]
+	var rootLabels []string
+	if rootRef == ref {
+		rootLabels = refLabels
+	} else {
+		rootIss, err := src.ViewIssue(rootRef.OwnerRepo(), rootRef.Number)
+		if err != nil {
+			return 0, false, err
+		}
+		if rootIss == nil {
+			return 0, false, fmt.Errorf("%s: no such issue", rootRef)
+		}
+		rootLabels = rootIss.LabelNames()
+	}
+
 	level := roots[0]
+	if lvl, ok, ambiguous := s.LevelForLabels(rootLabels); ambiguous {
+		return 0, false, fmt.Errorf(
+			"%s carries labels for more than one declared level; the tree cannot tell which is authoritative",
+			rootRef)
+	} else if ok {
+		level = lvl
+	}
+
 	for i := len(chain) - 2; i >= 0; i-- {
 		n := chain[i]
 		iss, err := src.ViewIssue(n.OwnerRepo(), n.Number)
@@ -339,7 +376,7 @@ func LevelOf(src Source, route *routing.Routing, ref ghx.IssueRef) (int, bool, e
 		if iss == nil {
 			return 0, false, fmt.Errorf("%s: no such issue", n)
 		}
-		next, ok := s.Assign(level, route.KeyForRepo(n.OwnerRepo()), iss.Title)
+		next, ok := s.Assign(level, route.KeyForRepo(n.OwnerRepo()), iss.Title, iss.LabelNames())
 		if !ok {
 			return 0, false, nil
 		}
