@@ -359,7 +359,7 @@ func LevelOf(src Source, route *routing.Routing, ref ghx.IssueRef, refLabels []s
 	}
 
 	level := roots[0]
-	if lvl, ok, ambiguous := s.LevelForLabels(rootLabels); ambiguous {
+	if lvl, ok, ambiguous := s.LevelForLabels(route.KeyForRepo(rootRef.OwnerRepo()), rootLabels); ambiguous {
 		return 0, false, fmt.Errorf(
 			"%s carries labels for more than one declared level; the tree cannot tell which is authoritative",
 			rootRef)

@@ -75,7 +75,7 @@ func TestLevelForLabels(t *testing.T) {
 	s := labelledLevels()
 
 	t.Run("a single matching label is authoritative", func(t *testing.T) {
-		lvl, ok, ambiguous := s.LevelForLabels([]string{"fleet", "type/block", "complexity/3"})
+		lvl, ok, ambiguous := s.LevelForLabels("lab", []string{"fleet", "type/block", "complexity/3"})
 		if ambiguous {
 			t.Fatal("one level's label present, reported ambiguous")
 		}
@@ -85,14 +85,14 @@ func TestLevelForLabels(t *testing.T) {
 	})
 
 	t.Run("no declared label present falls through", func(t *testing.T) {
-		_, ok, ambiguous := s.LevelForLabels([]string{"fleet", "priority/now"})
+		_, ok, ambiguous := s.LevelForLabels("lab", []string{"fleet", "priority/now"})
 		if ok || ambiguous {
 			t.Fatalf("LevelForLabels ok=%v ambiguous=%v on unlabelled input, want both false", ok, ambiguous)
 		}
 	})
 
 	t.Run("two different levels' labels at once is a conflict, not a pick", func(t *testing.T) {
-		_, ok, ambiguous := s.LevelForLabels([]string{"type/block", "type/work"})
+		_, ok, ambiguous := s.LevelForLabels("lab", []string{"type/block", "type/work"})
 		if ok {
 			t.Fatal("LevelForLabels silently picked one of two conflicting level labels")
 		}
@@ -102,11 +102,41 @@ func TestLevelForLabels(t *testing.T) {
 	})
 
 	t.Run("a seat's per-repo label is found via Accepts, not just the level's own", func(t *testing.T) {
-		lvl, ok, ambiguous := s.LevelForLabels([]string{"type/maquette"})
+		lvl, ok, ambiguous := s.LevelForLabels("lab", []string{"type/maquette"})
 		if ambiguous || !ok || s.Levels[lvl].Name != "seat" {
 			t.Fatalf("LevelForLabels(type/maquette) = %d, %v, %v, want the seat level", lvl, ok, ambiguous)
 		}
 	})
+
+	// The defect an audit of this feature found: a label match must be scoped
+	// exactly as tightly as the title pattern it stands in for. type/maquette's
+	// Accepts entry names "lab" specifically; a node in a third repo carrying
+	// that label must fall through, exactly as its title ("maquette: ...")
+	// would have failed to match there too.
+	t.Run("a label scoped to another repo does not match here", func(t *testing.T) {
+		_, ok, ambiguous := s.LevelForLabels("harness", []string{"type/maquette"})
+		if ok || ambiguous {
+			t.Fatalf("LevelForLabels(harness, type/maquette) = ok=%v ambiguous=%v, want both false -- "+
+				"type/maquette is lab-scoped and harness is a different repo", ok, ambiguous)
+		}
+	})
+
+	t.Run("the same repo-scoped label matches its own repo", func(t *testing.T) {
+		lvl, ok, ambiguous := s.LevelForLabels("doctrine", []string{"type/seat"})
+		if ambiguous || !ok || s.Levels[lvl].Name != "seat" {
+			t.Fatalf("LevelForLabels(doctrine, type/seat) = %d, %v, %v, want the seat level", lvl, ok, ambiguous)
+		}
+	})
+}
+
+// The same repo-scoping gap, on the non-root path: Assign must not let a
+// label from one repo's convention satisfy a candidate declared for another.
+func TestAssignDoesNotHonourALabelFromTheWrongRepo(t *testing.T) {
+	s := labelledLevels()
+	if lvl, ok := s.Assign(0, "harness", "no seat convention in this title at all", []string{"type/maquette"}); ok {
+		t.Fatalf("Assign(harness, ..., type/maquette) = %d, true -- "+
+			"type/maquette is lab-scoped and must not satisfy a harness-repo node", lvl)
+	}
 }
 
 // THE DEFECT THIS EXISTS TO CATCH. A bundle or a loose work issue filed
@@ -163,7 +193,7 @@ func TestNilStructureChecksNothing(t *testing.T) {
 	if _, ok := s.Assign(0, "anything", "anything", nil); ok {
 		t.Error("a nil structure assigned a level; it must have no opinion at all")
 	}
-	if _, ok, ambiguous := s.LevelForLabels([]string{"type/block"}); ok || ambiguous {
+	if _, ok, ambiguous := s.LevelForLabels("anything", []string{"type/block"}); ok || ambiguous {
 		t.Error("a nil structure resolved a label to a level; it must have no opinion at all")
 	}
 	if err := s.validate(nil); err != nil {

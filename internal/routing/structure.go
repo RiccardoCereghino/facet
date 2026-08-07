@@ -127,6 +127,15 @@ func (s *Structure) Assign(parentLevel int, repoKey, title string, labels []stri
 		labelled := lvl.Label != "" && have[lvl.Label]
 		if !labelled {
 			for _, m := range lvl.Accepts {
+				// A label declared on one shape is scoped exactly as tightly as
+				// that shape's title pattern -- the seat level's type/seat is
+				// stele-only and type/maquette is lab-workspaces-only, the same
+				// way "^seat: " only ever matched a stele title. Skipping this
+				// check would let a label from one repo's convention satisfy a
+				// candidate meant only for another.
+				if m.Repo != "" && m.Repo != repoKey {
+					continue
+				}
 				if m.Label != "" && have[m.Label] {
 					labelled = true
 					break
@@ -149,10 +158,15 @@ func (s *Structure) Assign(parentLevel int, repoKey, title string, labels []stri
 // carrying that level's own Label (or one of its Accepts' Labels) asserts it
 // directly, out of band from position.
 //
+// repoKey scopes an Accepts entry's label exactly as tightly as its title
+// pattern already is -- the seat level's type/seat is stele-only and
+// type/maquette is lab-workspaces-only, and a label match must honour that
+// the same way title matching always has.
+//
 // ok is false when no declared level's label is present. ambiguous is true
 // when labels for more than one DIFFERENT level are present at once -- a real
 // data conflict the caller must not silently resolve by picking one.
-func (s *Structure) LevelForLabels(labels []string) (level int, ok bool, ambiguous bool) {
+func (s *Structure) LevelForLabels(repoKey string, labels []string) (level int, ok bool, ambiguous bool) {
 	if s == nil {
 		return 0, false, false
 	}
@@ -165,6 +179,9 @@ func (s *Structure) LevelForLabels(labels []string) (level int, ok bool, ambiguo
 		hit := lvl.Label != "" && have[lvl.Label]
 		if !hit {
 			for _, m := range lvl.Accepts {
+				if m.Repo != "" && m.Repo != repoKey {
+					continue
+				}
 				if m.Label != "" && have[m.Label] {
 					hit = true
 					break
