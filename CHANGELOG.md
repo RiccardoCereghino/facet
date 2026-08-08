@@ -6,6 +6,59 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **A tree is read conditionally, so re-reading an unchanged one costs nothing.**
+  The walk asked GitHub for a node's children, then asked again for each child —
+  hundreds of sequential requests, **84% of the wall clock spent waiting** with
+  the CPU idle. Now the reads of a level run together, and every one of them is
+  conditional.
+
+  **THE BILL, NOT THE CLOCK, TURNED OUT TO BE THE BINDING CONSTRAINT — and it
+  points the opposite way to the obvious fix.** GitHub charges a GraphQL query
+  for the nodes it *could* return rather than the ones it does, against a
+  separate 5,000-points-an-hour budget, and possible nodes **multiply down
+  nesting levels**. A single query nested four rungs deep was measured at ~1,790
+  points to return 89 nodes, and a whole walk that way at **4,651 points — 93% of
+  the hour, for one walk.** Faster, and unaffordable.
+
+  **The two APIs have separate budgets and only one can be asked conditionally.**
+  GraphQL has no conditional-request mechanism at all, so it bills the same
+  answer in full every time, for ever. A REST request that answers **304 Not
+  Modified costs zero**. So the reads moved to REST: `sub_issues` returns whole
+  child objects, which is everything a walk needs about a child, and it carries
+  an ETag.
+
+  Measured on a 160-node tree. **One GraphQL point per walk remains and is not
+  none** — an issue's *parent* has no REST endpoint at all, so the root's climb
+  stays GraphQL. Every per-node read moved:
+
+  | | requests | GraphQL | wall |
+  | --- | --- | --- | --- |
+  | before | ~160 GraphQL | ~3,360 points | 60.8s |
+  | cold | 161 REST | **1 point** | 4.7s |
+  | **immediately repeated, unchanged** | **0 REST** | **1 point** | 4.6s |
+
+  `deps ready` over the same tree went from **91.9s to 6.6s**, reporting an
+  identical ready set, with its dependency reads gathered together and each
+  distinct blocker resolved once instead of once per edge.
+
+  **A walk that runs out of budget does not fail, it SHORTENS.** Measured: with
+  15 points left, the walk printed 49 of 160 nodes, exited zero and wrote nothing
+  to stderr — and every consumer downstream then filters a short tree and reports
+  confidently on it. That is why the budget is treated as a correctness property
+  here rather than a courtesy.
+
+  **The cache cannot serve stale data**, because it never decides freshness
+  itself: GitHub decides by answering 304, and a 200 replaces the entry outright.
+  There is no expiry to tune and no staleness window to get wrong. An entry
+  carrying no ETag is unusable and is ignored rather than served.
+
+  **The traversal is untouched.** The reading-ahead wraps the source rather than
+  replacing the walk, so order, cycle handling, the depth limit and every error
+  message stay where they were — and a differential test walks the same fixture
+  both ways and requires the reported trees to be identical.
+
 ### Added
 
 - **A grouping nobody is working can be placed in the tree, without inventing a

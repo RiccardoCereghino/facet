@@ -109,6 +109,17 @@ func (n *Node) Tier() (tier string, found []string) {
 // appears twice in one report if two branches reach it, but an issue that is
 // its own ancestor would spin forever.
 func Walk(src Source, ref ghx.IssueRef, maxDepth int, route *routing.Routing) (*Node, error) {
+	// Warm the child reads first, a level at a time. Everything below is
+	// unchanged: this only decides WHEN a child list is read, never what it
+	// says, so the order, the cycle handling, the depth limit and every error
+	// message stay exactly where they were.
+	return walkFrom(newPrefetch(src, ref, maxDepth), ref, maxDepth, route)
+}
+
+// walkFrom is the traversal itself, with no reading-ahead. Walk is this plus
+// the prefetch, and a test compares the two to prove the prefetch changed
+// nothing about what is reported.
+func walkFrom(src Source, ref ghx.IssueRef, maxDepth int, route *routing.Routing) (*Node, error) {
 	root, err := node(src, ref, 0, route)
 	if err != nil {
 		return nil, err

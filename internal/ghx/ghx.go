@@ -184,20 +184,6 @@ func runStdin(in []byte, args ...string) ([]byte, error) {
 	return stdout.Bytes(), nil
 }
 
-// ViewIssue fetches one issue.
-func (CLI) ViewIssue(repo string, number int) (*Issue, error) {
-	out, err := run("issue", "view", fmt.Sprint(number), "--repo", repo,
-		"--json", "number,title,body,url,state,labels,assignees")
-	if err != nil {
-		return nil, err
-	}
-	var iss Issue
-	if err := json.Unmarshal(out, &iss); err != nil {
-		return nil, fmt.Errorf("parse issue %s#%d: %w", repo, number, err)
-	}
-	return &iss, nil
-}
-
 // DevelopBranch creates an issue-linked branch and returns its name. If the
 // branch already exists, gh reports it and we treat that as success.
 func (CLI) DevelopBranch(repo string, number int, base, name string) (string, error) {
