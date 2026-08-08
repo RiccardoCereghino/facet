@@ -8,43 +8,55 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- **A tree is read in a handful of requests instead of one per node**, by reading
-  many issues at once by alias. The walk asked GitHub for a node's children,
-  then asked again for each child — hundreds of sequential requests, **84% of the
-  wall clock spent waiting** with the CPU idle. Each blocking edge now arrives
-  with the blocker's **own state**, ending a second N+1: a blocker holding ten
-  issues was fetched ten times, because the edge and the state came from
-  different requests.
+- **A tree is read conditionally, so re-reading an unchanged one costs nothing.**
+  The walk asked GitHub for a node's children, then asked again for each child —
+  hundreds of sequential requests, **84% of the wall clock spent waiting** with
+  the CPU idle. Now the reads of a level run together, and every one of them is
+  conditional.
 
-  **THE BILL, NOT THE CLOCK, IS THE BINDING CONSTRAINT — and it points the
-  opposite way to the obvious fix.** GitHub charges a GraphQL query for the nodes
-  it *could* return rather than the ones it does, against 5,000 points an hour,
-  and possible nodes **multiply down nesting levels while they only add across
-  aliases**. So a single query nested four rungs deep is billed ~179,000 nodes to
-  return 89 — about 1,790 points, three of which exhaust the hour. Reading a
-  level at a time, batched, bills roughly a node's worth per node.
+  **THE BILL, NOT THE CLOCK, TURNED OUT TO BE THE BINDING CONSTRAINT — and it
+  points the opposite way to the obvious fix.** GitHub charges a GraphQL query
+  for the nodes it *could* return rather than the ones it does, against a
+  separate 5,000-points-an-hour budget, and possible nodes **multiply down
+  nesting levels**. A single query nested four rungs deep was measured at ~1,790
+  points to return 89 nodes, and a whole walk that way at **4,651 points — 93% of
+  the hour, for one walk.** Faster, and unaffordable.
 
-  **A walk that runs out does not fail, it SHORTENS.** Measured: with 15 points
-  left, the walk printed 49 of 160 nodes, exited zero and wrote nothing to
-  stderr — and every consumer downstream then filters a short tree and reports
-  confidently on it. Staying under the cap is therefore a correctness property,
-  and a test holds a walk's billed cost to a stated budget without spending any
-  of it, since the arithmetic is the whole model and no reader can check it by
-  looking at the query.
+  **The two APIs have separate budgets and only one can be asked conditionally.**
+  GraphQL has no conditional-request mechanism at all, so it bills the same
+  answer in full every time, for ever. A REST request that answers **304 Not
+  Modified costs zero**. So the reads moved to REST: `sub_issues` returns whole
+  child objects, which is everything a walk needs about a child, and it carries
+  an ETag.
 
-  **The walk itself is untouched.** The bulk read is an optional capability
-  discovered by type assertion, and it wraps the source rather than replacing the
-  traversal — so order, cycle handling, the depth limit and every error message
-  stay where they were, and a source without the capability is not asked. A
-  differential test walks the same fixture both ways and requires the reported
-  trees to be identical, including when every connection comes back short.
+  Measured on a 160-node tree — **the walk no longer touches the GraphQL budget
+  at all:**
 
-  **A short read is never used.** Children, labels and blockers are each paged,
-  and a truncated one of any kind falls back to the per-node read rather than
-  being taken for the whole answer. Labels matter most and least obviously: a
-  node's level is derived from a `type/*` label, so a label list cut short does
-  not fail — it assigns a **different level**, and the report looks well formed
-  afterwards.
+  | | requests | GraphQL | wall |
+  | --- | --- | --- | --- |
+  | before | ~160 GraphQL | ~3,360 points | 60.8s |
+  | cold | 161 REST | **0** | 4.7s |
+  | **immediately repeated, unchanged** | **0** | **0** | 4.6s |
+
+  `deps ready` over the same tree went from **91.9s to 6.6s**, reporting an
+  identical ready set, with its dependency reads gathered together and each
+  distinct blocker resolved once instead of once per edge.
+
+  **A walk that runs out of budget does not fail, it SHORTENS.** Measured: with
+  15 points left, the walk printed 49 of 160 nodes, exited zero and wrote nothing
+  to stderr — and every consumer downstream then filters a short tree and reports
+  confidently on it. That is why the budget is treated as a correctness property
+  here rather than a courtesy.
+
+  **The cache cannot serve stale data**, because it never decides freshness
+  itself: GitHub decides by answering 304, and a 200 replaces the entry outright.
+  There is no expiry to tune and no staleness window to get wrong. An entry
+  carrying no ETag is unusable and is ignored rather than served.
+
+  **The traversal is untouched.** The reading-ahead wraps the source rather than
+  replacing the walk, so order, cycle handling, the depth limit and every error
+  message stay where they were — and a differential test walks the same fixture
+  both ways and requires the reported trees to be identical.
 
 ### Added
 

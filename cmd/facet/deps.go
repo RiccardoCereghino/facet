@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 
 	"github.com/spf13/cobra"
 
@@ -208,15 +209,26 @@ func runDepsReady(w io.Writer, gh depsGH, ref ghx.IssueRef) error {
 	}
 	_ = route
 
-	var ready, blocked int
+	// Read every edge and every blocker's state FIRST, together. One at a time
+	// this was the whole cost of the command once the walk itself stopped
+	// being: ~34 seconds of waiting for reads that cost nothing and do not
+	// depend on each other.
+	var live []*tree.Node
 	for _, n := range root.Descendants() {
 		if n.Err != nil || n.IsClosed() {
 			continue
 		}
-		open, err := openBlockers(gh, n)
-		if err != nil {
-			return err
-		}
+		live = append(live, n)
+	}
+	edges, err := blockerEdges(gh, live)
+	if err != nil {
+		return err
+	}
+	blockerState := blockerStates(gh, edges)
+
+	var ready, blocked int
+	for _, n := range live {
+		open := openBlockers(edges[n.Ref.String()], blockerState)
 		if len(open) > 0 {
 			blocked++
 			continue
@@ -228,44 +240,97 @@ func runDepsReady(w io.Writer, gh depsGH, ref ghx.IssueRef) error {
 	return nil
 }
 
-// openBlockers names what is still in this node's way.
-//
-// It prefers the edges the walk already read, WITH each blocker's own state --
-// that read costs nothing extra and it deduplicates, where asking per edge
-// fetched a blocker once for every issue it held. The per-edge path stays for
-// any node the bulk read did not cover, and it is the same code it always was:
-// an unreadable blocker counts as open, because calling something ready on a
-// blocker nobody could read is the one wrong answer here.
-func openBlockers(gh depsGH, n *tree.Node) ([]string, error) {
-	var open []string
-	if n.BlockersKnown {
-		for _, b := range n.BlockedBy {
-			switch {
-			case b.State == "":
-				open = append(open, b.Ref.String()+" (unreadable)")
-			case !strings.EqualFold(b.State, "CLOSED"):
-				open = append(open, b.Ref.String())
-			}
+// depsWidth is how many dependency reads run at once. They are conditional
+// REST reads: an unchanged one costs nothing, so latency is the only cost left
+// and running them together is what removes it.
+const depsWidth = 24
+
+// blockerEdges reads every node's blocked-by edges, together.
+func blockerEdges(gh depsGH, nodes []*tree.Node) (map[string][]ghx.IssueRef, error) {
+	out := make([]([]ghx.IssueRef), len(nodes))
+	errs := make([]error, len(nodes))
+	sem := make(chan struct{}, depsWidth)
+	var wg sync.WaitGroup
+	for i, n := range nodes {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			out[i], errs[i] = gh.BlockedBy(n.Ref.OwnerRepo(), n.Ref.Number)
+		}()
+	}
+	wg.Wait()
+
+	edges := make(map[string][]ghx.IssueRef, len(nodes))
+	for i, n := range nodes {
+		if errs[i] != nil {
+			return nil, errs[i]
 		}
-		return open, nil
+		edges[n.Ref.String()] = out[i]
+	}
+	return edges, nil
+}
+
+// blockerStates resolves each DISTINCT blocker once.
+//
+// A blocker holding ten issues was read ten times: the edge and the state came
+// from different calls and nothing remembered the second. An empty state means
+// the blocker could not be read, which is deliberately not the same as closed.
+func blockerStates(gh depsGH, edges map[string][]ghx.IssueRef) map[string]string {
+	seen := map[string]ghx.IssueRef{}
+	for _, refs := range edges {
+		for _, r := range refs {
+			seen[r.String()] = r
+		}
+	}
+	distinct := make([]ghx.IssueRef, 0, len(seen))
+	for _, r := range seen {
+		distinct = append(distinct, r)
 	}
 
-	blockers, err := gh.BlockedBy(n.Ref.OwnerRepo(), n.Ref.Number)
-	if err != nil {
-		return nil, err
+	states := make([]string, len(distinct))
+	sem := make(chan struct{}, depsWidth)
+	var wg sync.WaitGroup
+	for i, r := range distinct {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			if iss, err := gh.ViewIssue(r.OwnerRepo(), r.Number); err == nil && iss != nil {
+				states[i] = iss.State
+			}
+		}()
 	}
+	wg.Wait()
+
+	out := make(map[string]string, len(distinct))
+	for i, r := range distinct {
+		out[r.String()] = states[i]
+	}
+	return out
+}
+
+// openBlockers names what is still in this node's way. Pure: everything it
+// reads was gathered above.
+//
+// An unreadable blocker counts as OPEN. Calling something ready on a blocker
+// nobody could read is the one wrong answer available here -- unknown is not
+// absent.
+func openBlockers(blockers []ghx.IssueRef, state map[string]string) []string {
+	var open []string
 	for _, b := range blockers {
-		iss, err := gh.ViewIssue(b.OwnerRepo(), b.Number)
-		if err != nil {
-			// Refuse to call something ready on an unreadable blocker.
+		st := state[b.String()]
+		if st == "" {
 			open = append(open, b.String()+" (unreadable)")
 			continue
 		}
-		if iss != nil && !strings.EqualFold(iss.State, "CLOSED") {
+		if !strings.EqualFold(st, "CLOSED") {
 			open = append(open, b.String())
 		}
 	}
-	return open, nil
+	return open
 }
 
 func walkDeps(gh depsGH, ref ghx.IssueRef) (*tree.Node, *routing.Routing, error) {

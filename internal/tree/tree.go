@@ -78,17 +78,6 @@ type Node struct {
 	// inaccessible issue must not blank out the rest of a tree, and a partial
 	// answer that says which part is missing beats no answer.
 	Err error
-
-	// BlockedBy is what must land before this node can start, carried with
-	// each blocker's own state, when the source could answer it alongside the
-	// tree. BlockersKnown tells "none" from "not read" -- and they are
-	// opposite answers, since only one of them means ready.
-	//
-	// Reading them here rather than per node afterwards is what stops the
-	// second N+1: a blocker holding ten issues was fetched ten times, because
-	// the edge and the state came from different requests.
-	BlockedBy     []ghx.Blocker
-	BlockersKnown bool
 }
 
 // IsClosed reports whether the issue is closed.
@@ -120,13 +109,17 @@ func (n *Node) Tier() (tier string, found []string) {
 // appears twice in one report if two branches reach it, but an issue that is
 // its own ancestor would spin forever.
 func Walk(src Source, ref ghx.IssueRef, maxDepth int, route *routing.Routing) (*Node, error) {
-	// Read the tree in bulk first, where the source can. Everything below is
-	// unchanged: this only decides where a child list comes from, so the
-	// order, the cycle handling, the depth limit and every error message stay
-	// the walk's. A source without the capability is not asked and nothing
-	// here notices.
-	src = newPrefetch(src, ref, maxDepth)
+	// Warm the child reads first, a level at a time. Everything below is
+	// unchanged: this only decides WHEN a child list is read, never what it
+	// says, so the order, the cycle handling, the depth limit and every error
+	// message stay exactly where they were.
+	return walkFrom(newPrefetch(src, ref, maxDepth), ref, maxDepth, route)
+}
 
+// walkFrom is the traversal itself, with no reading-ahead. Walk is this plus
+// the prefetch, and a test compares the two to prove the prefetch changed
+// nothing about what is reported.
+func walkFrom(src Source, ref ghx.IssueRef, maxDepth int, route *routing.Routing) (*Node, error) {
 	root, err := node(src, ref, 0, route)
 	if err != nil {
 		return nil, err
@@ -155,22 +148,7 @@ func Walk(src Source, ref ghx.IssueRef, maxDepth int, route *routing.Routing) (*
 	}
 	path := map[string]bool{ref.String(): true}
 	descend(src, root, maxDepth, route, path)
-	if p, ok := src.(*prefetch); ok {
-		attachBlockers(root, p)
-	}
 	return root, nil
-}
-
-// attachBlockers hands each node the blocking edges the bulk read already
-// returned. A node the batch did not cover is left BlockersKnown false rather
-// than empty, because "nothing blocks this" and "nobody asked" are the two
-// answers a readiness report must never confuse.
-func attachBlockers(root *Node, p *prefetch) {
-	for _, n := range append([]*Node{root}, root.Descendants()...) {
-		if b, ok := p.Blockers(n.Ref.OwnerRepo(), n.Ref.Number); ok {
-			n.BlockedBy, n.BlockersKnown = b, true
-		}
-	}
 }
 
 func descend(src Source, parent *Node, maxDepth int, route *routing.Routing, path map[string]bool) {
