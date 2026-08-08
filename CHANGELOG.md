@@ -6,6 +6,43 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **A tree is read in a handful of requests instead of one per node.** The walk
+  asked GitHub for a node's children, then asked again for each child, and so on
+  — hundreds of sequential requests, **84% of the wall clock spent waiting** with
+  the CPU idle. GraphQL returns the same tree nested, so the fix is **fewer
+  calls, not concurrent ones**: ten-way concurrency would have reached a tenth of
+  the time, where one query reaches a hundredth. Each blocking edge now arrives
+  with the blocker's **own state**, which also ends a second N+1 — a blocker
+  holding ten issues was fetched ten times, because the edge and the state came
+  from different requests.
+
+  **The walk itself is untouched.** The bulk read is an optional capability
+  discovered by type assertion, and it wraps the source rather than replacing the
+  traversal — so order, cycle handling, the depth limit and every error message
+  stay exactly where they were, and a source without the capability is simply not
+  asked. A differential test walks the same fixture both ways and requires the
+  reported trees to be identical, across page sizes and depths that force both
+  incomplete cases.
+
+  **Two limits shape it, and both were measured rather than assumed.** The node
+  budget is **multiplicative across nesting**, so page size and depth trade
+  against each other and neither can be raised alone — five rungs at these page
+  sizes is rejected outright. And **one query is not the whole tree**: a
+  connection that is not exhausted, or a node below the deepest rung asked for,
+  has children the response does not contain. A response therefore records what
+  it could *not* see and the caller finishes the job — a truncated connection by
+  paging that node, an unreached one by asking for its subtree, which are
+  opposite remedies. **A walk that stopped at the first response would look a
+  hundred times faster while silently losing most of a real tree.**
+
+  A partial response is an answer, not a failure: `gh` exits non-zero whenever
+  the payload carries an errors array, which for one query covering a whole tree
+  would turn a single unreadable issue into total failure — where the per-node
+  walk contained it to that node. Anything that resolved is kept; anything that
+  did not is reported as unreadable, exactly as before.
+
 ### Added
 
 - **A grouping nobody is working can be placed in the tree, without inventing a

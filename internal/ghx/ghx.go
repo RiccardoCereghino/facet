@@ -163,6 +163,33 @@ var _ Client = CLI{}
 
 func run(args ...string) ([]byte, error) { return runStdin(nil, args...) }
 
+// runTolerant returns gh's stdout ALONGSIDE the failure rather than instead of
+// it, for the one caller that can still use a partial answer.
+//
+// GraphQL answers a query that partly failed with both a data object and an
+// errors array, and gh exits non-zero when it sees the latter. Every other
+// caller here covers one node, so discarding the body costs nothing. A query
+// covering a whole tree is different: throwing the body away would turn one
+// unreadable issue into a total failure, where the per-node walk contained it
+// to that node.
+func runTolerant(args ...string) ([]byte, error) {
+	cmd := exec.Command("gh", args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err == nil {
+		return stdout.Bytes(), nil
+	}
+	msg := strings.TrimSpace(stderr.String())
+	if msg == "" {
+		msg = err.Error()
+	}
+	// The body comes back WITH the error. Whether any of it is usable is the
+	// caller's judgement, not this function's.
+	return stdout.Bytes(), fmt.Errorf("gh %s: %s", strings.Join(args, " "), msg)
+}
+
 // runStdin runs gh with stdin wired to in, which is how anything long or
 // arbitrary -- an issue body -- reaches gh. Passing it as an argument would hit
 // the command-line length limit and force us to quote someone's markdown.

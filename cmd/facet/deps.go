@@ -213,21 +213,9 @@ func runDepsReady(w io.Writer, gh depsGH, ref ghx.IssueRef) error {
 		if n.Err != nil || n.IsClosed() {
 			continue
 		}
-		blockers, err := gh.BlockedBy(n.Ref.OwnerRepo(), n.Ref.Number)
+		open, err := openBlockers(gh, n)
 		if err != nil {
 			return err
-		}
-		var open []string
-		for _, b := range blockers {
-			iss, err := gh.ViewIssue(b.OwnerRepo(), b.Number)
-			if err != nil {
-				// Refuse to call something ready on an unreadable blocker.
-				open = append(open, b.String()+" (unreadable)")
-				continue
-			}
-			if iss != nil && !strings.EqualFold(iss.State, "CLOSED") {
-				open = append(open, b.String())
-			}
 		}
 		if len(open) > 0 {
 			blocked++
@@ -238,6 +226,46 @@ func runDepsReady(w io.Writer, gh depsGH, ref ghx.IssueRef) error {
 	}
 	_, _ = fmt.Fprintf(w, "\n%d ready, %d still blocked\n", ready, blocked)
 	return nil
+}
+
+// openBlockers names what is still in this node's way.
+//
+// It prefers the edges the walk already read, WITH each blocker's own state --
+// that read costs nothing extra and it deduplicates, where asking per edge
+// fetched a blocker once for every issue it held. The per-edge path stays for
+// any node the bulk read did not cover, and it is the same code it always was:
+// an unreadable blocker counts as open, because calling something ready on a
+// blocker nobody could read is the one wrong answer here.
+func openBlockers(gh depsGH, n *tree.Node) ([]string, error) {
+	var open []string
+	if n.BlockersKnown {
+		for _, b := range n.BlockedBy {
+			switch {
+			case b.State == "":
+				open = append(open, b.Ref.String()+" (unreadable)")
+			case !strings.EqualFold(b.State, "CLOSED"):
+				open = append(open, b.Ref.String())
+			}
+		}
+		return open, nil
+	}
+
+	blockers, err := gh.BlockedBy(n.Ref.OwnerRepo(), n.Ref.Number)
+	if err != nil {
+		return nil, err
+	}
+	for _, b := range blockers {
+		iss, err := gh.ViewIssue(b.OwnerRepo(), b.Number)
+		if err != nil {
+			// Refuse to call something ready on an unreadable blocker.
+			open = append(open, b.String()+" (unreadable)")
+			continue
+		}
+		if iss != nil && !strings.EqualFold(iss.State, "CLOSED") {
+			open = append(open, b.String())
+		}
+	}
+	return open, nil
 }
 
 func walkDeps(gh depsGH, ref ghx.IssueRef) (*tree.Node, *routing.Routing, error) {
