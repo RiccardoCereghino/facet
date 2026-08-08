@@ -223,11 +223,19 @@ func convertSubtree(n subtreeNode) SubTree {
 	if n.BlockedBy != nil {
 		out.BlockersComplete = !n.BlockedBy.PageInfo.HasNextPage
 		for _, b := range n.BlockedBy.Nodes {
-			if b.Repository == nil {
-				continue
+			owner, name := "", ""
+			if b.Repository != nil {
+				var ok bool
+				owner, name, ok = strings.Cut(b.Repository.NameWithOwner, "/")
+				if !ok {
+					owner, name = "", ""
+				}
 			}
-			owner, name, ok := strings.Cut(b.Repository.NameWithOwner, "/")
-			if !ok {
+			if owner == "" || name == "" {
+				// An edge that came back unidentifiable. DROPPING IT WOULD
+				// READ AS READY, so the list stops being a list and the
+				// caller re-reads it the paged way.
+				out.BlockersComplete = false
 				continue
 			}
 			out.BlockedBy = append(out.BlockedBy, Blocker{
@@ -246,8 +254,18 @@ func convertSubtree(n subtreeNode) SubTree {
 	}
 	out.ConnectionSeen = true
 	for _, c := range n.SubIssues.Nodes {
-		out.Children = append(out.Children, convertSubtree(c))
+		child := convertSubtree(c)
+		if child.Ref.Owner == "" || child.Ref.Repo == "" {
+			// A child nobody can name cannot be walked, reported against, or
+			// told apart from one that is simply absent. Treat the whole list
+			// as short so the paged read names it in the ordinary place.
+			out.MoreChildren = true
+			continue
+		}
+		out.Children = append(out.Children, child)
 	}
-	out.MoreChildren = n.SubIssues.PageInfo.HasNextPage
+	if n.SubIssues.PageInfo.HasNextPage {
+		out.MoreChildren = true
+	}
 	return out
 }

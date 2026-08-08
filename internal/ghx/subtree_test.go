@@ -112,13 +112,37 @@ func TestParseSubtreeKeepsWhatResolvedAlongsideErrors(t *testing.T) {
 	if st.Title != "commission 1" {
 		t.Fatalf("the resolved part was discarded: %+v", st)
 	}
-	if len(st.Children) != 2 {
-		t.Fatalf("children = %d, want 2 -- the unresolved one must still be reported", len(st.Children))
+	// The entry that resolved is kept.
+	if len(st.Children) != 1 || st.Children[0].Ref.String() != "acme/doctrine#282" {
+		t.Fatalf("children = %+v, want just the one that resolved", st.Children)
 	}
-	// An unresolved node carries no state, which is the convention the walk
-	// already reads as "unreadable" rather than inventing a second one.
-	if st.Children[1].State != "" {
-		t.Errorf("an unresolved node came back with a state: %+v", st.Children[1])
+	// And the one that did not is NOT silently gone: the list says it is
+	// short, so the caller re-reads it the paged way, where an unreadable
+	// child already has a representation that can name itself. Carrying it
+	// here would mean a node with no owner, repo or number to print.
+	if !st.MoreChildren {
+		t.Error("an entry that did not resolve was dropped and the list still called itself complete")
+	}
+}
+
+// A node that resolved ENOUGH TO BE NAMED but not fully is a different case,
+// and it keeps the convention the walk already reads: no state means
+// unreadable. Only a node that cannot be named at all falls back to paging.
+func TestAChildThatCanBeNamedIsCarriedAsUnreadable(t *testing.T) {
+	st := mustParse(t, `{"data":{"repository":{"issue":{
+      "number":46,"repository":{"nameWithOwner":"acme/lab"},
+      "subIssuesSummary":{"total":1},
+      "subIssues":{"pageInfo":{"hasNextPage":false},"nodes":[
+        {"number":99,"title":"","state":"","repository":{"nameWithOwner":"acme/harness"}}]}}}}}`)
+
+	if len(st.Children) != 1 || st.Children[0].Ref.String() != "acme/harness#99" {
+		t.Fatalf("children = %+v, want the nameable one carried", st.Children)
+	}
+	if st.Children[0].State != "" {
+		t.Errorf("an unresolved node came back with a state: %+v", st.Children[0])
+	}
+	if st.MoreChildren {
+		t.Error("a nameable-but-unreadable child made the whole list read as short")
 	}
 }
 
@@ -176,4 +200,34 @@ func mustParse(t *testing.T, payload string) *SubTree {
 		t.Fatal("parseSubtree returned nothing")
 	}
 	return st
+}
+
+// An edge or a child that came back unidentifiable must not be DROPPED.
+// Silently losing one reads as "nothing blocks this" and "no more children" --
+// both of which are the answer that lets work through.
+func TestAnUnidentifiableEntryMakesTheListIncompleteRatherThanShort(t *testing.T) {
+	t.Run("a blocker with no repository", func(t *testing.T) {
+		st := mustParse(t, `{"data":{"repository":{"issue":{
+          "number":46,"repository":{"nameWithOwner":"acme/lab"},
+          "blockedBy":{"pageInfo":{"hasNextPage":false},"nodes":[
+            {"number":9,"state":"OPEN","repository":{"nameWithOwner":"acme/harness"}},
+            {"number":0,"state":"","repository":null}]},
+          "subIssuesSummary":{"total":0}}}}}`)
+		if st.BlockersComplete {
+			t.Error("an unresolvable blocker was dropped and the list still called itself complete")
+		}
+	})
+
+	t.Run("a child with no repository", func(t *testing.T) {
+		st := mustParse(t, `{"data":{"repository":{"issue":{
+          "number":46,"repository":{"nameWithOwner":"acme/lab"},
+          "subIssuesSummary":{"total":2},
+          "subIssues":{"pageInfo":{"hasNextPage":false},"nodes":[
+            {"number":282,"state":"OPEN","repository":{"nameWithOwner":"acme/doctrine"},
+             "subIssuesSummary":{"total":0}},
+            {"number":0,"state":"","repository":null}]}}}}}`)
+		if !st.MoreChildren {
+			t.Error("an unnameable child was dropped and the list still called itself complete")
+		}
+	})
 }
