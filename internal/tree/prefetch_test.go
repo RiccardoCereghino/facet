@@ -8,72 +8,71 @@ import (
 	"github.com/RiccardoCereghino/facet/internal/ghx"
 )
 
-// batchedSource is a Source that ALSO answers whole subtrees, built from the
-// same scripted data the per-node fake serves. Its page size and reach are
-// deliberately small so both incomplete cases happen on a tiny fixture:
-// connections truncate, and nodes sit below what one query reaches.
-type batchedSource struct {
+// batchFake is a Source that ALSO reads many issues at once, built from the
+// same scripted data the per-node fake serves. Its page limits are settable so
+// every short-read case can be forced on a tiny fixture.
+type batchFake struct {
 	*fakeSource
-	page  int
-	reach int
+	childPage   int // 0 means unlimited
+	labelPage   int
+	blockerPage int
+	blockers    map[string][]ghx.Blocker
+	fail        bool
 
-	subtreeCalls  int
+	batchCalls    int
+	widest        int
 	childrenCalls int
 }
 
-func (b *batchedSource) IssueChildren(repo string, number int) ([]ghx.SubIssue, error) {
+func newBatchFake(f *fakeSource) *batchFake {
+	return &batchFake{fakeSource: f, blockers: map[string][]ghx.Blocker{}}
+}
+
+func (b *batchFake) IssueChildren(repo string, number int) ([]ghx.SubIssue, error) {
 	b.childrenCalls++
 	return b.fakeSource.IssueChildren(repo, number)
 }
 
-func (b *batchedSource) IssueSubtree(repo string, number, depth int) (*ghx.SubTree, error) {
-	b.subtreeCalls++
-	if depth > b.reach {
-		depth = b.reach
+func (b *batchFake) IssueNodes(refs []ghx.IssueRef) ([]ghx.NodeFields, error) {
+	if b.fail {
+		return nil, fmt.Errorf("the batch read is unavailable")
 	}
-	owner, name, _ := strings.Cut(repo, "/")
-	ref := ghx.IssueRef{Owner: owner, Repo: name, Number: number}
-	st := b.build(ref, depth)
-	if st == nil {
-		return nil, fmt.Errorf("%s#%d: no such issue", repo, number)
+	b.batchCalls++
+	if len(refs) > b.widest {
+		b.widest = len(refs)
 	}
-	return st, nil
-}
 
-func (b *batchedSource) build(ref ghx.IssueRef, depth int) *ghx.SubTree {
-	k := key(ref.OwnerRepo(), ref.Number)
-	iss, ok := b.issues[k]
-	if !ok {
-		return nil
-	}
-	st := &ghx.SubTree{
-		Ref: ref, Title: iss.Title, State: iss.State, Labels: iss.LabelNames(),
-	}
-	kids := b.children[k]
-	if depth <= 1 {
-		// The query ran out of rungs here: the connection is absent entirely,
-		// and only the summary says whether anything is below.
-		st.MoreChildren = len(kids) > 0
-		return st
-	}
-	st.ConnectionSeen = true
-	for i, c := range kids {
-		if i >= b.page {
-			st.MoreChildren = true
-			break
+	out := make([]ghx.NodeFields, 0, len(refs))
+	for _, r := range refs {
+		k := key(r.OwnerRepo(), r.Number)
+		iss, ok := b.issues[k]
+		if !ok {
+			out = append(out, ghx.NodeFields{Ref: r, Unreadable: true})
+			continue
 		}
-		if child := b.build(c, depth-1); child != nil {
-			st.Children = append(st.Children, *child)
-		} else {
-			// Unreadable, carried the way the real query carries it: no state.
-			st.Children = append(st.Children, ghx.SubTree{Ref: c})
+		f := ghx.NodeFields{
+			Ref: r, Title: iss.Title, State: iss.State,
+			LabelsComplete: true, BlockersComplete: true, ChildrenComplete: true,
 		}
+		f.Labels = iss.LabelNames()
+		if b.labelPage > 0 && len(f.Labels) > b.labelPage {
+			f.Labels, f.LabelsComplete = f.Labels[:b.labelPage], false
+		}
+		f.BlockedBy = b.blockers[k]
+		if b.blockerPage > 0 && len(f.BlockedBy) > b.blockerPage {
+			f.BlockedBy, f.BlockersComplete = f.BlockedBy[:b.blockerPage], false
+		}
+		f.Children = b.children[k]
+		if b.childPage > 0 && len(f.Children) > b.childPage {
+			f.Children, f.ChildrenComplete = f.Children[:b.childPage], false
+		}
+		out = append(out, f)
 	}
-	return st
+	return out, nil
 }
 
 // render flattens a walked tree to everything a report can read off it, so two
-// trees can be compared as a whole rather than field by field -- a comparison
+// trees are compared as a whole rather than field by field -- a comparison
 // that checks three fields passes while a fourth silently diverges.
 func render(n *Node, depth int) string {
 	var sb strings.Builder
@@ -88,10 +87,10 @@ func render(n *Node, depth int) string {
 
 // wide is a tree BROAD as well as deep. wellFormed has at most one child per
 // node, so no page size can ever truncate it -- a differential run against it
-// exercises the truncation path zero times while passing, which is the shape
-// of a healthy-looking count that proved nothing.
+// exercises the short-read paths zero times while passing, which is exactly
+// the shape of a healthy-looking count that proved nothing.
 func wide() *fakeSource {
-	f := &fakeSource{
+	return &fakeSource{
 		issues: map[string]*ghx.Issue{
 			"acme/lab#46":       issue("commission 1", "OPEN"),
 			"acme/doctrine#282": issue("seat: c1-structure", "OPEN"),
@@ -99,7 +98,7 @@ func wide() *fakeSource {
 			"acme/doctrine#284": issue("seat: c1-third", "OPEN"),
 			"acme/lab#75":       issue("the commands", "OPEN", "complexity/3"),
 			"acme/lab#76":       issue("the other bundle", "OPEN", "complexity/2"),
-			"acme/harness#121":  issue("the work", "OPEN", "complexity/1"),
+			"acme/harness#121":  issue("the work", "OPEN", "complexity/1", "area/ci", "fleet"),
 			"acme/harness#122":  issue("more work", "OPEN", "complexity/1"),
 			"acme/harness#123":  issue("yet more work", "OPEN", "complexity/1"),
 		},
@@ -117,31 +116,35 @@ func wide() *fakeSource {
 			},
 		},
 	}
-	return f
 }
 
 // !! THE DIFFERENTIAL. !! The batched path must produce the tree the per-node
 // walk produces -- same nodes, same order, same levels, same error states. A
 // faster walk that quietly reports a different tree is the failure this whole
-// change has to avoid, and it is not one a timing check can catch.
+// change exists to avoid, and no timing check can catch it.
 func TestBatchedAndPerNodeWalksAgree(t *testing.T) {
 	route := routeWithStructure()
-
 	fixtures := map[string]func() *fakeSource{"narrow": wellFormed, "wide": wide}
-	for _, tt := range []struct{ page, reach int }{
-		{page: 100, reach: 100}, // everything in one answer
-		{page: 2, reach: 100},   // connections truncate
-		{page: 1, reach: 100},   // every connection truncates
-		{page: 100, reach: 2},   // nothing nests far enough
-		{page: 1, reach: 1},     // both at once, the worst case
+
+	for _, tt := range []struct {
+		name                             string
+		childPage, labelPage, blockerPag int
+	}{
+		{name: "everything complete"},
+		{name: "children truncate at one", childPage: 1},
+		{name: "children truncate at two", childPage: 2},
+		{name: "labels truncate", labelPage: 1},
+		{name: "blockers truncate", blockerPag: 1},
+		{name: "everything truncates", childPage: 1, labelPage: 1, blockerPag: 1},
 	} {
 		for fname, fixture := range fixtures {
-			t.Run(fmt.Sprintf("%s/page=%d/reach=%d", fname, tt.page, tt.reach), func(t *testing.T) {
+			t.Run(fmt.Sprintf("%s/%s", fname, tt.name), func(t *testing.T) {
 				slow, err := Walk(fixture(), ref("acme", "lab", 46), -1, route)
 				if err != nil {
 					t.Fatalf("per-node walk: %v", err)
 				}
-				b := &batchedSource{fakeSource: fixture(), page: tt.page, reach: tt.reach}
+				b := newBatchFake(fixture())
+				b.childPage, b.labelPage, b.blockerPage = tt.childPage, tt.labelPage, tt.blockerPag
 				fast, err := Walk(b, ref("acme", "lab", 46), -1, route)
 				if err != nil {
 					t.Fatalf("batched walk: %v", err)
@@ -149,7 +152,7 @@ func TestBatchedAndPerNodeWalksAgree(t *testing.T) {
 				if got, want := render(fast, 0), render(slow, 0); got != want {
 					t.Errorf("the batched walk reports a different tree.\n--- per-node ---\n%s\n--- batched ---\n%s", want, got)
 				}
-				if b.subtreeCalls == 0 {
+				if b.batchCalls == 0 {
 					t.Error("the batched path was never used, so this proved nothing")
 				}
 			})
@@ -157,45 +160,52 @@ func TestBatchedAndPerNodeWalksAgree(t *testing.T) {
 	}
 }
 
-// The point of the whole change: when one answer covers the tree, the walk
-// stops asking per node.
-func TestOneAnswerCostsOneRequest(t *testing.T) {
-	b := &batchedSource{fakeSource: wellFormed(), page: 100, reach: 100}
-	if _, err := Walk(b, ref("acme", "lab", 46), -1, routeWithStructure()); err != nil {
+// A TRUNCATED LABEL LIST IS THE DANGEROUS ONE, and it is why the label page
+// size is generous rather than cheap. A node's level is derived from its
+// type/* label, so a label list cut short does not fail -- it assigns a
+// DIFFERENT LEVEL, and the report looks perfectly well formed afterwards.
+func TestATruncatedLabelListNeverReachesTheTree(t *testing.T) {
+	route := routeWithStructure()
+	slow, err := Walk(wide(), ref("acme", "lab", 46), -1, route)
+	if err != nil {
 		t.Fatalf("Walk: %v", err)
 	}
-	if b.subtreeCalls != 1 {
-		t.Errorf("IssueSubtree called %d time(s), want exactly 1", b.subtreeCalls)
+
+	b := newBatchFake(wide())
+	b.labelPage = 1 // acme/harness#121 carries three labels
+	fast, err := Walk(b, ref("acme", "lab", 46), -1, route)
+	if err != nil {
+		t.Fatalf("Walk: %v", err)
 	}
-	if b.childrenCalls != 0 {
-		t.Errorf("IssueChildren called %d time(s) despite a complete batch, want 0", b.childrenCalls)
+	if got, want := render(fast, 0), render(slow, 0); got != want {
+		t.Errorf("a short label list reached the tree.\n--- want ---\n%s\n--- got ---\n%s", want, got)
+	}
+	if b.childrenCalls == 0 {
+		t.Error("nothing fell back to the per-node read, so the short list was simply used")
 	}
 }
 
-// A truncated connection is finished by PAGING that node, not by asking for
-// its subtree again -- which would return the same first page forever and
-// leave the rest of the tree unread while looking fast.
-func TestATruncatedConnectionIsPagedAndNothingIsLost(t *testing.T) {
-	b := &batchedSource{fakeSource: wide(), page: 1, reach: 100}
-	fast, err := Walk(b, ref("acme", "lab", 46), -1, routeWithStructure())
-	if err != nil {
+// The point of the change: a LEVEL costs one request, not one per node.
+func TestALevelCostsOneRequest(t *testing.T) {
+	b := newBatchFake(wide())
+	if _, err := Walk(b, ref("acme", "lab", 46), -1, routeWithStructure()); err != nil {
 		t.Fatalf("Walk: %v", err)
 	}
-	slow, err := Walk(wide(), ref("acme", "lab", 46), -1, routeWithStructure())
-	if err != nil {
-		t.Fatalf("Walk: %v", err)
+	// Four rungs deep, so four rounds read all nine nodes.
+	if b.batchCalls > 4 {
+		t.Errorf("%d batch requests for a 4-rung tree, want at most 4", b.batchCalls)
 	}
-	if got, want := len(fast.Descendants()), len(slow.Descendants()); got != want {
-		t.Errorf("the batched walk found %d descendants, the per-node walk %d -- truncation lost nodes", got, want)
+	if b.widest < 3 {
+		t.Errorf("the widest batch carried %d issue(s); a level of three siblings must ride together", b.widest)
 	}
-	if b.childrenCalls == 0 {
-		t.Error("a truncated connection was never paged, so nothing completed it")
+	if b.childrenCalls != 0 {
+		t.Errorf("IssueChildren called %d time(s) despite complete batches, want 0", b.childrenCalls)
 	}
 }
 
 // A source with no batching capability is not asked, and the walk is exactly
-// what it always was. This is what keeps the per-node path a real fallback
-// rather than dead code nobody would notice rotting.
+// what it always was. This keeps the per-node path a real fallback rather than
+// dead code nobody would notice rotting.
 func TestASourceWithoutTheCapabilityIsUntouched(t *testing.T) {
 	src := wellFormed()
 	if _, err := Walk(src, ref("acme", "lab", 46), -1, routeWithStructure()); err != nil {
@@ -206,15 +216,16 @@ func TestASourceWithoutTheCapabilityIsUntouched(t *testing.T) {
 	}
 }
 
-// A batch that FAILS must cost correctness nothing: every node it did not
-// cover falls through to the read that has always worked.
+// A batch that FAILS must cost correctness nothing: everything falls through
+// to the read that has always worked.
 func TestAFailedBatchFallsBackToThePerNodeWalk(t *testing.T) {
-	b := &failingBatch{fakeSource: wellFormed()}
+	b := newBatchFake(wide())
+	b.fail = true
 	fast, err := Walk(b, ref("acme", "lab", 46), -1, routeWithStructure())
 	if err != nil {
 		t.Fatalf("a failed batch broke the walk: %v", err)
 	}
-	slow, err := Walk(wellFormed(), ref("acme", "lab", 46), -1, routeWithStructure())
+	slow, err := Walk(wide(), ref("acme", "lab", 46), -1, routeWithStructure())
 	if err != nil {
 		t.Fatalf("Walk: %v", err)
 	}
@@ -223,70 +234,44 @@ func TestAFailedBatchFallsBackToThePerNodeWalk(t *testing.T) {
 	}
 }
 
-type failingBatch struct{ *fakeSource }
-
-func (f *failingBatch) IssueSubtree(string, int, int) (*ghx.SubTree, error) {
-	return nil, fmt.Errorf("the bulk read is unavailable")
-}
-
 // Blockers arrive with the tree, carrying each blocker's own state -- and a
-// node the batch did not cover reports NOT KNOWN rather than none, because
-// only one of those two means ready.
-func TestBlockersArriveWithTheTreeAndAbsenceIsNotNone(t *testing.T) {
-	b := &blockerBatch{fakeSource: wellFormed()}
-	root, err := Walk(b, ref("acme", "lab", 46), -1, routeWithStructure())
+// TRUNCATED list reports not-known rather than none, because answering from
+// the edges that fitted on one page is how a node with more blockers than a
+// page holds comes to read as ready.
+func TestBlockersArriveWithTheTreeAndAShortListIsNotNone(t *testing.T) {
+	full := newBatchFake(wide())
+	full.blockers["acme/lab#46"] = []ghx.Blocker{
+		{Ref: ref("acme", "harness", 9), State: "OPEN"},
+		{Ref: ref("acme", "harness", 10), State: "CLOSED"},
+	}
+	root, err := Walk(full, ref("acme", "lab", 46), -1, routeWithStructure())
 	if err != nil {
 		t.Fatalf("Walk: %v", err)
 	}
 	if !root.BlockersKnown {
-		t.Fatal("the root's blockers were read with the tree and reported unknown")
+		t.Fatal("blockers were read with the tree and reported unknown")
 	}
-	if len(root.BlockedBy) != 1 || root.BlockedBy[0].State != "OPEN" {
-		t.Fatalf("root blockers = %+v, want one carrying its own state", root.BlockedBy)
+	if len(root.BlockedBy) != 2 || root.BlockedBy[0].State != "OPEN" {
+		t.Fatalf("blockers = %+v, want both, carrying their own states", root.BlockedBy)
 	}
 
-	// A TRUNCATED blocker list is worse than none: answering from the edges
-	// that fitted on one page is how a node with six blockers reports ready.
-	// It must fall through to the paged read instead of being cached.
-	cut := &blockerBatch{fakeSource: wellFormed(), truncated: true}
-	root3, err := Walk(cut, ref("acme", "lab", 46), -1, routeWithStructure())
+	cut := newBatchFake(wide())
+	cut.blockers["acme/lab#46"] = full.blockers["acme/lab#46"]
+	cut.blockerPage = 1
+	root2, err := Walk(cut, ref("acme", "lab", 46), -1, routeWithStructure())
 	if err != nil {
 		t.Fatalf("Walk: %v", err)
 	}
-	if root3.BlockersKnown {
-		t.Error("a truncated blocker list was reported as known -- a sixth open blocker would read as ready")
+	if root2.BlockersKnown {
+		t.Error("a truncated blocker list was reported as known -- a later open blocker would read as ready")
 	}
 
-	plain := &batchedSource{fakeSource: wellFormed(), page: 100, reach: 100}
-	root2, err := Walk(plain, ref("acme", "lab", 46), -1, routeWithStructure())
+	none := newBatchFake(wide())
+	root3, err := Walk(none, ref("acme", "lab", 46), -1, routeWithStructure())
 	if err != nil {
 		t.Fatalf("Walk: %v", err)
 	}
-	if len(root2.BlockedBy) != 0 {
-		t.Fatalf("blockers appeared from nowhere: %+v", root2.BlockedBy)
+	if len(root3.BlockedBy) != 0 {
+		t.Fatalf("blockers appeared from nowhere: %+v", root3.BlockedBy)
 	}
-}
-
-type blockerBatch struct {
-	*fakeSource
-	truncated bool
-}
-
-func (b *blockerBatch) IssueSubtree(repo string, number, _ int) (*ghx.SubTree, error) {
-	owner, name, _ := strings.Cut(repo, "/")
-	r := ghx.IssueRef{Owner: owner, Repo: name, Number: number}
-	iss := b.issues[key(repo, number)]
-	if iss == nil {
-		return nil, fmt.Errorf("%s#%d: no such issue", repo, number)
-	}
-	st := &ghx.SubTree{
-		Ref: r, Title: iss.Title, State: iss.State, Labels: iss.LabelNames(),
-		ConnectionSeen: true,
-		BlockedBy: []ghx.Blocker{
-			{Ref: ghx.IssueRef{Owner: "acme", Repo: "harness", Number: 9}, State: "OPEN"},
-		},
-		BlockersComplete: !b.truncated,
-	}
-	// Children left unlisted and unmarked: a leaf as far as this batch says.
-	return st, nil
 }

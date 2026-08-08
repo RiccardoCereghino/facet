@@ -8,40 +8,43 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- **A tree is read in a handful of requests instead of one per node.** The walk
-  asked GitHub for a node's children, then asked again for each child, and so on
-  — hundreds of sequential requests, **84% of the wall clock spent waiting** with
-  the CPU idle. GraphQL returns the same tree nested, so the fix is **fewer
-  calls, not concurrent ones**: ten-way concurrency would have reached a tenth of
-  the time, where one query reaches a hundredth. Each blocking edge now arrives
-  with the blocker's **own state**, which also ends a second N+1 — a blocker
-  holding ten issues was fetched ten times, because the edge and the state came
-  from different requests.
+- **A tree is read in a handful of requests instead of one per node**, by reading
+  many issues at once by alias. The walk asked GitHub for a node's children,
+  then asked again for each child — hundreds of sequential requests, **84% of the
+  wall clock spent waiting** with the CPU idle. Each blocking edge now arrives
+  with the blocker's **own state**, ending a second N+1: a blocker holding ten
+  issues was fetched ten times, because the edge and the state came from
+  different requests.
+
+  **THE BILL, NOT THE CLOCK, IS THE BINDING CONSTRAINT — and it points the
+  opposite way to the obvious fix.** GitHub charges a GraphQL query for the nodes
+  it *could* return rather than the ones it does, against 5,000 points an hour,
+  and possible nodes **multiply down nesting levels while they only add across
+  aliases**. So a single query nested four rungs deep is billed ~179,000 nodes to
+  return 89 — about 1,790 points, three of which exhaust the hour. Reading a
+  level at a time, batched, bills roughly a node's worth per node.
+
+  **A walk that runs out does not fail, it SHORTENS.** Measured: with 15 points
+  left, the walk printed 49 of 160 nodes, exited zero and wrote nothing to
+  stderr — and every consumer downstream then filters a short tree and reports
+  confidently on it. Staying under the cap is therefore a correctness property,
+  and a test holds a walk's billed cost to a stated budget without spending any
+  of it, since the arithmetic is the whole model and no reader can check it by
+  looking at the query.
 
   **The walk itself is untouched.** The bulk read is an optional capability
   discovered by type assertion, and it wraps the source rather than replacing the
   traversal — so order, cycle handling, the depth limit and every error message
-  stay exactly where they were, and a source without the capability is simply not
-  asked. A differential test walks the same fixture both ways and requires the
-  reported trees to be identical, across page sizes and depths that force both
-  incomplete cases.
+  stay where they were, and a source without the capability is not asked. A
+  differential test walks the same fixture both ways and requires the reported
+  trees to be identical, including when every connection comes back short.
 
-  **Two limits shape it, and both were measured rather than assumed.** The node
-  budget is **multiplicative across nesting**, so page size and depth trade
-  against each other and neither can be raised alone — five rungs at these page
-  sizes is rejected outright. And **one query is not the whole tree**: a
-  connection that is not exhausted, or a node below the deepest rung asked for,
-  has children the response does not contain. A response therefore records what
-  it could *not* see and the caller finishes the job — a truncated connection by
-  paging that node, an unreached one by asking for its subtree, which are
-  opposite remedies. **A walk that stopped at the first response would look a
-  hundred times faster while silently losing most of a real tree.**
-
-  A partial response is an answer, not a failure: `gh` exits non-zero whenever
-  the payload carries an errors array, which for one query covering a whole tree
-  would turn a single unreadable issue into total failure — where the per-node
-  walk contained it to that node. Anything that resolved is kept; anything that
-  did not is reported as unreadable, exactly as before.
+  **A short read is never used.** Children, labels and blockers are each paged,
+  and a truncated one of any kind falls back to the per-node read rather than
+  being taken for the whole answer. Labels matter most and least obviously: a
+  node's level is derived from a `type/*` label, so a label list cut short does
+  not fail — it assigns a **different level**, and the report looks well formed
+  afterwards.
 
 ### Added
 
