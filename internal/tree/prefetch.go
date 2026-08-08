@@ -83,12 +83,19 @@ func newPrefetch(src Source, root ghx.IssueRef, maxDepth int) Source {
 		blockers: map[string][]ghx.Blocker{},
 	}
 
+	depth := subtreeDepth
+	if maxDepth >= 0 && maxDepth+1 < depth {
+		// The walk will not descend past maxDepth, so reading deeper is a
+		// bigger query bought for nothing.
+		depth = maxDepth + 1
+	}
+
 	frontier := []ghx.IssueRef{root}
 	seen := map[string]bool{root.String(): true}
 	for round := 0; round < prefetchRounds && len(frontier) > 0; round++ {
 		var next []ghx.IssueRef
 		for _, ref := range frontier {
-			st, err := ss.IssueSubtree(ref.OwnerRepo(), ref.Number, subtreeDepth)
+			st, err := ss.IssueSubtree(ref.OwnerRepo(), ref.Number, depth)
 			if err != nil || st == nil {
 				// Leave it uncached; the walk will read it the old way and
 				// report whatever it finds in the ordinary place.
@@ -98,7 +105,6 @@ func newPrefetch(src Source, root ghx.IssueRef, maxDepth int) Source {
 		}
 		frontier = next
 	}
-	_ = maxDepth // the walk still enforces it; over-reading is only wasted work
 	return p
 }
 
@@ -124,7 +130,10 @@ func absorb(p *prefetch, st *ghx.SubTree, seen map[string]bool) []ghx.IssueRef {
 	var rec func(n *ghx.SubTree)
 	rec = func(n *ghx.SubTree) {
 		key := refKey(n.Ref.OwnerRepo(), n.Ref.Number)
-		if _, done := p.blockers[key]; !done {
+		// Only a COMPLETE blocker list may be cached. A truncated one is worse
+		// than none: it would answer "ready" from the blockers that fitted on
+		// one page, and the paged read that falls through is already correct.
+		if _, done := p.blockers[key]; !done && n.BlockersComplete {
 			p.blockers[key] = n.BlockedBy
 		}
 

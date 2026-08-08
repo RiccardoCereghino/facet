@@ -51,6 +51,12 @@ type SubTree struct {
 	BlockedBy []Blocker
 	Children  []SubTree
 
+	// BlockersComplete says every blocking edge is in BlockedBy. That
+	// connection is paged like any other, and a node with more blockers than
+	// one page holds would otherwise look READY on the strength of the five
+	// that fitted -- the one wrong answer a readiness report can give.
+	BlockersComplete bool
+
 	// MoreChildren says this node HAS children the response does not contain
 	// -- the connection was not exhausted, the node sat at the deepest rung
 	// asked for, or its children came back unresolved. Children is incomplete
@@ -159,6 +165,9 @@ type subtreeNode struct {
 		} `json:"nodes"`
 	} `json:"labels"`
 	BlockedBy *struct {
+		PageInfo struct {
+			HasNextPage bool `json:"hasNextPage"`
+		} `json:"pageInfo"`
 		Nodes []struct {
 			Number     int    `json:"number"`
 			State      string `json:"state"`
@@ -212,6 +221,7 @@ func convertSubtree(n subtreeNode) SubTree {
 		}
 	}
 	if n.BlockedBy != nil {
+		out.BlockersComplete = !n.BlockedBy.PageInfo.HasNextPage
 		for _, b := range n.BlockedBy.Nodes {
 			if b.Repository == nil {
 				continue

@@ -245,6 +245,18 @@ func TestBlockersArriveWithTheTreeAndAbsenceIsNotNone(t *testing.T) {
 		t.Fatalf("root blockers = %+v, want one carrying its own state", root.BlockedBy)
 	}
 
+	// A TRUNCATED blocker list is worse than none: answering from the edges
+	// that fitted on one page is how a node with six blockers reports ready.
+	// It must fall through to the paged read instead of being cached.
+	cut := &blockerBatch{fakeSource: wellFormed(), truncated: true}
+	root3, err := Walk(cut, ref("acme", "lab", 46), -1, routeWithStructure())
+	if err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+	if root3.BlockersKnown {
+		t.Error("a truncated blocker list was reported as known -- a sixth open blocker would read as ready")
+	}
+
 	plain := &batchedSource{fakeSource: wellFormed(), page: 100, reach: 100}
 	root2, err := Walk(plain, ref("acme", "lab", 46), -1, routeWithStructure())
 	if err != nil {
@@ -255,7 +267,10 @@ func TestBlockersArriveWithTheTreeAndAbsenceIsNotNone(t *testing.T) {
 	}
 }
 
-type blockerBatch struct{ *fakeSource }
+type blockerBatch struct {
+	*fakeSource
+	truncated bool
+}
 
 func (b *blockerBatch) IssueSubtree(repo string, number, _ int) (*ghx.SubTree, error) {
 	owner, name, _ := strings.Cut(repo, "/")
@@ -270,6 +285,7 @@ func (b *blockerBatch) IssueSubtree(repo string, number, _ int) (*ghx.SubTree, e
 		BlockedBy: []ghx.Blocker{
 			{Ref: ghx.IssueRef{Owner: "acme", Repo: "harness", Number: 9}, State: "OPEN"},
 		},
+		BlockersComplete: !b.truncated,
 	}
 	// Children left unlisted and unmarked: a leaf as far as this batch says.
 	return st, nil
