@@ -340,6 +340,29 @@ schema is worse than allowing the gap — and skipping stops at the first
 required rung, which is what catches a task filed straight under the programme
 with the record missing.
 
+An accepted shape may be matched **by label** as well as by title:
+
+```json
+{ "name": "record", "accepts": [
+    { "repo": "notes", "titlePattern": "^record: ", "label": "type/record" },
+    { "label": "type/backlog", "childMustBe": "bundle" }
+] }
+```
+
+With a `titlePattern` beside it the label is an **alternative** — either
+satisfies the shape, which is what lets an issue carrying no title convention
+still be placed. **With no `titlePattern`, the label is the test**, not merely
+what records the match: reading it as decorative would leave the shape
+admitting everything, and an unconstrained shape on a skippable rung silently
+absorbs the rung below it.
+
+`childMustBe` narrows what may sit under a node that matched **this** shape,
+which position alone cannot express because the shapes share a rung. Above, a
+record may hold a task directly while a backlog must have its tasks bundled
+first. It may only name a rung the children could already occupy — anything
+else is refused when the routing file loads, so a narrowing can remove a
+candidate and never introduce one.
+
 **Without a `structure` block, `doctor` checks no shape at all.** It still
 reports cycles, unreadable nodes, and a closed parent with open children, which
 are wrong on any tree's own terms, and it says when shape went unchecked rather

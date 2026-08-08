@@ -87,7 +87,7 @@ func TestLabelForUsesTheMatchedShape(t *testing.T) {
 		{"lab-workspaces", "maquette: the argano", "type/maquette"},
 	}
 	for _, tt := range tests {
-		got, ok := s.LabelFor(1, tt.repo, tt.title)
+		got, ok := s.LabelFor(1, tt.repo, tt.title, nil)
 		if !ok || got != tt.want {
 			t.Fatalf("LabelFor(seat, %s) = %q,%v want %q", tt.repo, got, ok, tt.want)
 		}
@@ -98,7 +98,7 @@ func TestLabelForUsesTheMatchedShape(t *testing.T) {
 // feature is additive and an adopter who wants none is not nagged.
 func TestNoDeclaredLabelsIsSilent(t *testing.T) {
 	s := &routing.Structure{Levels: []routing.Level{{Name: "commission"}, {Name: "issue"}}}
-	if _, ok := s.LabelFor(1, "gad", "x"); ok {
+	if _, ok := s.LabelFor(1, "gad", "x", nil); ok {
 		t.Fatal("a structure with no labels claimed one")
 	}
 	if ds := Doctor(labelNode("gad", 1, "work", 1), routeFor(s)); len(ds) != 0 {

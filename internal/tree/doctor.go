@@ -113,7 +113,7 @@ func levelNameAt(s *routing.Structure, i int) string {
 //     two sources of truth, which is the defect rather than the fix, so it is
 //     reported loudly and never silently corrected.
 func levelLabel(n *Node, s *routing.Structure, repoKey string) []Defect {
-	want, declared := s.LabelFor(n.Level, repoKey, n.Title)
+	want, declared := s.LabelFor(n.Level, repoKey, n.Title, n.Labels)
 	if !declared {
 		return nil
 	}
@@ -210,12 +210,17 @@ func structural(n *Node, s *routing.Structure) []Defect {
 			return out
 		}
 
-		// Derive the expectation from the parent's LEVEL, which is what the
-		// assignment actually used. Deriving it from depth instead produces a
-		// message naming the very level the node was just rejected for not
-		// matching, whenever a rung above has been skipped.
+		// Report the expectation the assignment ACTUALLY USED, recorded on the
+		// node at walk time. Re-deriving it here -- from depth, or even from
+		// the parent's rung -- produces a message naming levels the node was
+		// never judged against, whenever a rung above was skipped or the
+		// parent's shape narrowed what may sit below it.
+		cands := n.candidates
+		if cands == nil {
+			cands = s.ChildLevels(n.ParentLevel)
+		}
 		var want []string
-		for _, i := range s.ChildLevels(n.ParentLevel) {
+		for _, i := range cands {
 			want = append(want, s.Levels[i].Describe())
 		}
 		what := fmt.Sprintf("sits below %q, which may only hold %s",
@@ -272,7 +277,7 @@ func PlanBackfill(route *routing.Routing, nodes []*Node, apply func(repo string,
 			skipped++
 			continue
 		}
-		want, ok := route.Structure.LabelFor(n.Level, route.KeyForRepo(n.Ref.OwnerRepo()), n.Title)
+		want, ok := route.Structure.LabelFor(n.Level, route.KeyForRepo(n.Ref.OwnerRepo()), n.Title, n.Labels)
 		if !ok {
 			continue
 		}
