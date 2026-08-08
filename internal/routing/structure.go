@@ -186,9 +186,13 @@ func (s *Structure) AssignWithin(candidates []int, repoKey, title string, labels
 // caller holding the parent's repo, title and labels should use this, because
 // two shapes on one rung may permit different things below them.
 //
-// It can only ever REMOVE a candidate ChildLevels already returned. validate
-// proves every ChildMustBe names a level that rung's children could occupy, so
-// a narrowing cannot smuggle in a rung the structure does not permit.
+// THE RESULT IS ALWAYS A SUBSET OF ChildLevels, and may be empty. It can only
+// ever remove a candidate, never introduce one -- so a narrowing cannot smuggle
+// in a rung the structure does not permit, and that holds without relying on
+// validate() having run. validate() refuses a narrowing that names a rung the
+// children may not occupy, so the empty case is unreachable through Load; it
+// stays expressible here because failing closed is the only answer that keeps
+// the promise this comment makes.
 func (s *Structure) ChildLevelsFor(parentLevel int, repoKey, title string, labels []string) []int {
 	if s == nil {
 		return nil
@@ -203,15 +207,13 @@ func (s *Structure) ChildLevelsFor(parentLevel int, repoKey, title string, label
 			return []int{i}
 		}
 	}
-	// Unreachable through Load, which validates first. A hand-built Structure
-	// in a test must not have the narrowing silently ignored -- that would
-	// widen what is permitted, and this file's failures lean the other way.
-	for i, lvl := range s.Levels {
-		if lvl.Name == m.ChildMustBe {
-			return []int{i}
-		}
-	}
-	return out
+	// The narrowing names a rung these children may not occupy. validate()
+	// refuses that structure, so this is unreachable through Load -- but a
+	// hand-built one must not be answered by WIDENING back to out, and must
+	// not be answered by searching the whole ladder either: both would hand
+	// back a rung this parent never permitted, which is the one thing the
+	// invariant above promises cannot happen. Nothing is permitted instead.
+	return nil
 }
 
 // matchedShape reports which of a level's accepted shapes a node satisfies, so
@@ -394,8 +396,17 @@ func (l Level) Describe() string {
 	}
 	parts := make([]string, 0, len(l.Accepts))
 	for _, m := range l.Accepts {
+		// A shape with a label and NO title pattern is satisfied ONLY by that
+		// label, so describing it as "anything" is a refusal telling the reader
+		// the opposite of the rule it just enforced. With a pattern beside it
+		// the two are alternatives, and "or labelled" is then the truth.
+		labelIsTheTest := m.Label != "" && m.TitlePattern == ""
 		var part string
 		switch {
+		case labelIsTheTest && m.Repo != "":
+			part = fmt.Sprintf("labelled %s, in %s", m.Label, m.Repo)
+		case labelIsTheTest:
+			part = "labelled " + m.Label
 		case m.Repo != "" && m.TitlePattern != "":
 			part = fmt.Sprintf("%s matching %s", m.Repo, m.TitlePattern)
 		case m.Repo != "":
@@ -405,7 +416,7 @@ func (l Level) Describe() string {
 		default:
 			part = "anything"
 		}
-		if m.Label != "" {
+		if m.Label != "" && !labelIsTheTest {
 			part += fmt.Sprintf(" (or labelled %s)", m.Label)
 		}
 		parts = append(parts, part)

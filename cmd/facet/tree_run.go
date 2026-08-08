@@ -223,6 +223,16 @@ func refuseByStructure(gh treeGH, route *routing.Routing, child ghx.IssueRef, ch
 		want = append(want, s.Levels[i].Describe())
 	}
 	if len(want) == 0 {
+		// Two different reasons nothing may sit here, and they want different
+		// fixes: the parent is as deep as the ladder goes, or its own shape
+		// narrows its children to a rung it cannot actually hold. Saying the
+		// first about the second sends someone to re-parent a correct node.
+		if len(s.ChildLevels(level)) > 0 {
+			return fmt.Errorf("%s permits nothing below it: its shape narrows its children to a level they may not occupy\n"+
+				"  levels are: %s\n"+
+				"fix: correct childMustBe on that shape in the routing file -- `facet` refuses this structure at load, so it was built by hand",
+				parent, strings.Join(levelNames(route), " > "))
+		}
 		return fmt.Errorf("%s is at the deepest declared level, so nothing may hang below it\n"+
 			"  levels are: %s\n"+
 			"fix: attach %s further up the tree",

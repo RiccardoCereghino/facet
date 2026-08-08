@@ -436,3 +436,72 @@ func names(s *Structure, idx []int) []string {
 	}
 	return out
 }
+
+// Finding 2 (L1), c1-audit-tree on facet!136: the doc promises a narrowing
+// "can only ever REMOVE a candidate ChildLevels already returned", and the old
+// fallback searched the WHOLE ladder by name -- so it could hand back a rung
+// this parent never permitted, including one ABOVE it. Measured then:
+// ChildLevels(1) = [block issue] while ChildLevelsFor(1, ...) = [commission].
+//
+// validate() refuses such a structure, so it was never reachable through Load.
+// It is pinned anyway because that invariant is the argument the doc gives for
+// the whole mechanism being safe: a reader asking "can this smuggle in a rung?"
+// reads the comment, sees validate() cited, and stops reading.
+func TestANarrowingCanOnlyEverRemoveACandidate(t *testing.T) {
+	s := &Structure{Levels: []Level{
+		{Name: "commission"},
+		{Name: "holder", Accepts: []LevelMatch{
+			{Label: "type/backlog", ChildMustBe: "commission"}, // a rung ABOVE
+		}},
+		{Name: "block", Optional: true},
+		{Name: "issue"},
+	}}
+
+	within := s.ChildLevelsFor(1, "lab", "anything", []string{"type/backlog"})
+	permitted := map[int]bool{}
+	for _, i := range s.ChildLevels(1) {
+		permitted[i] = true
+	}
+	for _, i := range within {
+		if !permitted[i] {
+			t.Fatalf("narrowing produced level %q, which a child of %q may not occupy -- "+
+				"the result must always be a subset", s.Levels[i].Name, s.Levels[1].Name)
+		}
+	}
+
+	// And nothing may be assigned through it, rather than something wrong being.
+	if _, ok := s.AssignWithin(within, "lab", "some work", []string{"type/work"}); ok {
+		t.Error("a structure whose narrowing names an impossible rung still placed a child")
+	}
+}
+
+// A refusal must not describe a shape as accepting "anything" when the shape
+// is satisfied ONLY by a label. Found by reading a live refusal produced while
+// wiring the worked example: a grouping's children rendered as
+//
+//	must be block (a title matching ^block:, or anything (or labelled type/block))
+//
+// where the second shape accepts a labelled node and nothing else. A refusal
+// that misdescribes its own rule teaches the reader to force it.
+func TestDescribeDoesNotCallALabelOnlyShapeAnything(t *testing.T) {
+	l := Level{Name: "block", Accepts: []LevelMatch{
+		{TitlePattern: "^block:"},
+		{Label: "type/block"},
+	}}
+	got := l.Describe()
+	if strings.Contains(got, "anything") {
+		t.Errorf("a label-only shape is described as accepting anything:\n  %s", got)
+	}
+	if !strings.Contains(got, "labelled type/block") {
+		t.Errorf("the label the shape actually requires is not named:\n  %s", got)
+	}
+
+	// And where a title pattern IS present the two really are alternatives, so
+	// "or labelled" stays right.
+	both := Level{Name: "seat", Accepts: []LevelMatch{
+		{Repo: "doctrine", TitlePattern: "^seat: ", Label: "type/seat"},
+	}}
+	if !strings.Contains(both.Describe(), "or labelled type/seat") {
+		t.Errorf("an alternative label stopped being described as one:\n  %s", both.Describe())
+	}
+}
