@@ -17,6 +17,12 @@
 // GraphQL has no way to say so: it bills the full price for the same answer
 // twelve times an hour. Conditional REST bills it once.
 //
+// ONE GRAPHQL POINT PER WALK REMAINS, AND IT IS NOT "NONE". An issue's PARENT
+// has no REST endpoint at all, so LevelOf's climb is GraphQL and always will
+// be -- measured at exactly 1 point per walk, repeatably. Every PER-NODE read
+// moved; the root's single climb did not. Claiming "no GraphQL at all" was
+// wrong, and it is the kind of claim that stops anyone re-measuring.
+//
 // THE FAILURE THIS PREVENTS IS NOT SLOWNESS. A GraphQL budget that runs out
 // does not error the walk -- it SHORTENS it. Measured: with 15 points left, a
 // walk printed 49 of 160 nodes, exited zero and wrote nothing to stderr, and
@@ -178,10 +184,40 @@ func condGet(requestPath string) (condResult, error) {
 		return condResult{}, fmt.Errorf("%s: HTTP %d", requestPath, status)
 	}
 
-	if etag := headers["etag"]; etag != "" {
+	more := hasNextPage(headers["link"])
+	retainResponse(requestPath, headers["etag"], body, more)
+	return condResult{Body: body, More: more}, nil
+}
+
+// retainResponse decides what, if anything, this response leaves behind.
+//
+// A PARTIAL BODY IS NEVER CACHED, and any entry already held for the path is
+// dropped. The entry cannot carry "there were more pages": a 304 has NO Link
+// header, so that fact cannot survive the round trip -- and a later conditional
+// read would then serve page one as the whole answer, silently, with exit 0.
+// That is the very failure this file exists to remove, a short list that looks
+// complete, arriving by the cache instead of by the rate limit.
+//
+// The cost is that a paginated path is never cheap. It stays correct, which is
+// the half that may not be traded.
+//
+// Split out from condGet so the decision is testable without a live request:
+// it is one branch, and it was wrong once.
+func retainResponse(requestPath, etag string, body []byte, more bool) {
+	if more {
+		dropCache(requestPath)
+		return
+	}
+	if etag != "" {
 		writeCache(requestPath, cacheEntry{ETag: etag, Body: body})
 	}
-	return condResult{Body: body, More: hasNextPage(headers["link"])}, nil
+}
+
+// dropCache removes an entry, so nothing partial or superseded is ever held.
+func dropCache(requestPath string) {
+	if p, ok := cachePath(requestPath); ok {
+		_ = os.Remove(p)
+	}
 }
 
 // splitResponse pulls the status code, the headers and the body out of what

@@ -29,14 +29,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   child objects, which is everything a walk needs about a child, and it carries
   an ETag.
 
-  Measured on a 160-node tree — **the walk no longer touches the GraphQL budget
-  at all:**
+  Measured on a 160-node tree. **One GraphQL point per walk remains and is not
+  none** — an issue's *parent* has no REST endpoint at all, so the root's climb
+  stays GraphQL. Every per-node read moved:
 
   | | requests | GraphQL | wall |
   | --- | --- | --- | --- |
   | before | ~160 GraphQL | ~3,360 points | 60.8s |
-  | cold | 161 REST | **0** | 4.7s |
-  | **immediately repeated, unchanged** | **0** | **0** | 4.6s |
+  | cold | 161 REST | **1 point** | 4.7s |
+  | **immediately repeated, unchanged** | **0 REST** | **1 point** | 4.6s |
 
   `deps ready` over the same tree went from **91.9s to 6.6s**, reporting an
   identical ready set, with its dependency reads gathered together and each

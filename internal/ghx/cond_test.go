@@ -166,3 +166,47 @@ func TestA304IsAnAnswerEvenThoughGhCallsItAFailure(t *testing.T) {
 		t.Error("the ETag was lost, so the entry could never be refreshed")
 	}
 }
+
+// !! A PARTIAL BODY MUST NEVER BE CACHED. !! Found by c1-audit-tree on
+// facet!137, round 1, and it is the failure class this whole file exists to
+// remove, arriving by the cache instead of by the rate limit:
+//
+//  1. a 200 whose Link says rel="next" is page ONE; the caller falls back to a
+//     full paginated read, which is correct;
+//  2. but the partial body was written to the cache under the full path's key,
+//     with a valid ETag;
+//  3. the next walk sends If-None-Match, gets 304 -- and a 304 carries NO Link
+//     header, so "there were more pages" cannot survive the round trip;
+//  4. page one is returned as the whole child list. Exit 0, no warning.
+//
+// Latent when found -- the widest live node had 41 children against a page of
+// 100 -- and the tree only ever grows.
+func TestAPartialResponseIsNeverCached(t *testing.T) {
+	withTempCache(t)
+	const path = "repos/acme/lab/issues/46/sub_issues?per_page=100"
+
+	// A complete entry held from an earlier, smaller read.
+	writeCache(path, cacheEntry{ETag: `W/"complete"`, Body: []byte(`[{"number":1},{"number":2}]`)})
+	if _, ok := readCache(path); !ok {
+		t.Fatal("precondition: the complete entry was not stored")
+	}
+
+	// The node grows past one page: a 200 arrives carrying a next-page link.
+	retainResponse(path, `W/"page-one"`, []byte(`[{"number":1}]`), true)
+
+	if e, ok := readCache(path); ok {
+		t.Fatalf("an entry survived a paginated response (%d bytes, etag %s) -- "+
+			"a later 304 would serve it as the whole child list", len(e.Body), e.ETag)
+	}
+}
+
+// The other half: a COMPLETE response is cached, or nothing is ever cheap.
+func TestACompleteResponseIsCached(t *testing.T) {
+	withTempCache(t)
+	const path = "repos/acme/lab/issues/9/sub_issues?per_page=100"
+	retainResponse(path, `W/"whole"`, []byte(`[{"number":1}]`), false)
+	got, ok := readCache(path)
+	if !ok || got.ETag != `W/"whole"` {
+		t.Fatalf("a complete response was not cached: %+v ok=%v", got, ok)
+	}
+}
