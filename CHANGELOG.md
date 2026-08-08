@@ -8,6 +8,36 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A grouping nobody is working can be placed in the tree, without inventing a
+  node for a worker who does not exist.** Two rungs' worth of shapes may now
+  share one rung and permit different things below them, via `childMustBe` on an
+  accepted shape. The case it was built for: a rung under the root holding
+  either a live record of someone working, or a grouping filed for later — where
+  the first may hold work directly and the second must have its work bundled
+  first, because bundling is the whole reason it was filed. Position cannot tell
+  those apart, since position is exactly what they share.
+
+  `childMustBe` may only name a rung the children could already occupy;
+  anything else is refused when the routing file loads, so a narrowing removes a
+  candidate and never introduces one. A report names the candidates the node was
+  **actually judged against**, recorded at walk time rather than re-derived —
+  re-deriving them from the parent's rung names expectations the node was never
+  judged by, the same class of mistake as deriving them from depth.
+
+### Changed
+
+- **A label on an accepted shape is a matcher, not only a record.** With a
+  `titlePattern` beside it the two are alternatives, either sufficient. **With
+  no `titlePattern`, the label is the test** — previously such a shape was read
+  as "anything, recorded as this", so it admitted everything, and on a skippable
+  rung that meant the rung silently absorbed the one below it. Shapes carrying
+  both a repo and a title pattern are unaffected.
+
+- **A refusal from `tree wire` now offers labelling as a remedy**, alongside
+  re-parenting and retitling. Most issues carry no title convention, so for them
+  the printed fix could not be performed at all — and a refusal whose only
+  suggested remedy is impossible teaches the reader to force the edge instead.
+
 - **`tree` reads and writes GitHub's sub-issue graph** — `wire`, `show`,
   `list`, `status`, `doctor`, across repositories. **The hierarchy is optional
   and stays optional:** an issue with no parent is a valid issue, `spawn` never

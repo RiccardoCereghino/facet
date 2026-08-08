@@ -57,6 +57,14 @@ type Node struct {
 	ParentLevel int
 	HasParent   bool
 
+	// candidates is the exact set of levels this node was judged against,
+	// recorded rather than re-derived. It can be narrower than
+	// ChildLevels(ParentLevel) when the parent's own shape permits less below
+	// it than its rung alone would, and a report that re-derived the set from
+	// the rung would then name expectations the node was never judged by --
+	// the same class of mistake as deriving them from Depth, one level along.
+	candidates []int
+
 	Children []*Node
 
 	// LevelErr records that the node's POSITION could not be established --
@@ -192,7 +200,13 @@ func assign(child, parent *Node, route *routing.Routing) {
 	child.LevelKnown = true
 	child.ParentLevel, child.HasParent = parent.Level, true
 	key := route.KeyForRepo(child.Ref.OwnerRepo())
-	child.Level, child.Assigned = route.Structure.Assign(parent.Level, key, child.Title, child.Labels)
+	// The parent's own shape, not just its rung, decides what may sit below it.
+	// Every field that answers this is already on the parent node, so narrowing
+	// here costs no read.
+	parentKey := route.KeyForRepo(parent.Ref.OwnerRepo())
+	within := route.Structure.ChildLevelsFor(parent.Level, parentKey, parent.Title, parent.Labels)
+	child.candidates = within
+	child.Level, child.Assigned = route.Structure.AssignWithin(within, key, child.Title, child.Labels)
 }
 
 func node(src Source, ref ghx.IssueRef, depth int, _ *routing.Routing) (*Node, error) {
@@ -345,6 +359,11 @@ func LevelOf(src Source, route *routing.Routing, ref ghx.IssueRef, refLabels []s
 	// let a root be reported as, say, "block" -- only reading the label can.
 	rootRef := chain[len(chain)-1]
 	var rootLabels []string
+	// rootTitle is only ever read by the descent below, which runs when the
+	// chain is longer than one -- and that is exactly the case where the root
+	// is a different issue than ref and so is genuinely fetched. When ref IS
+	// the root there is nothing to descend and no title is needed.
+	var rootTitle string
 	if rootRef == ref {
 		rootLabels = refLabels
 	} else {
@@ -356,6 +375,7 @@ func LevelOf(src Source, route *routing.Routing, ref ghx.IssueRef, refLabels []s
 			return 0, false, fmt.Errorf("%s: no such issue", rootRef)
 		}
 		rootLabels = rootIss.LabelNames()
+		rootTitle = rootIss.Title
 	}
 
 	level := roots[0]
@@ -367,6 +387,9 @@ func LevelOf(src Source, route *routing.Routing, ref ghx.IssueRef, refLabels []s
 		level = lvl
 	}
 
+	// The descent carries the parent's identity, not just its level, because
+	// what may sit below a rung can depend on which shape the parent matched.
+	parentKey, parentTitle, parentLabels := route.KeyForRepo(rootRef.OwnerRepo()), rootTitle, rootLabels
 	for i := len(chain) - 2; i >= 0; i-- {
 		n := chain[i]
 		iss, err := src.ViewIssue(n.OwnerRepo(), n.Number)
@@ -376,11 +399,14 @@ func LevelOf(src Source, route *routing.Routing, ref ghx.IssueRef, refLabels []s
 		if iss == nil {
 			return 0, false, fmt.Errorf("%s: no such issue", n)
 		}
-		next, ok := s.Assign(level, route.KeyForRepo(n.OwnerRepo()), iss.Title, iss.LabelNames())
+		key := route.KeyForRepo(n.OwnerRepo())
+		within := s.ChildLevelsFor(level, parentKey, parentTitle, parentLabels)
+		next, ok := s.AssignWithin(within, key, iss.Title, iss.LabelNames())
 		if !ok {
 			return 0, false, nil
 		}
 		level = next
+		parentKey, parentTitle, parentLabels = key, iss.Title, iss.LabelNames()
 	}
 	return level, true, nil
 }

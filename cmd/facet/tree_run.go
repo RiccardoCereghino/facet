@@ -137,7 +137,7 @@ func recordLevel(w io.Writer, gh treeGH, route *routing.Routing, child ghx.Issue
 		_, _ = fmt.Fprintf(w, "  level not recorded: %s sits at no declared level\n", child)
 		return
 	}
-	label, ok := route.Structure.LabelFor(level, route.KeyForRepo(child.OwnerRepo()), ci.Title)
+	label, ok := route.Structure.LabelFor(level, route.KeyForRepo(child.OwnerRepo()), ci.Title, ci.LabelNames())
 	if !ok {
 		// A structure that declares no labels keeps working exactly as before.
 		return
@@ -210,12 +210,16 @@ func refuseByStructure(gh treeGH, route *routing.Routing, child ghx.IssueRef, ch
 	}
 
 	key := route.KeyForRepo(child.OwnerRepo())
-	if _, ok := s.Assign(level, key, childIssue.Title, childIssue.LabelNames()); ok {
+	// What the PARENT is, not merely what rung it sits on, decides what may sit
+	// below it -- two shapes can share a rung and permit different things.
+	parentKey := route.KeyForRepo(parent.OwnerRepo())
+	within := s.ChildLevelsFor(level, parentKey, parentIssue.Title, parentIssue.LabelNames())
+	if _, ok := s.AssignWithin(within, key, childIssue.Title, childIssue.LabelNames()); ok {
 		return nil
 	}
 
 	var want []string
-	for _, i := range s.ChildLevels(level) {
+	for _, i := range within {
 		want = append(want, s.Levels[i].Describe())
 	}
 	if len(want) == 0 {
@@ -224,10 +228,14 @@ func refuseByStructure(gh treeGH, route *routing.Routing, child ghx.IssueRef, ch
 			"fix: attach %s further up the tree",
 			parent, strings.Join(levelNames(route), " > "), child)
 	}
+	// The fix names LABELLING as well as retitling, because a level is recorded
+	// by a label and a node whose title carries no convention -- most of them --
+	// has no title to correct. A refusal whose only suggested remedy cannot be
+	// performed teaches the reader to force it instead.
 	return fmt.Errorf("%s cannot sit under %s\n"+
 		"  %s is %q in %s\n"+
 		"  a child of %s must be %s\n"+
-		"fix: attach it to a node one level up, or correct its title or repo",
+		"fix: attach it to a node one level up, or give it the level's label, or correct its title or repo",
 		child, parent,
 		child, childIssue.Title, child.OwnerRepo(),
 		parent, strings.Join(want, ", or "))

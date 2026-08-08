@@ -609,3 +609,141 @@ func TestCommentKindRefusalDoesNotRecommendAnUnanchoredPattern(t *testing.T) {
 		t.Errorf("the fix line does not warn about anchoring:\n%s", msg)
 	}
 }
+
+// backlogStructure is labelledFourLevelStructure with the shape facet#133
+// exists for: the rung under a commission accepts a grouping nobody is working
+// yet, told apart from a live seat by its label, and required to have its work
+// bundled first. The block rung is constrained so it stops absorbing the work
+// rung -- which is the fix Assign's own doc prescribes for a skippable rung
+// left unconstrained.
+const backlogStructure = `,
+	"structure": {"levels": [
+		{"name": "commission", "label": "type/commission"},
+		{"name": "holder", "requiresChildren": true,
+		 "accepts": [{"repo": "doctrine", "titlePattern": "^seat: ", "label": "type/seat"},
+		             {"label": "type/backlog", "childMustBe": "block"}]},
+		{"name": "block", "optional": true, "label": "type/block",
+		 "accepts": [{"titlePattern": "^block:"}, {"label": "type/block"}]},
+		{"name": "issue", "label": "type/work"}
+	]}`
+
+// backlogFake reproduces the live shape from facet#133: a commission, a
+// grouping nobody is working (labelled, with no title convention -- its real
+// title is "WIP seed: ..."), a bundle under it, and a work issue.
+func backlogFake() *treeFake {
+	f := &treeFake{issues: map[string]*ghx.Issue{
+		"acme/lab#46":      issueWith("commission 1", "complexity/3", "type/commission"),
+		"acme/lab#118":     issueWith("WIP seed: the core function", "complexity/3", "type/backlog"),
+		"acme/lab#117":     issueWith("block: the four filings", "complexity/2", "type/block"),
+		"acme/harness#121": issueWith("a session that reasons about a refusal", "complexity/1", "type/work"),
+	}}
+	f.parents = map[string]ghx.IssueRef{}
+	f.issueIDs = map[string]int64{
+		"acme/lab#118":     5049244560,
+		"acme/lab#117":     5049244561,
+		"acme/harness#121": 5049244562,
+	}
+	return f
+}
+
+// !! THE ISSUE'S OWN TITLE, AS A TEST. !! A grouping with no seat could not be
+// wired, so it stayed ungrouped -- and the six work issues under it were
+// invisible to every derivation that reads the tree.
+func TestTreeWireAcceptsAGroupingWithNoSeatUnderTheCommission(t *testing.T) {
+	withRouting(t, backlogStructure)
+	f := backlogFake()
+	var out bytes.Buffer
+
+	if err := runTreeWire(&out, f, iref("acme", "lab", 118), iref("acme", "lab", 46)); err != nil {
+		t.Fatalf("a grouping with no seat was refused under the commission: %v", err)
+	}
+	if len(f.addSubIssueCalls) != 1 {
+		t.Fatalf("the edge was not written: %d AddSubIssue call(s)", len(f.addSubIssueCalls))
+	}
+}
+
+// And the property that must survive it: no seat was invented to make that
+// work. A live seat is still the only thing that carries type/seat.
+func TestWiringAGroupingInventsNoSeat(t *testing.T) {
+	withRouting(t, backlogStructure)
+	f := backlogFake()
+	var out bytes.Buffer
+
+	if err := runTreeWire(&out, f, iref("acme", "lab", 118), iref("acme", "lab", 46)); err != nil {
+		t.Fatalf("wire: %v", err)
+	}
+	for _, c := range f.addedLabels {
+		if strings.Contains(c, "type/seat") {
+			t.Fatalf("wiring a grouping applied a seat label (%q) -- an open seat must keep meaning a live seat", c)
+		}
+	}
+}
+
+// The Sculptor's ruling: a grouping filed for later holds BLOCKS, because
+// grouping is the whole reason the shape exists. A bare work issue under it is
+// refused even though the same issue is fine one rung down.
+func TestTreeWireRefusesBareWorkUnderAGrouping(t *testing.T) {
+	withRouting(t, backlogStructure)
+	f := backlogFake()
+	f.parents["acme/lab#118"] = iref("acme", "lab", 46)
+	var out bytes.Buffer
+
+	err := runTreeWire(&out, f, iref("acme", "harness", 121), iref("acme", "lab", 118))
+	if err == nil {
+		t.Fatal("a bare work issue was wired straight under a grouping, with nothing bundling it")
+	}
+	if !strings.Contains(err.Error(), "block") {
+		t.Errorf("the refusal does not name what is expected instead:\n%s", err)
+	}
+	if len(f.addSubIssueCalls) != 0 {
+		t.Error("the edge was written despite the refusal")
+	}
+}
+
+// The same work issue, one rung down, is fine -- proving the refusal above is
+// about the missing bundle and not about the work.
+func TestTreeWireAcceptsWorkUnderABlockUnderAGrouping(t *testing.T) {
+	withRouting(t, backlogStructure)
+	f := backlogFake()
+	f.parents["acme/lab#118"] = iref("acme", "lab", 46)
+	f.parents["acme/lab#117"] = iref("acme", "lab", 118)
+	var out bytes.Buffer
+
+	if err := runTreeWire(&out, f, iref("acme", "harness", 121), iref("acme", "lab", 117)); err != nil {
+		t.Fatalf("work under a bundle under a grouping was refused: %v", err)
+	}
+}
+
+// A live seat is NOT narrowed: it may still hold work directly, which is the
+// shape live trees already use and the reason the bundle rung could not simply
+// be made required instead.
+func TestASeatMayStillHoldWorkDirectly(t *testing.T) {
+	withRouting(t, backlogStructure)
+	f := backlogFake()
+	f.issues["acme/doctrine#282"] = issueWith("seat: c1-tree", "complexity/3", "type/seat")
+	f.issueIDs["acme/doctrine#282"] = 5049244563
+	f.parents["acme/doctrine#282"] = iref("acme", "lab", 46)
+	var out bytes.Buffer
+
+	if err := runTreeWire(&out, f, iref("acme", "harness", 121), iref("acme", "doctrine", 282)); err != nil {
+		t.Fatalf("work directly under a live seat was refused: %v", err)
+	}
+}
+
+// The refusal's fix line named retitling and re-parenting only. Most issues
+// carry no title convention at all, so for them the printed remedy could not
+// be performed -- which teaches the reader to force the edge instead.
+func TestTreeWireRefusalOffersLabellingAsAFix(t *testing.T) {
+	withRouting(t, backlogStructure)
+	f := backlogFake()
+	f.parents["acme/lab#118"] = iref("acme", "lab", 46)
+	var out bytes.Buffer
+
+	err := runTreeWire(&out, f, iref("acme", "harness", 121), iref("acme", "lab", 118))
+	if err == nil {
+		t.Fatal("expected a refusal")
+	}
+	if !strings.Contains(err.Error(), "label") {
+		t.Errorf("the fix line offers no remedy a node with no title convention can perform:\n%s", err)
+	}
+}

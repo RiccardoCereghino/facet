@@ -72,7 +72,31 @@ type LevelMatch struct {
 	// same "seat" level is `seat: …` in stele and `maquette: …` in
 	// lab-workspaces, and those are recorded as type/seat and type/maquette.
 	// Deriving the label from the level NAME could not express that.
+	//
+	// A LABEL WITH NO TitlePattern BESIDE IT IS THE TEST, NOT JUST THE RECORD.
+	// With a title pattern present the two are alternatives -- either satisfies
+	// the shape. With none, there is no other test left, and reading the label
+	// as merely decorative would make the shape admit everything: an
+	// unconstrained shape is how a rung silently absorbs the one below it.
+	// Repo still scopes the shape either way.
 	Label string `json:"label,omitempty"`
+	// ChildMustBe names the one level a child may occupy when THIS shape is
+	// what matched, overriding the optional-skipping ChildLevels would
+	// otherwise allow. Empty means no narrowing, which is every shape that
+	// does not ask for it.
+	//
+	// It exists because two shapes sharing a rung can legitimately want
+	// different things below them. A rung holding either a live seat or a
+	// triage grouping is the case that produced it: a seat may hold work
+	// directly -- a bundle of one is just the work -- while a grouping filed
+	// for later must have its work grouped into a bundle first, because
+	// grouping is the whole reason that shape exists. Position alone cannot
+	// tell the two apart, since position is exactly what they share.
+	//
+	// The narrowing must name a level the rung's children could already
+	// occupy; validate refuses anything else, so this can only ever remove a
+	// candidate and never introduce one.
+	ChildMustBe string `json:"childMustBe,omitempty"`
 }
 
 // ChildLevels returns the level indices a child of a node at parentLevel may
@@ -118,35 +142,107 @@ func (s *Structure) Assign(parentLevel int, repoKey, title string, labels []stri
 	if s == nil {
 		return 0, false
 	}
+	return s.AssignWithin(s.ChildLevels(parentLevel), repoKey, title, labels)
+}
+
+// AssignWithin is Assign against a candidate set the caller has already
+// narrowed, which is what a caller holding the PARENT's identity can do and
+// Assign cannot: ChildLevels knows only a rung index, so it cannot see that one
+// shape sharing that rung permits less below it than another does.
+//
+// Assign remains the answer whenever the parent is just a level.
+func (s *Structure) AssignWithin(candidates []int, repoKey, title string, labels []string) (level int, ok bool) {
+	if s == nil {
+		return 0, false
+	}
 	have := make(map[string]bool, len(labels))
 	for _, l := range labels {
 		have[l] = true
 	}
-	for _, i := range s.ChildLevels(parentLevel) {
-		lvl := s.Levels[i]
-		labelled := lvl.Label != "" && have[lvl.Label]
-		if !labelled {
-			for _, m := range lvl.Accepts {
-				// A label declared on one shape is scoped exactly as tightly as
-				// that shape's title pattern -- the seat level's type/seat is
-				// stele-only and type/maquette is lab-workspaces-only, the same
-				// way "^seat: " only ever matched a stele title. Skipping this
-				// check would let a label from one repo's convention satisfy a
-				// candidate meant only for another.
-				if m.Repo != "" && m.Repo != repoKey {
-					continue
-				}
-				if m.Label != "" && have[m.Label] {
-					labelled = true
-					break
-				}
-			}
+	for _, i := range candidates {
+		if i < 0 || i >= len(s.Levels) {
+			continue
 		}
-		if labelled || lvl.accepts(repoKey, title) {
+		lvl := s.Levels[i]
+		// The level's own label asserts the level directly, for a rung that
+		// declares one without spelling out shapes.
+		if lvl.Label != "" && have[lvl.Label] {
+			return i, true
+		}
+		// Otherwise a shape decides. A label declared on a shape is scoped
+		// exactly as tightly as that shape's title pattern -- the seat level's
+		// type/seat is stele-only and type/maquette is lab-workspaces-only, the
+		// same way "^seat: " only ever matched a stele title -- which is why
+		// the repo check lives inside the shape rather than out here.
+		if lvl.accepts(repoKey, title, have) {
 			return i, true
 		}
 	}
 	return 0, false
+}
+
+// ChildLevelsFor is ChildLevels narrowed by the shape the parent itself
+// matched. A caller that knows only the parent's rung must use ChildLevels; a
+// caller holding the parent's repo, title and labels should use this, because
+// two shapes on one rung may permit different things below them.
+//
+// It can only ever REMOVE a candidate ChildLevels already returned. validate
+// proves every ChildMustBe names a level that rung's children could occupy, so
+// a narrowing cannot smuggle in a rung the structure does not permit.
+func (s *Structure) ChildLevelsFor(parentLevel int, repoKey, title string, labels []string) []int {
+	if s == nil {
+		return nil
+	}
+	out := s.ChildLevels(parentLevel)
+	m, ok := s.matchedShape(parentLevel, repoKey, title, labels)
+	if !ok || m.ChildMustBe == "" {
+		return out
+	}
+	for _, i := range out {
+		if s.Levels[i].Name == m.ChildMustBe {
+			return []int{i}
+		}
+	}
+	// Unreachable through Load, which validates first. A hand-built Structure
+	// in a test must not have the narrowing silently ignored -- that would
+	// widen what is permitted, and this file's failures lean the other way.
+	for i, lvl := range s.Levels {
+		if lvl.Name == m.ChildMustBe {
+			return []int{i}
+		}
+	}
+	return out
+}
+
+// matchedShape reports which of a level's accepted shapes a node satisfies, so
+// a caller can read the properties that shape carries rather than the level's.
+//
+// A LABEL MATCH DECIDES BEFORE A TITLE MATCH, which is the precedence Assign
+// already uses: a label names its shape exactly, where a title pattern is a
+// guess about spelling. A level with no Accepts has no shape to report.
+func (s *Structure) matchedShape(level int, repoKey, title string, labels []string) (LevelMatch, bool) {
+	if s == nil || level < 0 || level >= len(s.Levels) {
+		return LevelMatch{}, false
+	}
+	l := s.Levels[level]
+	have := make(map[string]bool, len(labels))
+	for _, v := range labels {
+		have[v] = true
+	}
+	for _, m := range l.Accepts {
+		if m.Repo != "" && m.Repo != repoKey {
+			continue
+		}
+		if m.Label != "" && have[m.Label] {
+			return m, true
+		}
+	}
+	for _, m := range l.Accepts {
+		if m.satisfiedBy(repoKey, title, have) {
+			return m, true
+		}
+	}
+	return LevelMatch{}, false
 }
 
 // LevelForLabels reports the level a node's own labels assert, independent of
@@ -209,25 +305,13 @@ func (s *Structure) LevelForLabels(repoKey string, labels []string) (level int, 
 // The MATCHED shape decides: a level whose accepts carry their own labels is
 // how one rung gets a different name per repo. A level with no accepts, or an
 // accept with no label, falls back to the level's own.
-func (s *Structure) LabelFor(level int, repoKey, title string) (string, bool) {
+func (s *Structure) LabelFor(level int, repoKey, title string, labels []string) (string, bool) {
 	if s == nil || level < 0 || level >= len(s.Levels) {
 		return "", false
 	}
 	l := s.Levels[level]
-	for _, m := range l.Accepts {
-		if m.Repo != "" && m.Repo != repoKey {
-			continue
-		}
-		if m.TitlePattern != "" {
-			re, err := regexp.Compile(m.TitlePattern)
-			if err != nil || !re.MatchString(title) {
-				continue
-			}
-		}
-		if m.Label != "" {
-			return m.Label, true
-		}
-		break
+	if m, ok := s.matchedShape(level, repoKey, title, labels); ok && m.Label != "" {
+		return m.Label, true
 	}
 	return l.Label, l.Label != ""
 }
@@ -262,26 +346,44 @@ func (s *Structure) Labels() []string {
 // here rather than cached because validate() has already proved every one of
 // them compiles, and a tree walk is bounded by an API budget long before it is
 // bounded by regexp compilation.
-func (l Level) accepts(repoKey, title string) bool {
+func (l Level) accepts(repoKey, title string, have map[string]bool) bool {
 	if len(l.Accepts) == 0 {
 		return true
 	}
 	for _, m := range l.Accepts {
-		if m.Repo != "" && m.Repo != repoKey {
+		if !m.satisfiedBy(repoKey, title, have) {
 			continue
-		}
-		if m.TitlePattern != "" {
-			re, err := regexp.Compile(m.TitlePattern)
-			// An uncompilable pattern cannot match. It is unreachable via
-			// Load, which validates first, but a hand-built Structure in a
-			// test must not silently match everything.
-			if err != nil || !re.MatchString(title) {
-				continue
-			}
 		}
 		return true
 	}
 	return false
+}
+
+// satisfiedBy reports whether one accepted shape admits a node.
+//
+// Repo scopes the shape. Then, of the two remaining tests, a shape uses
+// whichever it declares: with both a title pattern and a label they are
+// ALTERNATIVES, either sufficient; with only a label the label is the test;
+// with neither the shape admits anything in scope, which is the documented
+// meaning of {} and of {"repo": "x"}.
+func (m LevelMatch) satisfiedBy(repoKey, title string, have map[string]bool) bool {
+	if m.Repo != "" && m.Repo != repoKey {
+		return false
+	}
+	if m.Label != "" && have[m.Label] {
+		return true
+	}
+	if m.TitlePattern != "" {
+		re, err := regexp.Compile(m.TitlePattern)
+		// An uncompilable pattern cannot match. It is unreachable via Load,
+		// which validates first, but a hand-built Structure in a test must not
+		// silently match everything.
+		return err == nil && re.MatchString(title)
+	}
+	// No title test left. A label declared with none is the test itself --
+	// otherwise the shape would admit everything and the rung would absorb the
+	// one below it.
+	return m.Label == ""
 }
 
 // Describe renders what a level expects, for a refusal that names the fix
@@ -337,6 +439,29 @@ func (s *Structure) validate(repos map[string]Repo) error {
 				if _, err := regexp.Compile(m.TitlePattern); err != nil {
 					errs = append(errs, fmt.Errorf(
 						"structure: levels[%d].accepts[%d] titlePattern %q: %w", i, j, m.TitlePattern, err))
+				}
+			}
+			if m.ChildMustBe != "" {
+				// A narrowing may only remove a candidate, never add one, so it
+				// has to name a rung this level's children could already
+				// occupy. Naming one they could not is the mistake that would
+				// otherwise permit a shape the structure does not declare.
+				var permitted []string
+				found := false
+				for _, c := range s.ChildLevels(i) {
+					permitted = append(permitted, s.Levels[c].Name)
+					if s.Levels[c].Name == m.ChildMustBe {
+						found = true
+					}
+				}
+				if !found {
+					where := strings.Join(permitted, ", ")
+					if where == "" {
+						where = "nothing -- it is the deepest level"
+					}
+					errs = append(errs, fmt.Errorf(
+						"structure: levels[%d].accepts[%d] childMustBe is %q, which a child of %q may not be; it may be: %s",
+						i, j, m.ChildMustBe, l.Name, where))
 				}
 			}
 		}
