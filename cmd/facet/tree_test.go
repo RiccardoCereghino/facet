@@ -69,10 +69,18 @@ func iref(owner, repo string, n int) ghx.IssueRef {
 type treeFake struct {
 	fakeGH
 	issues map[string]*ghx.Issue
+	// viewErrs scripts a read that FAILED, which is a different fact from an
+	// issue that is absent: absent answers "no such issue", failed answers
+	// "I could not tell". facet#138 turns on exactly that difference.
+	viewErrs map[string]error
 }
 
 func (f *treeFake) ViewIssue(repo string, number int) (*ghx.Issue, error) {
-	return f.issues[repo+"#"+itoa(number)], nil
+	k := repo + "#" + itoa(number)
+	if err, ok := f.viewErrs[k]; ok {
+		return nil, err
+	}
+	return f.issues[k], nil
 }
 
 // IssueChildren attaches each scripted child's title/state/labels from
