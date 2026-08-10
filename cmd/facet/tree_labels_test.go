@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -449,5 +451,89 @@ func TestAFindingIsExitOneEvenWithAnUnreadableRepo(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "acme/harness") {
 		t.Errorf("the unchecked repository is not named:\n%s", err)
+	}
+}
+
+// !! FINDING 3 OF THE SECOND AUDIT ROUND. !! The `--help` text promised three
+// exit codes and the command answered with two: only the two `withCode` calls
+// INSIDE runTreeLabels were tagged, so every failure arriving through cobra --
+// a mistyped flag, a flag with no value, an unexpected argument, an unreadable
+// routing file -- still defaulted to 1 and claimed a parity gap.
+//
+// Measured on the shipped build of round 2:
+//
+//	facet tree labels --creat      -> exit 1, want 2
+//	facet tree labels --repo       -> exit 1, want 2
+//	facet tree labels extra-arg    -> exit 1, want 2
+//	<malformed routing file>       -> exit 1, want 2   (tree doctor said 2)
+//
+// The consumers named in facet#138 read 1 from this verb as "there is a parity
+// gap in the estate". A typo in a flag produced that sentence.
+func TestTreeLabelsKeepsTheExitContractItsHelpStates(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"a mistyped flag", []string{"--creat"}},
+		{"a flag with no value", []string{"--repo"}},
+		{"an unexpected positional argument", []string{"extra-arg"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := newTreeLabelsCmd()
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs(tc.args)
+
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatalf("%v was accepted", tc.args)
+			}
+			if got := exitCodeFor(err); got != exitCantLook {
+				t.Errorf("exit code = %d, want %d (could not look)\n  %v", got, exitCantLook, err)
+			}
+		})
+	}
+}
+
+// An unreadable routing file is the purest could-not-look for this verb: the
+// required set lives IN it, so nothing was even asked of GitHub. `tree doctor`
+// answered 2 here while `tree labels` answered 1 -- the same input, the same
+// binary, two verbs, two answers.
+func TestAnUnreadableRoutingFileIsCouldNotLook(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "routing.json")
+	if err := os.WriteFile(path, []byte("{ this is not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Through the ENVIRONMENT, not by assigning `roots`. tagCantLook installs a
+	// PersistentPreRunE that reloads the roots from the environment -- which is
+	// the whole point of it, and which means a test that only set the package
+	// variable would have its fixture replaced by the real routing file and go
+	// to the network. That is not a wrinkle in the test: it is the code path
+	// this case exists to exercise.
+	t.Setenv("FACET_ROUTING", path)
+
+	cmd := newTreeLabelsCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs(nil)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("a malformed routing file was accepted")
+	}
+	if got := exitCodeFor(err); got != exitCantLook {
+		t.Errorf("exit code = %d, want %d\n  %v", got, exitCantLook, err)
+	}
+}
+
+// The contract is stated where a caller can read it without opening the source.
+func TestTreeLabelsHelpStatesTheExitCodes(t *testing.T) {
+	long := newTreeLabelsCmd().Long
+	for _, want := range []string{"EXIT CODES", "could NOT look", "1  looked", "2  could"} {
+		if !strings.Contains(long, want) {
+			t.Errorf("--help is missing %q:\n%s", want, long)
+		}
 	}
 }

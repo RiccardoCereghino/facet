@@ -108,18 +108,20 @@ func newTreeLabelsCmd() *cobra.Command {
 			"     reported and nothing is ruled out\n\n" +
 			"A gap FOUND is 1 even when some repository could not be read: there is a\n" +
 			"real finding, and the unchecked repositories are named in the message.",
-		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			route, err := loadRouting()
 			if err != nil {
-				return err
+				// An unreadable routing file is the purest could-not-look:
+				// the required set is IN it, so nothing was even asked.
+				return withCode(exitCantLook, err)
 			}
 			if len(repos) == 0 {
 				repos = routedRepos(route)
 			}
 			if len(repos) == 0 {
-				return fmt.Errorf("no repository to check: the routing file maps none, and none was named\n" +
-					"fix: facet tree labels --repo owner/name")
+				return withCode(exitCantLook, fmt.Errorf(
+					"no repository to check: the routing file maps none, and none was named\n"+
+						"fix: facet tree labels --repo owner/name"))
 			}
 			return runTreeLabels(cmd.OutOrStdout(), gh, route, repos, create)
 		},
@@ -128,6 +130,7 @@ func newTreeLabelsCmd() *cobra.Command {
 		"a repository to check, as owner/name; repeat for several. Default: every repo in the routing file")
 	cmd.Flags().BoolVar(&create, "create", false,
 		"define the missing labels, only ever from the set the structure declares")
+	tagCantLook(cmd, cobra.NoArgs)
 	return cmd
 }
 
@@ -248,7 +251,6 @@ func newTreeDoctorCmd() *cobra.Command {
 			"     an HTTP error, an unreadable routing file\n\n" +
 			"A caller must not read 2 as a finding. Only the failure path moved, so\n" +
 			"anything treating non-zero as \"not clean\" keeps working unchanged.",
-		Args: exactArgsOrCantLook(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ref, err := parseIssueRef(args[0])
 			if err != nil {
@@ -261,24 +263,32 @@ func newTreeDoctorCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&fixLabels, "fix-labels", false,
 		"record the level on every node missing its type label; never touches one that CONTRADICTS the tree")
-	// Every way of failing before the walk gets the same answer, including the
-	// ones cobra produces rather than this file: a mistyped flag, and a
-	// configuration that could not be read. Left untagged they would default to
-	// 1 and claim a finding.
+	tagCantLook(cmd, cobra.ExactArgs(1))
+	return cmd
+}
+
+// tagCantLook gives a command's every ENTRANCE the exit code a checker owes:
+// nothing was read, so nothing can be reported and nothing is ruled out.
+//
+// It covers the three failures cobra produces rather than this file -- a bad
+// argument count, a mistyped or valueless flag, and a configuration that could
+// not be loaded -- because each of them defaults to 1 and would then claim a
+// finding. THE POINT IS THAT IT IS ONE CALL: `tree doctor` spelled these out
+// individually and `tree labels` was then written without them, so a verb whose
+// --help promised three codes shipped answering with two. A command that opts
+// into the contract opts into all of it.
+//
+// The RunE side stays the command's own: only it knows the moment after which
+// something HAS been read, and that is exactly the line the codes are drawn on.
+func tagCantLook(cmd *cobra.Command, args cobra.PositionalArgs) {
+	cmd.Args = func(c *cobra.Command, a []string) error {
+		return withCode(exitCantLook, args(c, a))
+	}
 	cmd.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
 		return withCode(exitCantLook, err)
 	})
 	cmd.PersistentPreRunE = func(*cobra.Command, []string) error {
 		return withCode(exitCantLook, loadRoots())
-	}
-	return cmd
-}
-
-// exactArgsOrCantLook is cobra.ExactArgs with the exit code a checker owes:
-// being handed the wrong number of arguments is not a finding about any tree.
-func exactArgsOrCantLook(n int) cobra.PositionalArgs {
-	return func(cmd *cobra.Command, args []string) error {
-		return withCode(exitCantLook, cobra.ExactArgs(n)(cmd, args))
 	}
 }
 
