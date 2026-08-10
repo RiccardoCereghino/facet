@@ -113,6 +113,145 @@ func parseIssueParent(out []byte) (IssueRef, bool, error) {
 	return p.ref(), true, nil
 }
 
+// Parentage is one open issue and what, if anything, it hangs under.
+//
+// HasParent is separate from Parent for the same reason [CLI.IssueParent]
+// returns a bool: "asked, and there is none" is the answer this type exists to
+// carry, and a zero IssueRef would be indistinguishable from a parent that
+// failed to decode.
+type Parentage struct {
+	Ref       IssueRef
+	Title     string
+	Parent    IssueRef
+	HasParent bool
+}
+
+// openIssueParentsQuery lists a repository's open issues with their parents.
+//
+// ONE QUERY PER HUNDRED ISSUES, NOT ONE PER ISSUE. Asking [CLI.IssueParent] for
+// each open issue is how the parentless set was found by hand, and it is a
+// request per issue against a repository that may have hundreds.
+//
+// It is GraphQL for the reason issueParentQuery gives: REST has no read for an
+// issue's parent at all, so there is no conditional-request version of this to
+// prefer.
+//
+// IT DELIBERATELY DOES NOT ASK FOR LABELS, and the omission is a cost decision
+// rather than an oversight. GitHub bills a query for the nodes it COULD return
+// and connections multiply: `issues(first: 100)` is 100 possible nodes, but
+// hanging `labels(first: 30)` off each one is 3,000 more -- against a budget of
+// 5,000 an hour for everything facet does. `parent` is a single node rather
+// than a connection, so it multiplies nothing. A caller that needs an orphan's
+// labels can read that one issue.
+//
+// `issues` excludes pull requests, which is what is wanted: a pull request has
+// no place in an issue hierarchy.
+//
+// The order is CREATED_AT rather than the obvious NUMBER: `IssueOrderField` has
+// exactly three values -- CREATED_AT, UPDATED_AT, COMMENTS -- and asking for
+// NUMBER is rejected outright by the API rather than ignored. Creation order is
+// number order for issues in any case. Measured live, which is the only way
+// this was going to be found: it compiles, it type-checks, and it fails at the
+// forge.
+const openIssueParentsQuery = `query($owner: String!, $repo: String!, $after: String) {
+  repository(owner: $owner, name: $repo) {
+    issues(states: OPEN, first: 100, after: $after, orderBy: {field: CREATED_AT, direction: ASC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        number
+        title
+        parent { number repository { owner { login } name } }
+      }
+    }
+  }
+}`
+
+// OpenIssueParents lists every open issue in repo with its parent, if it has
+// one.
+//
+// It pages explicitly rather than through `gh api --paginate`: that flag
+// concatenates one JSON document per page, and a caller that forgets to decode
+// a stream reads only the first hundred issues while looking like it read them
+// all. Here a short read is a decode error rather than a quiet truncation --
+// which matters more than usual, since the whole point of this read is to say
+// what is NOT in a tree, and a missing page reads as a missing issue.
+func (c CLI) OpenIssueParents(repo string) ([]Parentage, error) {
+	owner, name, err := splitRepo("OpenIssueParents", repo)
+	if err != nil {
+		return nil, err
+	}
+	var out []Parentage
+	after := ""
+	for {
+		args := []string{"api", "graphql",
+			"-f", "query=" + openIssueParentsQuery,
+			"-f", "owner=" + owner,
+			"-f", "repo=" + name,
+		}
+		if after != "" {
+			args = append(args, "-f", "after="+after)
+		}
+		raw, err := run(args...)
+		if err != nil {
+			return nil, err
+		}
+		page, next, err := parseOpenIssueParents(raw, owner, name)
+		if err != nil {
+			return nil, fmt.Errorf("parse open issues of %s: %w", repo, err)
+		}
+		out = append(out, page...)
+		if next == "" {
+			return out, nil
+		}
+		after = next
+	}
+}
+
+// parseOpenIssueParents decodes one page and returns the cursor for the next,
+// or "" when there is none. Split out so both the absent-parent case and the
+// page boundary can be tested without a network.
+func parseOpenIssueParents(raw []byte, owner, name string) ([]Parentage, string, error) {
+	var resp struct {
+		Data struct {
+			Repository struct {
+				Issues struct {
+					PageInfo struct {
+						HasNextPage bool   `json:"hasNextPage"`
+						EndCursor   string `json:"endCursor"`
+					} `json:"pageInfo"`
+					Nodes []struct {
+						Number int            `json:"number"`
+						Title  string         `json:"title"`
+						Parent *graphIssueRef `json:"parent"`
+					} `json:"nodes"`
+				} `json:"issues"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return nil, "", err
+	}
+	page := resp.Data.Repository.Issues
+	out := make([]Parentage, 0, len(page.Nodes))
+	for _, n := range page.Nodes {
+		p := Parentage{
+			Ref:   IssueRef{Owner: owner, Repo: name, Number: n.Number},
+			Title: n.Title,
+		}
+		if n.Parent != nil {
+			p.Parent, p.HasParent = n.Parent.ref(), true
+		}
+		out = append(out, p)
+	}
+	// A hasNextPage with no cursor would loop for ever on the same page. Treat
+	// it as the end rather than spinning: it cannot happen against GitHub, and
+	// the alternative failure mode is an unkillable command.
+	if page.PageInfo.HasNextPage && page.PageInfo.EndCursor != "" {
+		return out, page.PageInfo.EndCursor, nil
+	}
+	return out, "", nil
+}
+
 // graphIssueRef is the shape both graph queries return for an issue.
 type graphIssueRef struct {
 	Number     int `json:"number"`

@@ -145,6 +145,11 @@ func (f *fakeGH) IssueParent(repo string, number int) (ghx.IssueRef, bool, error
 // from a separate node()/ViewIssue call that this same stub also blanked.
 // treeFake (below) overrides this to attach real fields from its own issues
 // map.
+// OpenIssueParents is the complement read. The default answer is an empty
+// repository rather than an error, so the tests that are not about orphans do
+// not have to script one.
+func (f *fakeGH) OpenIssueParents(_ string) ([]ghx.Parentage, error) { return nil, nil }
+
 func (f *fakeGH) IssueChildren(repo string, number int) ([]ghx.SubIssue, error) {
 	k := f.key(repo, number)
 	if err, ok := f.childErrs[k]; ok {

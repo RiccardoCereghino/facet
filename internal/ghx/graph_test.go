@@ -103,3 +103,76 @@ func TestSplitRepoRefusesAmbiguity(t *testing.T) {
 		t.Errorf("splitRepo(acme/lab) = %q, %q, %v", owner, name, err)
 	}
 }
+
+func TestParseOpenIssueParents(t *testing.T) {
+	t.Run("parented and unparented in one page", func(t *testing.T) {
+		raw := []byte(`{"data":{"repository":{"issues":{
+			"pageInfo":{"hasNextPage":false,"endCursor":"Y3Vyc29yOjI="},
+			"nodes":[
+			  {"number":12,"title":"under nothing","parent":null},
+			  {"number":13,"title":"under something","parent":{"number":46,
+			    "repository":{"owner":{"login":"acme"},"name":"lab"}}}
+			]}}}}`)
+		got, next, err := parseOpenIssueParents(raw, "acme", "harness")
+		if err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		if next != "" {
+			t.Errorf("next = %q, want \"\": hasNextPage is false", next)
+		}
+		if len(got) != 2 {
+			t.Fatalf("got %d issues, want 2", len(got))
+		}
+		if got[0].HasParent {
+			t.Error("#12 came back parented")
+		}
+		if got[0].Ref.String() != "acme/harness#12" {
+			t.Errorf("ref = %q, want acme/harness#12", got[0].Ref)
+		}
+		if !got[1].HasParent || got[1].Parent.String() != "acme/lab#46" {
+			t.Errorf("#13's parent = %q (has=%v), want acme/lab#46", got[1].Parent, got[1].HasParent)
+		}
+	})
+
+	// A repository with more than a hundred open issues is the case that
+	// decides whether this command can be trusted at all: a page silently
+	// dropped is an issue silently reported as not existing, in a command
+	// whose whole job is saying what is missing.
+	t.Run("a page boundary hands back a cursor", func(t *testing.T) {
+		raw := []byte(`{"data":{"repository":{"issues":{
+			"pageInfo":{"hasNextPage":true,"endCursor":"Y3Vyc29yOjEwMA=="},
+			"nodes":[{"number":1,"title":"first","parent":null}]}}}}`)
+		_, next, err := parseOpenIssueParents(raw, "acme", "harness")
+		if err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		if next != "Y3Vyc29yOjEwMA==" {
+			t.Errorf("next = %q, want the endCursor", next)
+		}
+	})
+
+	// hasNextPage with no cursor cannot happen against GitHub, and if it did
+	// the loop would ask for the same page for ever. An unkillable command is
+	// a worse failure than a short read that says so by ending.
+	t.Run("hasNextPage with no cursor ends rather than spinning", func(t *testing.T) {
+		raw := []byte(`{"data":{"repository":{"issues":{
+			"pageInfo":{"hasNextPage":true,"endCursor":""},
+			"nodes":[]}}}}`)
+		_, next, err := parseOpenIssueParents(raw, "acme", "harness")
+		if err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		if next != "" {
+			t.Errorf("next = %q, want \"\"", next)
+		}
+	})
+
+	t.Run("an empty repository is not an error", func(t *testing.T) {
+		raw := []byte(`{"data":{"repository":{"issues":{
+			"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`)
+		got, next, err := parseOpenIssueParents(raw, "acme", "harness")
+		if err != nil || next != "" || len(got) != 0 {
+			t.Fatalf("got %v, next %q, err %v; want empty, \"\", nil", got, next, err)
+		}
+	})
+}

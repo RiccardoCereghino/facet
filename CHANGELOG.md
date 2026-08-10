@@ -6,6 +6,28 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`facet tree orphans --repo owner/name [--json]` answers "which issues hang
+  under nothing?"** Every other `tree` command reads *downward* from an issue
+  you name, so none of them could: an issue with no parent is by definition not
+  below any node you could pass in. The only way to ask was to list a
+  repository's open issues and check each one's parent by hand — which is how
+  **nine unparented issues in one repository went unnoticed** until someone
+  thought to look.
+
+  **It is a question, not a verdict.** An unparented issue is a valid issue and
+  plenty are deliberately outside a hierarchy, so **finding some is exit 0**.
+  Exit 1 means a repository could not be read — silence about a repository
+  nobody could list would otherwise read as "nothing unparented there", and the
+  report names it rather than dropping it.
+
+  One GraphQL query per hundred issues rather than one per issue, and it
+  deliberately does not fetch labels: GitHub bills a query for the nodes it
+  *could* return and connections multiply, so `labels(first: 30)` on 100 issues
+  is 3,000 possible nodes against a 5,000-an-hour budget. Measured against a
+  per-issue oracle over 27 open issues: identical sets, 1 query instead of 27.
+
 ### Changed
 
 - **`facet tree doctor` now says whether it looked.** It exited `1` for *I read

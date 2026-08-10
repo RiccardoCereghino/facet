@@ -127,6 +127,11 @@ type Client interface {
 	// and whether it has one. GraphQL-only and immediately consistent; see
 	// graph.go for why REST cannot answer this at all.
 	IssueParent(repo string, number int) (IssueRef, bool, error)
+	// OpenIssueParents lists every OPEN issue in repo with its parent, if it
+	// has one -- the complement of IssueChildren, and the only way to ask what
+	// belongs to no tree at all. A tree read downward can never answer that:
+	// an issue with no parent is, by definition, under no root to walk from.
+	OpenIssueParents(repo string) ([]Parentage, error)
 	// IssueChildren lists an issue's sub-issues, each already carrying its
 	// title/state/labels -- no second read is needed to render one. Eventually
 	// consistent -- never use it to confirm an edge just written.
