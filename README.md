@@ -311,7 +311,19 @@ facet tree show   owner/repo#46
 facet tree list   owner/repo#46 --level seat
 facet tree status owner/repo#46
 facet tree doctor owner/repo#46
+facet tree orphans --repo owner/repo [--json]
 ```
+
+Every one of those but the last reads *downward* from an issue you name, so
+none of them can answer **"what is under nothing at all?"** — an issue with no
+parent is by definition not below any node you could pass in. `orphans` reads
+the complement, one repository at a time.
+
+**It reports a set, not a verdict.** An unparented issue is a perfectly valid
+issue, and plenty are deliberately outside a hierarchy — so finding some is
+exit 0. Exit 1 means a repository could not be read, which is the fact worth
+failing on: silence about a repository nobody could list would read as
+"nothing unparented there".
 
 **None of this is required to use facet, and none of it is assumed anywhere
 else.** `facet spawn` never asks whether an issue has a parent; an issue with

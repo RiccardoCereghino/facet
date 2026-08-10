@@ -28,7 +28,47 @@ func newTreeCmd() *cobra.Command {
 			"is never reported.",
 	}
 	cmd.AddCommand(newTreeWireCmd(), newTreeShowCmd(), newTreeListCmd(),
-		newTreeStatusCmd(), newTreeDoctorCmd())
+		newTreeStatusCmd(), newTreeDoctorCmd(), newTreeOrphansCmd())
+	return cmd
+}
+
+// newTreeOrphansCmd is the only command here that reads the complement.
+//
+// Every other one takes an issue and walks DOWN from it, so none of them can
+// answer "what is under no root at all" -- an issue with no parent is by
+// definition not below any node you could name. Answering it by hand means
+// listing a repository's open issues and checking each one's parent, which is
+// how nine unparented issues in one repository went unnoticed until someone
+// thought to look (facet#116).
+func newTreeOrphansCmd() *cobra.Command {
+	var repos []string
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "orphans --repo <owner/name> [--repo <owner/name> …]",
+		Short: "Open issues that hang under nothing",
+		Long: "Lists the open issues in each named repository that have no parent.\n\n" +
+			"IT IS A QUESTION, NOT A VERDICT. An issue with no parent is a perfectly\n" +
+			"valid issue -- facet has no opinion about whether issues are arranged in a\n" +
+			"hierarchy at all, and plenty of them are deliberately outside one. This\n" +
+			"reports the set; deciding which of them is a gap is triage's job.\n\n" +
+			"So FINDING ORPHANS IS EXIT 0. Exit 1 means a repository could not be read,\n" +
+			"which is a different fact and the one worth failing on: silence about a\n" +
+			"repository nobody could list would read as \"nothing unparented there\".\n\n" +
+			"It is repo-scoped rather than a check inside `doctor` because `doctor`\n" +
+			"takes a root, and an orphan is not under one.\n\n" +
+			"--json, because the consumer is as likely to be a scheduled planner as a\n" +
+			"human.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if len(repos) == 0 {
+				return fmt.Errorf("no repository named\nfix: facet tree orphans --repo owner/name")
+			}
+			return runTreeOrphans(cmd.OutOrStdout(), gh, repos, asJSON)
+		},
+	}
+	cmd.Flags().StringArrayVar(&repos, "repo", nil,
+		"a repository to scan, as owner/name; repeat for several")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "emit JSON rather than lines")
 	return cmd
 }
 
