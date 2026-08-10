@@ -28,6 +28,39 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   is 3,000 possible nodes against a 5,000-an-hour budget. Measured against a
   per-issue oracle over 27 open issues: identical sets, 1 query instead of 27.
 
+- **`facet tree labels` asserts that every routed repository DEFINES the labels
+  the structure declares.** `wire` records the level it enforced by applying a
+  label; a repository that never defined that label cannot be given it — so the
+  edge landed, the level did not, and **the command exited 0.** The tree gained
+  a node whose level nothing can read, and `tree doctor` can only check a level
+  it can see.
+
+  Nothing asserted the parity, and the failure was invisible because it is a
+  **warning inside a successful command**. Measured on the setup that produced
+  the issue: **9 of 14 routed repositories** were missing at least one label
+  they can actually be asked for, and each looked fine when checked alone.
+
+  With no `--repo` it sweeps **every repository in the routing file**, because
+  the ones that are short are the ones nobody has touched recently — a check
+  aimed at the repository in front of you is the check that already missed it.
+  `--create` closes the gap, copying the colour and description from a routed
+  repository that already has the label.
+
+  **The required set is read from the routing file, never a list inside facet,
+  and it is PER REPOSITORY.** A label declared on a repo-scoped shape —
+  `{"repo": "stele", "label": "type/seat"}` — is reachable in that repository
+  and nowhere else, so requiring it everywhere would report a gap the structure
+  itself says can never be used, and `--create` would then define a label no
+  wire there could ever apply. `Structure.Labels()` remains the *recognition*
+  set (is this one of ours?); `Structure.LabelsFor(repo)` is the *requirement*
+  set (could a wire here ever need this?), and the two are documented against
+  each other.
+
+  Exit codes are `tree doctor`'s: `0` full parity, `1` something missing, `2`
+  no repository could be read. A gap found is `1` even alongside an unreadable
+  repository — there is a real finding, and the unchecked repositories are
+  named in the message.
+
 ### Changed
 
 - **`facet tree doctor` now says whether it looked.** It exited `1` for *I read
@@ -51,6 +84,23 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `argano`'s console had to declare "exit 1 from `facet tree doctor` means
   findings", which then reads a 404 as a finding. `gad hold --fleet --check`
   already answers this way — `1` while held, `2` when unreadable.
+
+- **`tree wire` creates a declared label the repository lacks, and FAILS when
+  the level still cannot be recorded.** It used to print
+
+  ```
+  WARNING: the edge is wired but type/work was not applied to …: 'type/work' not found
+  wired … under …
+  ```
+
+  and exit 0. **A command that reports success while leaving the tree
+  unlabelled is the defect underneath the defect.** It now asks whether the
+  label exists — structurally, by reading the repository's labels, never by
+  matching gh's sentence — creates it if it does not, and retries. If the level
+  still cannot be recorded the command exits non-zero, **with every line about
+  what did happen printed first and the error saying in as many words that the
+  edge IS wired**. That wording is the answer to the objection the old code
+  recorded: that a non-zero exit here "reads as nothing happened".
 
 - **A tree is read conditionally, so re-reading an unchanged one costs nothing.**
   The walk asked GitHub for a node's children, then asked again for each child —

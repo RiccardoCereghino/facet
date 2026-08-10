@@ -23,6 +23,10 @@ type treeGH interface {
 	IssueParent(repo string, number int) (ghx.IssueRef, bool, error)
 	AddSubIssue(repo string, number int, childID int64) error
 	AddLabel(repo string, number int, label string) error
+	// RepoLabels and CreateLabel are how `wire` answers "does this label exist
+	// at all?" without reading gh's prose -- see recordLevel.
+	RepoLabels(repo string) ([]ghx.RepoLabel, error)
+	CreateLabel(repo string, label ghx.RepoLabel) error
 	RemoveSubIssue(repo string, number int, childID int64) error
 	ProjectStatuses(owner string, projectNumber int, field string) (map[string]string, error)
 }
@@ -107,13 +111,18 @@ func runTreeWire(w io.Writer, gh treeGH, child, parent ghx.IssueRef) error {
 		return err
 	}
 
-	recordLevel(w, gh, route, child, childIssue)
+	// The level may fail to record after the edge is written, and that is a
+	// FAILURE rather than a warning -- see recordLevel. It is held rather than
+	// returned here so the edge, the tiers and the move are all still printed:
+	// what happened must be fully visible before the command says it did not
+	// entirely work.
+	levelErr := recordLevel(w, gh, route, child, childIssue)
 	printTiers(w, child, childIssue, parent, parentIssue)
 	if hadParent {
 		_, _ = fmt.Fprintf(w, "\n  MOVED: %s was a child of %s\n", child, previous)
 	}
 	_, _ = fmt.Fprintf(w, "\n  wired %s under %s\n", child, parent)
-	return nil
+	return levelErr
 }
 
 // recordLevel writes the level the wire just enforced onto the issue as a
@@ -125,29 +134,109 @@ func runTreeWire(w io.Writer, gh treeGH, child, parent ghx.IssueRef) error {
 // to `gh issue list --label`, silently wrong after a retitle, and absent
 // entirely for a node whose title never had the prefix.
 //
-// A failure to label is REPORTED AND NOT FATAL. The edge is already written and
-// is the thing being asked for; refusing here would leave a wired tree and a
-// non-zero exit, which reads as "nothing happened".
-func recordLevel(w io.Writer, gh treeGH, route *routing.Routing, child ghx.IssueRef, ci *ghx.Issue) {
+// A LABEL THAT DOES NOT EXIST IS CREATED AND THE WIRE CONTINUES. That is the
+// commonest reason this fails, and the moment of use is exactly when somebody
+// is present to notice. Only a label the structure DECLARES can be created, so
+// a typo cannot bring one into existence.
+//
+// A LEVEL THAT STILL CANNOT BE RECORDED IS AN ERROR, not a warning. This
+// printed a WARNING inside a successful command until facet#139, on the
+// argument that "refusing here would leave a wired tree and a non-zero exit,
+// which reads as nothing happened". The concern was real; the remedy was the
+// wrong one. The answer is the WORDING -- every line about what did happen is
+// printed first, and the error says in as many words that the edge is wired --
+// because a command reporting success while the tree gains a node whose level
+// is unknown is the defect underneath the defect. It was survived twice in one
+// session, caught both times only because a human read a warning line inside a
+// wall of successful output.
+func recordLevel(w io.Writer, gh treeGH, route *routing.Routing, child ghx.IssueRef, ci *ghx.Issue) error {
 	if route == nil || route.Structure == nil {
-		return
+		return nil
 	}
 	level, ok, err := levelOf(gh, route, child, ci.LabelNames())
 	if err != nil || !ok {
 		_, _ = fmt.Fprintf(w, "  level not recorded: %s sits at no declared level\n", child)
-		return
+		return nil
 	}
 	label, ok := route.Structure.LabelFor(level, route.KeyForRepo(child.OwnerRepo()), ci.Title, ci.LabelNames())
 	if !ok {
 		// A structure that declares no labels keeps working exactly as before.
-		return
+		return nil
 	}
-	if err := gh.AddLabel(child.OwnerRepo(), child.Number, label); err != nil {
-		_, _ = fmt.Fprintf(w, "  WARNING: the edge is wired but %s was not applied to %s: %v\n", label, child, err)
-		_, _ = fmt.Fprintf(w, "  fix: gh issue edit %d --repo %s --add-label %s\n", child.Number, child.OwnerRepo(), label)
-		return
+
+	addErr := gh.AddLabel(child.OwnerRepo(), child.Number, label)
+	if addErr == nil {
+		_, _ = fmt.Fprintf(w, "  level recorded: %s\n", label)
+		return nil
 	}
-	_, _ = fmt.Fprintf(w, "  level recorded: %s\n", label)
+
+	// ASK, DO NOT PARSE. gh says "'type/work' not found" when the label is
+	// undefined, and classifying on that sentence would make this correct until
+	// the day the sentence changes -- the same mistake as reading another
+	// tool's prose to tell an error apart from a result. One extra read, only
+	// on the failure path, answers it structurally instead.
+	created, cerr := createDeclaredLabel(w, gh, route, child.OwnerRepo(), label)
+	if cerr != nil {
+		return fmt.Errorf("%s IS WIRED, and its level is NOT recorded: applying %s failed (%v), "+
+			"and %s could not be created either: %w\n"+
+			"fix: facet tree labels --repo %s --create",
+			child, label, addErr, label, cerr, child.OwnerRepo())
+	}
+	if created {
+		retry := gh.AddLabel(child.OwnerRepo(), child.Number, label)
+		if retry == nil {
+			_, _ = fmt.Fprintf(w, "  level recorded: %s\n", label)
+			return nil
+		}
+		addErr = retry
+	}
+
+	_, _ = fmt.Fprintf(w, "  LEVEL NOT RECORDED: %s was not applied to %s: %v\n", label, child, addErr)
+	return fmt.Errorf("%s IS WIRED, and its level is NOT recorded: %s was not applied: %w\n"+
+		"  the tree now holds a node whose level nothing can read, and `tree doctor` can only check a level it can see\n"+
+		"fix: gh issue edit %d --repo %s --add-label %s",
+		child, label, addErr, child.Number, child.OwnerRepo(), label)
+}
+
+// createDeclaredLabel defines label in repo IF the repository genuinely does
+// not have it. It reports whether it created one.
+//
+// The guard is doubled deliberately. The label is checked against the
+// structure's own declared set before anything is written, so this can never
+// create a name that came from anywhere but the routing file -- and the
+// existence read means an AddLabel that failed for some OTHER reason (a
+// permission, a rate limit) is reported as itself rather than misdiagnosed as
+// a missing label.
+func createDeclaredLabel(w io.Writer, gh treeGH, route *routing.Routing, repo, label string) (bool, error) {
+	// LabelsFor, not Labels: a label declared on a repo-scoped shape can only
+	// ever be applied in that repository, so creating it anywhere else would
+	// define a label no wire there could reach.
+	declared := false
+	for _, l := range route.Structure.LabelsFor(route.KeyForRepo(repo)) {
+		if l == label {
+			declared = true
+			break
+		}
+	}
+	if !declared {
+		return false, fmt.Errorf("%s is not a label this routing file's structure declares for %s", label, repo)
+	}
+	have, err := gh.RepoLabels(repo)
+	if err != nil {
+		return false, err
+	}
+	for _, l := range have {
+		if l.Name == label {
+			// It exists, so the failure was something else entirely and must
+			// not be reported as a missing label.
+			return false, nil
+		}
+	}
+	if err := gh.CreateLabel(repo, ghx.RepoLabel{Name: label, Color: defaultLabelColour}); err != nil {
+		return false, err
+	}
+	_, _ = fmt.Fprintf(w, "  created the label %s in %s -- it was not defined there\n", label, repo)
+	return true, nil
 }
 
 // printTiers states both tiers and which of them governs.

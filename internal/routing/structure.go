@@ -318,10 +318,56 @@ func (s *Structure) LabelFor(level int, repoKey, title string, labels []string) 
 	return l.Label, l.Label != ""
 }
 
-// Labels returns every label the structure can apply, so a caller can tell a
-// level label apart from any other label an issue happens to carry. Without
-// it, "the type/* label disagrees" could not be distinguished from "this issue
-// has a label facet has never heard of".
+// LabelsFor returns the labels that can actually be applied to a node in
+// repoKey -- which is a NARROWER question than [Structure.Labels], and the
+// difference matters to anything that asks a repository to have them.
+//
+// A label declared on an accepted shape is scoped exactly as tightly as that
+// shape: `{"repo": "stele", "label": "type/seat"}` means type/seat is
+// reachable in stele and NOWHERE ELSE, because matchedShape skips a shape
+// whose repo does not match. A level's OWN label carries no such scope and is
+// reachable everywhere.
+//
+// Labels() is the RECOGNITION set: it answers "is this one of ours?", which is
+// repo-independent by nature. This is the REQUIREMENT set: it answers "could a
+// wire here ever need this?", which is not. Asking the recognition set the
+// requirement question demands labels of a repository that the same structure
+// forbids ever applying there.
+//
+// An empty repoKey -- a repository the routing table does not map -- yields
+// only the unscoped labels, matching what a wire there could reach.
+func (s *Structure) LabelsFor(repoKey string) []string {
+	if s == nil {
+		return nil
+	}
+	var out []string
+	seen := map[string]bool{}
+	add := func(v string) {
+		if v == "" || seen[v] {
+			return
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	for _, l := range s.Levels {
+		add(l.Label)
+		for _, m := range l.Accepts {
+			if m.Repo != "" && m.Repo != repoKey {
+				continue
+			}
+			add(m.Label)
+		}
+	}
+	return out
+}
+
+// Labels returns every label the structure can apply ANYWHERE, so a caller can
+// tell a level label apart from any other label an issue happens to carry.
+// Without it, "the type/* label disagrees" could not be distinguished from
+// "this issue has a label facet has never heard of".
+//
+// It is the recognition set and is repo-independent. A caller asking what a
+// particular repository must DEFINE wants [Structure.LabelsFor] instead.
 func (s *Structure) Labels() []string {
 	if s == nil {
 		return nil

@@ -505,3 +505,58 @@ func TestDescribeDoesNotCallALabelOnlyShapeAnything(t *testing.T) {
 		t.Errorf("an alternative label stopped being described as one:\n  %s", both.Describe())
 	}
 }
+
+// Labels() answers "is this one of ours?" -- recognition, repo-independent.
+// LabelsFor answers "could a wire HERE ever need this?" -- requirement, which
+// is not. A label on a repo-scoped shape is reachable in that repository and
+// nowhere else, because matchedShape skips a shape whose repo does not match.
+//
+// facet#139's first audit round: the parity check asked the recognition set
+// the requirement question and faulted a repository for a label the same
+// routing file forbids ever applying there.
+func TestLabelsForIsScopedWhereLabelsIsNot(t *testing.T) {
+	s := &Structure{Levels: []Level{
+		{Name: "commission", Label: "type/commission"},
+		{Name: "holder", Accepts: []LevelMatch{
+			{Repo: "doctrine", TitlePattern: "^seat: ", Label: "type/seat"},
+			{Repo: "lab", TitlePattern: "^maquette:", Label: "type/maquette"},
+			{Label: "type/backlog", ChildMustBe: "block"},
+		}},
+		{Name: "block", Optional: true, Label: "type/block"},
+		{Name: "issue", Label: "type/work"},
+	}}
+
+	all := s.Labels()
+	if len(all) != 6 {
+		t.Fatalf("Labels() = %v, want all six -- recognition is unscoped", all)
+	}
+
+	cases := []struct {
+		repoKey string
+		want    []string
+	}{
+		{"doctrine", []string{"type/commission", "type/seat", "type/backlog", "type/block", "type/work"}},
+		{"lab", []string{"type/commission", "type/maquette", "type/backlog", "type/block", "type/work"}},
+		// A repository named by no shape gets only the unscoped labels -- which
+		// is exactly what a wire there could reach.
+		{"cava", []string{"type/commission", "type/backlog", "type/block", "type/work"}},
+		// A repository the routing table does not map at all resolves to "",
+		// and must behave the same way rather than matching every scope.
+		{"", []string{"type/commission", "type/backlog", "type/block", "type/work"}},
+	}
+	for _, tc := range cases {
+		t.Run("repo="+tc.repoKey, func(t *testing.T) {
+			got := s.LabelsFor(tc.repoKey)
+			if strings.Join(got, " ") != strings.Join(tc.want, " ") {
+				t.Errorf("LabelsFor(%q) = %v, want %v", tc.repoKey, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLabelsForOnANilStructure(t *testing.T) {
+	var s *Structure
+	if got := s.LabelsFor("anything"); got != nil {
+		t.Errorf("LabelsFor on nil = %v, want nil", got)
+	}
+}

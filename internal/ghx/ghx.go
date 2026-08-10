@@ -122,6 +122,13 @@ type Client interface {
 	// id blockingID, as a native GitHub issue-dependency edge.
 	AddLabel(repo string, number int, label string) error
 	AddBlockedBy(repo string, number int, blockingID int64) error
+	// RepoLabels lists the labels DEFINED in a repository, which is a different
+	// question from what labels an issue carries: AddLabel fails when the
+	// definition is absent, and only this can say whether it is.
+	RepoLabels(repo string) ([]RepoLabel, error)
+	// CreateLabel defines one. It refuses an existing label rather than
+	// overwriting its colour and description.
+	CreateLabel(repo string, label RepoLabel) error
 
 	// IssueParent reports an issue's parent under GitHub's sub-issues feature,
 	// and whether it has one. GraphQL-only and immediately consistent; see
