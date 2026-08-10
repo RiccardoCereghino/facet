@@ -8,6 +8,28 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **`facet tree doctor` now says whether it looked.** It exited `1` for *I read
+  the tree and here are its defects* and `1` for *I never read anything* — a
+  malformed reference, an issue that does not exist, an HTTP error. Three
+  different answers, one exit code, so no caller could tell a finding from a
+  failure.
+
+  ```
+  0  looked, and the tree is clean
+  1  looked, and here are the defects        (unchanged)
+  2  could NOT look
+  ```
+
+  **Only the failure path moved**, so anything treating non-zero as "not clean"
+  is unaffected. Every other command still exits `1` on any error.
+
+  The alternative a caller was left with is the reason this is facet's to fix
+  rather than theirs to work around: **a classifier built on another tool's
+  prose is one release note away from silently answering the wrong thing.**
+  `argano`'s console had to declare "exit 1 from `facet tree doctor` means
+  findings", which then reads a 404 as a finding. `gad hold --fleet --check`
+  already answers this way — `1` while held, `2` when unreadable.
+
 - **A tree is read conditionally, so re-reading an unchanged one costs nothing.**
   The walk asked GitHub for a node's children, then asked again for each child —
   hundreds of sequential requests, **84% of the wall clock spent waiting** with

@@ -46,9 +46,7 @@ func main() {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
-			var err error
-			roots, err = config.Load()
-			return err
+			return loadRoots()
 		},
 	}
 	root.SetVersionTemplate("facet {{.Version}}\n")
@@ -59,8 +57,21 @@ func main() {
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "facet:", err)
-		os.Exit(1)
+		os.Exit(exitCodeFor(err))
 	}
+}
+
+// loadRoots fills the package-level roots from the configuration.
+//
+// Named rather than inlined into the root command's pre-run because a command
+// that needs to report a CONFIGURATION failure differently -- `tree doctor`,
+// which must not answer "I found defects" when it never read anything -- has to
+// override that pre-run, and an override that re-implemented the loading could
+// drift from it.
+func loadRoots() error {
+	var err error
+	roots, err = config.Load()
+	return err
 }
 
 // newVersionCmd prints the build version. It overrides the root's config-loading

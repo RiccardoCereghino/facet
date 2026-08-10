@@ -399,14 +399,25 @@ func runTreeStatus(w io.Writer, gh treeGH, ref ghx.IssueRef) error {
 	return nil
 }
 
+// runTreeDoctor reports a tree's defects, and SAYS WHICH OF THE TWO NON-ZERO
+// ANSWERS IT IS GIVING.
+//
+// Exit 1 means the walk happened and these are its findings. Exit 2 means it
+// never happened -- the routing file, the reference, or GitHub stopped it
+// before anything was read. Every error out of here is tagged one way or the
+// other, so an error added later cannot silently arrive as a finding: the only
+// untagged return is the clean one (facet#138).
 func runTreeDoctor(w io.Writer, gh treeGH, ref ghx.IssueRef, fixLabels bool) error {
 	root, route, err := walk(gh, ref, -1)
 	if err != nil {
-		return err
+		return withCode(exitCantLook, err)
 	}
 	if fixLabels {
 		if err := backfillLabels(w, gh, root, route); err != nil {
-			return err
+			// A write that failed is not a report about the tree either. The
+			// backfill runs BEFORE the checks, so whatever this run would have
+			// found was never computed.
+			return withCode(exitCantLook, err)
 		}
 	}
 	defects := tree.Doctor(root, route)
@@ -424,7 +435,7 @@ func runTreeDoctor(w io.Writer, gh treeGH, ref ghx.IssueRef, fixLabels bool) err
 	for _, d := range defects {
 		_, _ = fmt.Fprintln(w, d)
 	}
-	return fmt.Errorf("%d defect(s) in %s", len(defects), ref)
+	return withCode(exitLooked, fmt.Errorf("%d defect(s) in %s", len(defects), ref))
 }
 
 // backfillLabels records the level on every node that is missing it.

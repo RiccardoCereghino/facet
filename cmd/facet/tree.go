@@ -141,19 +141,46 @@ func newTreeDoctorCmd() *cobra.Command {
 			"children -- all wrong on any tree's own terms.\n\n" +
 			"Only with a `structure` block in the routing file: levels. Without one,\n" +
 			"nothing about shape is reported, because which shape is right is a\n" +
-			"contract facet does not hold. An issue with no parent is never a defect.",
-		Args: cobra.ExactArgs(1),
+			"contract facet does not hold. An issue with no parent is never a defect.\n\n" +
+			"EXIT CODES, and they are the point of reading this:\n" +
+			"  0  looked, and the tree is clean\n" +
+			"  1  looked, and here are the defects\n" +
+			"  2  could NOT look -- a malformed reference, an issue that does not exist,\n" +
+			"     an HTTP error, an unreadable routing file\n\n" +
+			"A caller must not read 2 as a finding. Only the failure path moved, so\n" +
+			"anything treating non-zero as \"not clean\" keeps working unchanged.",
+		Args: exactArgsOrCantLook(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ref, err := parseIssueRef(args[0])
 			if err != nil {
-				return err
+				// Refusing the argument is the clearest case of not having
+				// looked: nothing was read, so there is nothing to report.
+				return withCode(exitCantLook, err)
 			}
 			return runTreeDoctor(cmd.OutOrStdout(), gh, ref, fixLabels)
 		},
 	}
 	cmd.Flags().BoolVar(&fixLabels, "fix-labels", false,
 		"record the level on every node missing its type label; never touches one that CONTRADICTS the tree")
+	// Every way of failing before the walk gets the same answer, including the
+	// ones cobra produces rather than this file: a mistyped flag, and a
+	// configuration that could not be read. Left untagged they would default to
+	// 1 and claim a finding.
+	cmd.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
+		return withCode(exitCantLook, err)
+	})
+	cmd.PersistentPreRunE = func(*cobra.Command, []string) error {
+		return withCode(exitCantLook, loadRoots())
+	}
 	return cmd
+}
+
+// exactArgsOrCantLook is cobra.ExactArgs with the exit code a checker owes:
+// being handed the wrong number of arguments is not a finding about any tree.
+func exactArgsOrCantLook(n int) cobra.PositionalArgs {
+	return func(cmd *cobra.Command, args []string) error {
+		return withCode(exitCantLook, cobra.ExactArgs(n)(cmd, args))
+	}
 }
 
 // parseIssueRef reads "owner/repo#n".
