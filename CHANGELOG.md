@@ -37,16 +37,29 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
   Nothing asserted the parity, and the failure was invisible because it is a
   **warning inside a successful command**. Measured on the setup that produced
-  the issue: **10 of 14 routed repositories** were missing at least one declared
-  label, and each looked fine when checked alone.
+  the issue: **9 of 14 routed repositories** were missing at least one label
+  they can actually be asked for, and each looked fine when checked alone.
 
   With no `--repo` it sweeps **every repository in the routing file**, because
   the ones that are short are the ones nobody has touched recently — a check
   aimed at the repository in front of you is the check that already missed it.
   `--create` closes the gap, copying the colour and description from a routed
-  repository that already has the label. **The required set is
-  `Structure.Labels()`, never a list inside facet** — so a typo cannot bring a
-  label into existence, and adding a level does not leave a second list stale.
+  repository that already has the label.
+
+  **The required set is read from the routing file, never a list inside facet,
+  and it is PER REPOSITORY.** A label declared on a repo-scoped shape —
+  `{"repo": "stele", "label": "type/seat"}` — is reachable in that repository
+  and nowhere else, so requiring it everywhere would report a gap the structure
+  itself says can never be used, and `--create` would then define a label no
+  wire there could ever apply. `Structure.Labels()` remains the *recognition*
+  set (is this one of ours?); `Structure.LabelsFor(repo)` is the *requirement*
+  set (could a wire here ever need this?), and the two are documented against
+  each other.
+
+  Exit codes are `tree doctor`'s: `0` full parity, `1` something missing, `2`
+  no repository could be read. A gap found is `1` even alongside an unreadable
+  repository — there is a real finding, and the unchecked repositories are
+  named in the message.
 
 ### Changed
 

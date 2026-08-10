@@ -208,15 +208,18 @@ func recordLevel(w io.Writer, gh treeGH, route *routing.Routing, child ghx.Issue
 // permission, a rate limit) is reported as itself rather than misdiagnosed as
 // a missing label.
 func createDeclaredLabel(w io.Writer, gh treeGH, route *routing.Routing, repo, label string) (bool, error) {
+	// LabelsFor, not Labels: a label declared on a repo-scoped shape can only
+	// ever be applied in that repository, so creating it anywhere else would
+	// define a label no wire there could reach.
 	declared := false
-	for _, l := range route.Structure.Labels() {
+	for _, l := range route.Structure.LabelsFor(route.KeyForRepo(repo)) {
 		if l == label {
 			declared = true
 			break
 		}
 	}
 	if !declared {
-		return false, fmt.Errorf("%s is not a label this routing file's structure declares", label)
+		return false, fmt.Errorf("%s is not a label this routing file's structure declares for %s", label, repo)
 	}
 	have, err := gh.RepoLabels(repo)
 	if err != nil {

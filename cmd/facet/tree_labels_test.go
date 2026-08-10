@@ -95,7 +95,7 @@ func TestTreeLabelsPassesWhenEveryRepositoryHasThem(t *testing.T) {
 	if err := runTreeLabels(&out, f, route, []string{"acme/lab", "acme/doctrine"}, false); err != nil {
 		t.Fatalf("a repository set with full parity failed: %v\n%s", err, out.String())
 	}
-	if !strings.Contains(out.String(), "every repository defines every declared label") {
+	if !strings.Contains(out.String(), "every repository defines every label it can be asked for") {
 		t.Errorf("output does not state the pass:\n%s", out.String())
 	}
 }
@@ -142,9 +142,14 @@ func TestCreateOnlyEverMakesDeclaredLabels(t *testing.T) {
 	if err := runTreeLabels(&out, f, route, []string{"acme/harness"}, true); err != nil {
 		t.Fatalf("--create failed: %v\n%s", err, out.String())
 	}
+	// LabelsFor, not Labels: type/seat is declared under a doctrine-scoped
+	// shape, so acme/harness must neither be asked for it nor given it.
 	declared := map[string]bool{}
-	for _, l := range route.Structure.Labels() {
+	for _, l := range route.Structure.LabelsFor(route.KeyForRepo("acme/harness")) {
 		declared[l] = true
+	}
+	if declared["type/seat"] {
+		t.Fatal("type/seat is doctrine-scoped; acme/harness must not require it")
 	}
 	for _, c := range f.created {
 		name := strings.TrimSuffix(strings.SplitN(c, ": ", 2)[1], " #"+defaultLabelColour)
@@ -354,5 +359,95 @@ func TestASuccessfulWireStillCostsNoLabelReads(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "level recorded: type/work") {
 		t.Errorf("the level was not recorded:\n%s", out.String())
+	}
+}
+
+// !! FINDING 1 OF THE FIRST AUDIT ROUND. !! A label declared on a REPO-SCOPED
+// shape can only ever be applied in that repository -- `matchedShape` skips a
+// shape whose repo does not match -- so demanding it everywhere reports a gap
+// the structure itself says can never be used.
+//
+// Measured on the live routing file at the time: `cava` was reported MISSING
+// type/maquette, which is declared `repo: lab-workspaces`. No wire into `cava`
+// could ever want it. The report said 10 of 14; the defensible number was 9.
+//
+// The stakes are not cosmetic: --create would have DEFINED that label in every
+// repository, and the report's own fix line invites exactly that.
+func TestARepoScopedLabelIsRequiredOnlyInItsOwnRepo(t *testing.T) {
+	route := labelRouting(t)
+	// type/seat is declared under {repo: doctrine, …} in this structure.
+	f := &labelFake{defined: map[string][]ghx.RepoLabel{
+		"acme/doctrine": defines("type/commission", "type/seat", "type/block", "type/work"),
+		"acme/harness":  defines("type/commission", "type/block", "type/work"),
+	}}
+	var out bytes.Buffer
+
+	if err := runTreeLabels(&out, f, route, []string{"acme/doctrine", "acme/harness"}, false); err != nil {
+		t.Fatalf("a repository was faulted for a label it can never be given: %v\n%s", err, out.String())
+	}
+	if strings.Contains(out.String(), "MISSING") {
+		t.Errorf("nothing should be missing:\n%s", out.String())
+	}
+	// And the row says how many it was actually judged against, so "ok"
+	// against a shorter list is visible rather than surprising.
+	if !strings.Contains(out.String(), "acme/harness") || !strings.Contains(out.String(), "3 required") {
+		t.Errorf("the per-repo required count is not shown:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "4 required") {
+		t.Errorf("doctrine should be judged against four, including its scoped type/seat:\n%s", out.String())
+	}
+}
+
+// The same rule on the write path: --create must not define a repo-scoped
+// label in a repository the structure forbids applying it in.
+func TestCreateNeverDefinesARepoScopedLabelElsewhere(t *testing.T) {
+	route := labelRouting(t)
+	f := &labelFake{defined: map[string][]ghx.RepoLabel{"acme/harness": nil}}
+
+	if err := runTreeLabels(&bytes.Buffer{}, f, route, []string{"acme/harness"}, true); err != nil {
+		t.Fatalf("--create failed: %v", err)
+	}
+	for _, c := range f.created {
+		if strings.Contains(c, "type/seat") {
+			t.Errorf("created %q: type/seat is doctrine-scoped and unreachable in acme/harness", c)
+		}
+	}
+}
+
+// An unreadable repository and NO findings is `tree doctor`'s exit 2 -- the
+// same fact in the same tool, answered the same way. Two verbs disagreeing
+// about "I could not look" is the inconsistency facet#138 exists to remove.
+func TestCouldNotLookIsExitTwo(t *testing.T) {
+	route := labelRouting(t)
+	f := &labelFake{errs: map[string]error{"acme/harness": errors.New("HTTP 404")}}
+
+	err := runTreeLabels(&bytes.Buffer{}, f, route, []string{"acme/harness"}, false)
+	if err == nil {
+		t.Fatal("an unreadable repository was reported as parity")
+	}
+	if got := exitCodeFor(err); got != exitCantLook {
+		t.Errorf("exit code = %d, want %d (could not look)\n  %v", got, exitCantLook, err)
+	}
+}
+
+// A gap FOUND is still exit 1, even alongside a repository that could not be
+// read: there is a real finding, and the unchecked repositories are named in
+// the message rather than folded into the code.
+func TestAFindingIsExitOneEvenWithAnUnreadableRepo(t *testing.T) {
+	route := labelRouting(t)
+	f := &labelFake{
+		defined: map[string][]ghx.RepoLabel{"acme/lab": defines("type/commission")},
+		errs:    map[string]error{"acme/harness": errors.New("HTTP 404")},
+	}
+
+	err := runTreeLabels(&bytes.Buffer{}, f, route, []string{"acme/lab", "acme/harness"}, false)
+	if err == nil {
+		t.Fatal("a missing label was reported as parity")
+	}
+	if got := exitCodeFor(err); got != exitLooked {
+		t.Errorf("exit code = %d, want %d (looked, and found something)\n  %v", got, exitLooked, err)
+	}
+	if !strings.Contains(err.Error(), "acme/harness") {
+		t.Errorf("the unchecked repository is not named:\n%s", err)
 	}
 }

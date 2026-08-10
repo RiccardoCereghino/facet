@@ -332,9 +332,12 @@ facet tree labels [--repo owner/name] [--create]
 by applying a label, and **a label a repository never defined cannot be
 applied** — so without this the edge lands, the level does not, and the command
 succeeds. With no `--repo` it sweeps every repository the routing file knows,
-because the ones that are short are the ones nobody looks at. The required set
-is whatever `structure` declares, so `--create` can only ever create a label
-the configuration already names.
+because the ones that are short are the ones nobody looks at.
+
+The required set is whatever `structure` declares **for that repository** — a
+label declared on a repo-scoped shape is reachable only there — so `--create`
+can only ever create a label the configuration already names for the repo it is
+writing to.
 
 **None of this is required to use facet, and none of it is assumed anywhere
 else.** `facet spawn` never asks whether an issue has a parent; an issue with
