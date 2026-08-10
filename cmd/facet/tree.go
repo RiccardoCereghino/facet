@@ -28,7 +28,7 @@ func newTreeCmd() *cobra.Command {
 			"is never reported.",
 	}
 	cmd.AddCommand(newTreeWireCmd(), newTreeShowCmd(), newTreeListCmd(),
-		newTreeStatusCmd(), newTreeDoctorCmd(), newTreeOrphansCmd())
+		newTreeStatusCmd(), newTreeDoctorCmd(), newTreeOrphansCmd(), newTreeLabelsCmd())
 	return cmd
 }
 
@@ -69,6 +69,65 @@ func newTreeOrphansCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&repos, "repo", nil,
 		"a repository to scan, as owner/name; repeat for several")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit JSON rather than lines")
+	return cmd
+}
+
+// newTreeLabelsCmd asserts that every routed repository DEFINES the labels the
+// structure declares.
+//
+// It is the parity nothing checked: `wire` records a node's level by applying a
+// label, and applying a label a repository has never defined fails. Eleven
+// repositories in the setup that produced facet#139 carried four different
+// label sets, and each of them looked fine when checked on its own.
+func newTreeLabelsCmd() *cobra.Command {
+	var repos []string
+	var create bool
+	cmd := &cobra.Command{
+		Use:   "labels [--repo <owner/name> …] [--create]",
+		Short: "Check every repository defines the labels the structure declares",
+		Long: "`wire` records the level it enforced by applying a label. A repository\n" +
+			"that never DEFINED that label cannot be given it -- so the edge lands,\n" +
+			"the level does not, and the tree gains a node whose level is unknown.\n\n" +
+			"This asserts the parity. WITH NO --repo IT SWEEPS EVERY REPOSITORY IN\n" +
+			"THE ROUTING FILE, because the gap is an estate property: the repositories\n" +
+			"that are short are the ones nobody has touched recently, so a check aimed\n" +
+			"at the repository in front of you is the check that already missed it.\n\n" +
+			"The required set is whatever the `structure` block declares -- exactly\n" +
+			"what `wire` may need to apply there, never a list inside facet. IT IS\n" +
+			"PER REPOSITORY: a label declared on a repo-scoped shape is reachable in\n" +
+			"that repository and nowhere else, so requiring it everywhere would\n" +
+			"report a gap the structure itself says can never be used.\n\n" +
+			"--create defines the missing ones, copying the definition from a routed\n" +
+			"repository that already has it so the colour and description match. It\n" +
+			"can only ever create a label the routing file already names for that\n" +
+			"repository, so a typo cannot bring one into existence.\n\n" +
+			"EXIT CODES, the same three `tree doctor` uses:\n" +
+			"  0  every repository defines every label it can be asked for\n" +
+			"  1  looked, and something is missing\n" +
+			"  2  could NOT look -- no repository could be read, so nothing is\n" +
+			"     reported and nothing is ruled out\n\n" +
+			"A gap FOUND is 1 even when some repository could not be read: there is a\n" +
+			"real finding, and the unchecked repositories are named in the message.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			route, err := loadRouting()
+			if err != nil {
+				return err
+			}
+			if len(repos) == 0 {
+				repos = routedRepos(route)
+			}
+			if len(repos) == 0 {
+				return fmt.Errorf("no repository to check: the routing file maps none, and none was named\n" +
+					"fix: facet tree labels --repo owner/name")
+			}
+			return runTreeLabels(cmd.OutOrStdout(), gh, route, repos, create)
+		},
+	}
+	cmd.Flags().StringArrayVar(&repos, "repo", nil,
+		"a repository to check, as owner/name; repeat for several. Default: every repo in the routing file")
+	cmd.Flags().BoolVar(&create, "create", false,
+		"define the missing labels, only ever from the set the structure declares")
 	return cmd
 }
 

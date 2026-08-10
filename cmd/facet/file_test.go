@@ -18,7 +18,18 @@ import (
 type fakeGH struct {
 	addedLabels []string
 	addLabelErr error
-	createURL   string
+
+	// The repository-side label definitions, which is what AddLabel needs to
+	// already exist. nil means "defines nothing", which is only ever read by
+	// the tests that care.
+	// labelNotFound makes AddLabel fail the way gh does for a label the
+	// repository does not define, and succeed once it does.
+	labelNotFound  bool
+	repoLabels     map[string][]ghx.RepoLabel
+	repoLabelErrs  map[string]error
+	createdLabels  []string
+	createLabelErr error
+	createURL      string
 
 	issueIDs  map[string]int64 // "owner/repo#n" -> id
 	issueErrs map[string]error // "owner/repo#n" -> error from IssueID
@@ -109,8 +120,23 @@ func (f *fakeGH) IssueID(repo string, number int) (int64, error) {
 // addedLabels records every label write, so a test can assert that `tree wire`
 // RECORDED the level rather than merely derived it.
 func (f *fakeGH) AddLabel(repo string, number int, label string) error {
+	// The facet#139 case, scripted SEPARATELY from addLabelErr because the two
+	// must be told apart without reading gh's sentence: a label the repository
+	// has not DEFINED cannot be applied, and can be applied the moment it is.
+	if f.labelNotFound && !f.definesLabel(repo, label) {
+		return fmt.Errorf("failed to update %s#%d: '%s' not found", repo, number, label)
+	}
 	f.addedLabels = append(f.addedLabels, f.key(repo, number)+"+"+label)
 	return f.addLabelErr
+}
+
+func (f *fakeGH) definesLabel(repo, label string) bool {
+	for _, l := range f.repoLabels[repo] {
+		if l.Name == label {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *fakeGH) AddBlockedBy(repo string, number int, blockingID int64) error {
@@ -149,6 +175,32 @@ func (f *fakeGH) IssueParent(repo string, number int) (ghx.IssueRef, bool, error
 // repository rather than an error, so the tests that are not about orphans do
 // not have to script one.
 func (f *fakeGH) OpenIssueParents(_ string) ([]ghx.Parentage, error) { return nil, nil }
+
+// The label DEFINITIONS in a repository, as opposed to the labels an issue
+// carries. A test that does not script them gets a repository defining every
+// label the structure declares -- the state facet#139 says is not universal,
+// but is the right default for the tests that are not about it.
+func (f *fakeGH) RepoLabels(repo string) ([]ghx.RepoLabel, error) {
+	if err, ok := f.repoLabelErrs[repo]; ok {
+		return nil, err
+	}
+	if f.repoLabels == nil {
+		return nil, nil
+	}
+	return f.repoLabels[repo], nil
+}
+
+func (f *fakeGH) CreateLabel(repo string, l ghx.RepoLabel) error {
+	f.createdLabels = append(f.createdLabels, repo+": "+l.Name+" #"+l.Color)
+	if f.createLabelErr != nil {
+		return f.createLabelErr
+	}
+	if f.repoLabels == nil {
+		f.repoLabels = map[string][]ghx.RepoLabel{}
+	}
+	f.repoLabels[repo] = append(f.repoLabels[repo], l)
+	return nil
+}
 
 func (f *fakeGH) IssueChildren(repo string, number int) ([]ghx.SubIssue, error) {
 	k := f.key(repo, number)

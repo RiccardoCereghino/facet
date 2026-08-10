@@ -106,6 +106,35 @@ func (f *treeFake) IssueChildren(repo string, number int) ([]ghx.SubIssue, error
 	return out, nil
 }
 
+// AddSubIssue records the edge AND reflects it in the parent map.
+//
+// The parent read is immediately consistent on the real API, and recordLevel
+// runs AFTER the write -- so a fake whose parent map ignores its own writes
+// resolves every freshly wired child as its own root, and the level recorded
+// in a test is not the level a live wire records. facet#139 turns on exactly
+// what gets recorded, so the fake has to be faithful about it.
+func (f *treeFake) AddSubIssue(repo string, number int, childID int64) error {
+	if err := f.fakeGH.AddSubIssue(repo, number, childID); err != nil {
+		return err
+	}
+	owner, name, _ := strings.Cut(repo, "/")
+	for k, id := range f.issueIDs {
+		if id != childID {
+			continue
+		}
+		if f.parents == nil {
+			f.parents = map[string]ghx.IssueRef{}
+		}
+		childOwner, rest, _ := strings.Cut(k, "/")
+		childRepo, num, _ := strings.Cut(rest, "#")
+		_ = childOwner
+		_ = childRepo
+		_ = num
+		f.parents[k] = ghx.IssueRef{Owner: owner, Repo: name, Number: number}
+	}
+	return nil
+}
+
 func itoa(n int) string {
 	if n == 0 {
 		return "0"
