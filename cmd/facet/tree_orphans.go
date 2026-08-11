@@ -50,6 +50,21 @@ type orphanEntry struct {
 // named rather than merely counted -- the whole value of this command is
 // saying what is not in the tree, so a repository it could not list is exactly
 // the answer a caller must not be allowed to miss.
+//
+// AN UNREADABLE REPOSITORY IS exitCantLook, NOT exitLooked. facet#138 gave
+// `tree doctor` the distinction that 1 means "I looked, and here is what is
+// wrong" and 2 means "I could not look"; `tree labels` took it too. This verb
+// landed in the same block deliberately without it, because the typed codes
+// then lived only in #138's unmerged branch and adopting them would have made
+// an independent block into a chain. That branch merged, so the reason is gone
+// and the code was not (facet#145).
+//
+// FOR THIS VERB THE SET IS 0 AND 2, WITH NO 1 AT ALL, and that is the whole
+// shape rather than an omission: finding orphans is exit 0 (facet#116 -- an
+// unparented issue is a valid issue and this is a question, not a verdict), so
+// the only failure it has left is not having been able to ask. `tree labels`
+// answers 1 for a finding-plus-unreadable because it HAS a finding code; this
+// one does not, so the both-case cannot arise.
 func runTreeOrphans(w io.Writer, gh orphanGH, repos []string, asJSON bool) error {
 	var report orphanReport
 	report.Orphans = []orphanEntry{}
@@ -91,10 +106,10 @@ func runTreeOrphans(w io.Writer, gh orphanGH, repos []string, asJSON bool) error
 	}
 
 	if len(failed) > 0 {
-		return fmt.Errorf("could not read %s: %s\n"+
+		return withCode(exitCantLook, fmt.Errorf("could not read %s: %s\n"+
 			"  the issues there are neither reported nor ruled out\n"+
 			"fix: check the repository exists and this credential can see its issues",
-			plural(len(failed), "repository", "repositories"), strings.Join(failed, ", "))
+			plural(len(failed), "repository", "repositories"), strings.Join(failed, ", ")))
 	}
 	return nil
 }

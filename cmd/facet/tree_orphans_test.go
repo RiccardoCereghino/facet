@@ -107,6 +107,88 @@ func TestAnUnreadableRepositoryFails(t *testing.T) {
 	}
 }
 
+// !! facet#145: THE CODE, NOT JUST THE FAILURE. !! The test above proves an
+// unreadable repository fails; it passed before this change and after it,
+// because `err != nil` is true either way. THAT IS THE GAP THIS CLOSES -- the
+// defect was never "orphans reports a bad repo as clean", it was that a caller
+// could not tell that answer apart from a finding.
+//
+// Deliberately asserted through exitCodeFor rather than by reading the message:
+// a classifier built on another tool's prose is one wording change away from
+// answering the wrong thing, which is the whole argument of facet#138.
+func TestAnUnreadableRepositoryIsCouldNotLookNotAFinding(t *testing.T) {
+	f := orphanFixture()
+	f.errs = map[string]error{"acme/doctrine": errors.New("HTTP 404")}
+
+	err := runTreeOrphans(&bytes.Buffer{}, f, []string{"acme/harness", "acme/doctrine"}, false)
+	if err == nil {
+		t.Fatal("an unreadable repository was reported as clean")
+	}
+	if got := exitCodeFor(err); got != exitCantLook {
+		t.Errorf("exit code = %d, want %d (could not look)\n  error: %v", got, exitCantLook, err)
+	}
+}
+
+// THE OTHER HALF, AND IT IS THE ONE A CODE CHANGE QUIETLY BREAKS. Finding
+// orphans stays exit 0 (facet#116): an unparented issue is a valid issue and
+// this is a question, not a verdict. Tagging the failure path must not drag the
+// success path with it.
+func TestFindingOrphansIsStillExitZeroAfterTagging(t *testing.T) {
+	f := orphanFixture()
+	if err := runTreeOrphans(&bytes.Buffer{}, f, []string{"acme/harness"}, false); err != nil {
+		t.Fatalf("finding orphans returned an error, so it can no longer be exit 0: %v", err)
+	}
+}
+
+// Naming no repository read nothing, so it cannot be a finding either. This is
+// the entrance tagCantLook covers, and it is a different code path from the
+// read failure above.
+func TestTreeOrphansWithNoRepoIsCouldNotLook(t *testing.T) {
+	cmd := newTreeOrphansCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs(nil)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("orphans ran with no --repo")
+	}
+	if got := exitCodeFor(err); got != exitCantLook {
+		t.Errorf("exit code = %d, want %d\n  error: %v", got, exitCantLook, err)
+	}
+}
+
+// A mistyped flag is cobra's error rather than this package's, and it defaults
+// to 1 unless the command opts in. `tree doctor` spelled these out one at a
+// time and `tree labels` shipped without them; this is the same omission a
+// third verb over.
+func TestTreeOrphansFlagErrorIsNotAFinding(t *testing.T) {
+	cmd := newTreeOrphansCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--jsonn"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("a misspelled flag was accepted")
+	}
+	if got := exitCodeFor(err); got != exitCantLook {
+		t.Errorf("exit code = %d, want %d\n  error: %v", got, exitCantLook, err)
+	}
+}
+
+// The codes are in --help, as `doctor`'s and `labels`' are. A caller must be
+// able to learn that this verb has no 1 without reading the source -- an
+// absence is exactly what nobody thinks to ask about.
+func TestTreeOrphansHelpStatesTheExitCodes(t *testing.T) {
+	long := newTreeOrphansCmd().Long
+	for _, want := range []string{"EXIT CODES", "could NOT look", "0  looked", "2  could", "NO 1 HERE"} {
+		if !strings.Contains(long, want) {
+			t.Errorf("--help is missing %q:\n%s", want, long)
+		}
+	}
+}
+
 // A repository with no orphans must be visible in the output. Otherwise "no
 // orphans in acme/lab" and "acme/lab was never scanned" print identically.
 func TestARepositoryWithNoOrphansStillAppears(t *testing.T) {

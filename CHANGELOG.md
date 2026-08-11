@@ -18,9 +18,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
   **It is a question, not a verdict.** An unparented issue is a valid issue and
   plenty are deliberately outside a hierarchy, so **finding some is exit 0**.
-  Exit 1 means a repository could not be read — silence about a repository
-  nobody could list would otherwise read as "nothing unparented there", and the
-  report names it rather than dropping it.
+  **Exit 2 means it could not look** — a repository could not be read, or none
+  was named — since silence about a repository nobody could list would
+  otherwise read as "nothing unparented there", and the report names it rather
+  than dropping it. **There is no exit 1**: this verb has no *I looked, and here
+  is what is wrong* answer, because finding orphans is exit 0.
 
   One GraphQL query per hundred issues rather than one per issue, and it
   deliberately does not fetch labels: GitHub bills a query for the nodes it

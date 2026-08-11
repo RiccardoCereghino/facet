@@ -321,9 +321,14 @@ the complement, one repository at a time.
 
 **It reports a set, not a verdict.** An unparented issue is a perfectly valid
 issue, and plenty are deliberately outside a hierarchy — so finding some is
-exit 0. Exit 1 means a repository could not be read, which is the fact worth
-failing on: silence about a repository nobody could list would read as
-"nothing unparented there".
+exit 0. **Exit 2 means it could not look** — a repository could not be read, or
+none was named — which is the fact worth failing on: silence about a repository
+nobody could list would read as "nothing unparented there".
+
+**There is no exit 1 here, and that is the shape rather than an omission.**
+`doctor` and `labels` use 1 for *I looked, and here is what is wrong*; this verb
+has no such answer, because finding orphans is exit 0. So the only failure left
+is not having been able to ask.
 
 facet tree labels [--repo owner/name] [--create]
 ```
