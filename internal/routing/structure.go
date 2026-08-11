@@ -1,6 +1,7 @@
 package routing
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -53,10 +54,87 @@ type Level struct {
 	// with no title-parsing rules at all.
 	Label string `json:"label,omitempty"`
 	// RequiresChildren marks a rung whose whole purpose is to hold others, so
-	// that one closed with none is reported. That is a real loss rather than a
+	// that one holding none is reported. That is a real loss rather than a
 	// tidiness point: a record of who did some work, carrying nothing, means
 	// the work it accounted for can no longer be attributed to it.
-	RequiresChildren bool `json:"requiresChildren,omitempty"`
+	//
+	// IT IS ORTHOGONAL TO Optional, AND THAT IS THE QUESTION facet#146 EXISTS
+	// TO ANSWER. Optional says the rung may be SKIPPED; this says a node that IS
+	// here must hold something. That the rung could have been skipped is the
+	// REASON an empty node at it is a defect -- it is a level label with no work
+	// under it -- not a reason to leave it unchecked.
+	RequiresChildren ChildRequirement `json:"requiresChildren,omitempty"`
+}
+
+// ChildRequirement says WHEN a node at a level must hold children.
+//
+// TWO VALUES, BECAUSE TWO RUNGS WANT DIFFERENT THINGS AND NEITHER IS WRONG.
+// A rung recording who did some work is legitimately created before the work is
+// wired under it, so only a CLOSED one holding nothing is a loss. A rung whose
+// entire meaning is "these things belong together" is meaningless empty at any
+// moment, and an OPEN one holding nothing is the case that actually costs
+// something -- it is offered by every planner as if it were work.
+//
+// Collapsing them would either make the first rung noisy about every node
+// created moments ago, or leave the second unchecked while it is still doing
+// harm. So the level says which it means.
+type ChildRequirement string
+
+const (
+	// ChildrenNotRequired is the default and the absent field: nothing is
+	// checked, which is what every rung that does not ask for this gets.
+	ChildrenNotRequired ChildRequirement = ""
+	// ChildrenRequiredWhenClosed reports a CLOSED node holding nothing. It is
+	// what `true` decodes to, so every routing file written before this
+	// distinction existed keeps its exact behaviour.
+	ChildrenRequiredWhenClosed ChildRequirement = "closed"
+	// ChildrenRequiredAlways reports a node holding nothing, open or closed.
+	ChildrenRequiredAlways ChildRequirement = "always"
+)
+
+// Demands reports whether a node at this level, in this state, must hold
+// children.
+func (c ChildRequirement) Demands(closed bool) bool {
+	switch c {
+	case ChildrenRequiredAlways:
+		return true
+	case ChildrenRequiredWhenClosed:
+		return closed
+	default:
+		return false
+	}
+}
+
+// UnmarshalJSON accepts the boolean this field used to be as well as the two
+// names, so ADOPTING THE DISTINCTION COSTS NO EXISTING ROUTING FILE A BYTE.
+// `true` means what it has always meant.
+//
+// An unrecognised value is REFUSED rather than treated as "not required": a
+// typo that silently disables a check is exactly the failure this whole area
+// keeps producing, and a configuration that cannot be understood is not a
+// configuration that asks for nothing.
+func (c *ChildRequirement) UnmarshalJSON(b []byte) error {
+	var asBool bool
+	if err := json.Unmarshal(b, &asBool); err == nil {
+		if asBool {
+			*c = ChildrenRequiredWhenClosed
+		} else {
+			*c = ChildrenNotRequired
+		}
+		return nil
+	}
+	var asString string
+	if err := json.Unmarshal(b, &asString); err != nil {
+		return fmt.Errorf("requiresChildren: want true, false, %q or %q, got %s",
+			ChildrenRequiredWhenClosed, ChildrenRequiredAlways, string(b))
+	}
+	switch ChildRequirement(asString) {
+	case ChildrenNotRequired, ChildrenRequiredWhenClosed, ChildrenRequiredAlways:
+		*c = ChildRequirement(asString)
+		return nil
+	}
+	return fmt.Errorf("requiresChildren: %q is not a value; want true, false, %q or %q",
+		asString, ChildrenRequiredWhenClosed, ChildrenRequiredAlways)
 }
 
 // LevelMatch is one accepted shape. An empty field does not constrain, so

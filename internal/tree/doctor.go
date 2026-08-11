@@ -350,18 +350,49 @@ func structural(n *Node, s *routing.Structure) (defects, unread []Defect) {
 		return out, nil
 	}
 
-	// A rung whose purpose is to hold others, closed holding nothing.
-	if lvl := s.Levels[n.Level]; lvl.RequiresChildren && n.IsClosed() && len(n.Children) == 0 {
+	// A rung whose purpose is to hold others, holding nothing.
+	//
+	// THE OPEN CASE IS THE EXPENSIVE ONE AND WAS NEVER CHECKED. A closed empty
+	// node is a loss already taken. An OPEN empty node is offered by every
+	// planner and every readiness query as if it were work, so it costs
+	// somebody's attention every time the board is read -- and `facet tree wire`
+	// manufactures them by correct behaviour, since the level is assigned by
+	// POSITION: a leaf wired straight onto a holder is recorded as the rung
+	// between them, and nobody chooses that (facet#146).
+	if lvl := s.Levels[n.Level]; lvl.RequiresChildren.Demands(n.IsClosed()) && len(n.Children) == 0 {
+		what := fmt.Sprintf("is an open %s with no children", lvl.Name)
+		why := "this level exists to hold work, and an empty one is a level label with nothing under it -- offered by every planner as if it were work"
+		fix := "wire its work under it, or close it if there is none"
+		if n.IsClosed() {
+			what = fmt.Sprintf("is a closed %s with no children", lvl.Name)
+			why = "this level exists to hold the work it accounts for; closed and empty, whatever it covered can no longer be attributed to it"
+			fix = "wire its work under it before closing, or record why there was none"
+		}
 		out = append(out, Defect{
 			Ref:  n.Ref,
-			What: fmt.Sprintf("is a closed %s with no children", lvl.Name),
-			Why:  "this level exists to hold the work it accounts for; closed and empty, whatever it covered can no longer be attributed to it",
-			Read: fmt.Sprintf("state %s, %d children read, level %q requires children",
-				n.State, len(n.Children), lvl.Name),
-			Fix: "wire its work under it before closing, or record why there was none",
+			What: what,
+			// The evidence carries WHICH requirement fired, because "0 children"
+			// alone does not say whether this rung is checked once closed or at
+			// all times -- and those are the two states a reader has to tell
+			// apart to know whether the report is about a loss or about work
+			// standing empty on the board.
+			Read: fmt.Sprintf("state %s, %d children read, level %q requires children %s",
+				n.State, len(n.Children), lvl.Name, requirementPhrase(lvl.RequiresChildren)),
+			Why: why,
+			Fix: fix,
 		})
 	}
 	return out, nil
+}
+
+// requirementPhrase renders a level's child requirement for an evidence line,
+// so a reader can tell "this rung is checked once closed" from "this rung is
+// checked at all times" without opening the routing file.
+func requirementPhrase(c routing.ChildRequirement) string {
+	if c == routing.ChildrenRequiredAlways {
+		return "at all times"
+	}
+	return "once closed"
 }
 
 // describeLevels names the rungs a node was judged against, for an evidence

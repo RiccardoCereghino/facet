@@ -201,6 +201,41 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   question; `read: labels type/block, type/work` is falsifiable at the point of
   reading, and would have settled the incident above in seconds.
 
+- **`facet tree doctor` can now see an empty block, and says which levels it
+  examined.** The childless check ran on the **holder** rung and not on the
+  **block** rung, so a closed block with zero children sat inside a tree that
+  reported `no defects` — while the same run correctly reported three childless
+  closed holders. **The check worked; it was pointed one level too high.**
+
+  `requiresChildren` is now `true` / `"closed"` / `"always"`, and **`true` keeps
+  meaning exactly what it meant**, so no existing routing file changes a byte.
+  An unrecognised value is REFUSED rather than read as "not required" — a typo
+  that silently disables a check is the failure this area keeps producing.
+
+  **The two values exist because two rungs want different things.** A rung
+  recording who did some work is legitimately created before the work is wired
+  under it, so only a CLOSED one holding nothing is a loss. A rung whose whole
+  meaning is "these things belong together" is meaningless empty at any moment,
+  and **the OPEN case is the one that costs something** — it is offered by every
+  planner as if it were work. Collapsing them would make the first rung noisy
+  about every node created moments ago, and a check that cries wolf on the
+  ordinary path is a check somebody turns off.
+
+  **`requiresChildren` on an `optional` rung is meaningful, and the two are
+  orthogonal.** Optional says the rung may be SKIPPED; this says a node that IS
+  there must hold something. **That the rung could have been skipped is the
+  REASON an empty node at it is a defect** — it is a level label with no work
+  under it. `facet tree wire` manufactures them by correct behaviour, since the
+  level is assigned by POSITION: a leaf wired straight onto a holder is recorded
+  as the rung between them, and nobody chooses that.
+
+- **`tree doctor` names the levels and checks it examined, on the clean path as
+  well as the findings path.** `no defects` is a claim about **what the checker
+  checks** and reads as a claim about the tree, so a clean result was
+  indistinguishable from an unexamined level — which is exactly how the gap
+  above stayed invisible. It also says, in as many words, when **no** level
+  requires children, so that state is stated rather than inferred from silence.
+
 ### Added
 
 - **A grouping nobody is working can be placed in the tree, without inventing a
