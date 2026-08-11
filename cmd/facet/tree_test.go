@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -55,6 +56,18 @@ const labelledFourLevelStructure = `,
 	"structure": {"levels": [
 		{"name": "commission", "label": "type/commission"},
 		{"name": "seat", "requiresChildren": true,
+		 "accepts": [{"repo": "doctrine", "titlePattern": "^seat: ", "label": "type/seat"}]},
+		{"name": "block", "optional": true, "label": "type/block"},
+		{"name": "issue", "label": "type/work"}
+	]}`
+
+// noHolderStructure is labelledFourLevelStructure with NO rung asking to hold
+// children -- the state facet#146 was reported from, where an empty node at any
+// level is invisible and the report says "no defects" regardless.
+const noHolderStructure = `,
+	"structure": {"levels": [
+		{"name": "commission", "label": "type/commission"},
+		{"name": "seat",
 		 "accepts": [{"repo": "doctrine", "titlePattern": "^seat: ", "label": "type/seat"}]},
 		{"name": "block", "optional": true, "label": "type/block"},
 		{"name": "issue", "label": "type/work"}
@@ -463,6 +476,124 @@ func TestTreeWireRefusesSelfParenting(t *testing.T) {
 }
 
 // Silence about the shape must not read as a clean bill of health for it.
+// !! `no defects` IS A CLAIM ABOUT WHAT THE CHECKER CHECKS, AND IT READS AS A
+// CLAIM ABOUT THE TREE. !!
+//
+// A clean result was indistinguishable from an unexamined level -- which is
+// exactly how a closed block with no children sat inside a tree that reported
+// itself clean, while the same run correctly reported three childless holders.
+// The output said nothing about which rungs it had considered, so there was
+// nowhere for the gap to show (facet#146).
+func TestTreeDoctorNamesTheLevelsItExamined(t *testing.T) {
+	withRouting(t, labelledFourLevelStructure)
+	f := wireFake()
+	// A genuinely clean root: it records the level it sits at, so the only
+	// thing left to report would be coverage.
+	f.issues["acme/lab#46"] = &ghx.Issue{Title: "commission 1", State: "OPEN",
+		Labels: []ghx.Label{{Name: "type/commission"}}}
+	f.children = map[string][]ghx.IssueRef{}
+	var out bytes.Buffer
+
+	if err := runTreeDoctor(&out, f, iref("acme", "lab", 46), false); err != nil {
+		t.Fatalf("doctor: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "no defects") {
+		t.Fatalf("this fixture is meant to be clean:\n%s", got)
+	}
+	// THE POINT: the coverage is stated on the CLEAN path, which is the only
+	// path where a reader has nothing else to go on.
+	for _, want := range []string{"checked every node for", "checked the shape against", "commission", "issue"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("a clean run does not say it examined %q:\n%s", want, got)
+		}
+	}
+}
+
+// And it says so on the FINDINGS path too. A reader who gets three defects
+// still cannot tell whether a fourth rung was even looked at.
+func TestTreeDoctorNamesTheLevelsAlongsideFindings(t *testing.T) {
+	withRouting(t, labelledFourLevelStructure)
+	f := wireFake()
+	f.issues["acme/lab#46"] = &ghx.Issue{Title: "commission 1", State: "CLOSED"}
+	f.children = map[string][]ghx.IssueRef{
+		"acme/lab#46": {iref("acme", "doctrine", 282)},
+	}
+	var out bytes.Buffer
+
+	if err := runTreeDoctor(&out, f, iref("acme", "lab", 46), false); err == nil {
+		t.Fatal("this fixture is meant to have a defect")
+	}
+	if !strings.Contains(out.String(), "checked the shape against") {
+		t.Errorf("a run with findings does not say what it examined:\n%s", out.String())
+	}
+}
+
+// !! THE THIRD PATH, WHICH EXISTS ONLY BECAUSE facet#146 AND facet#147 LANDED
+// TOGETHER, AND WHICH NEITHER ISSUE SPECIFIED. !!
+//
+// facet#147 gave `doctor` a could-not-look exit; facet#146 gave it a coverage
+// line. Their interleaving was decided when the two were merged, not by either
+// issue, so it is asserted here rather than left as an accident of whoever
+// resolved the conflict.
+//
+// THE COVERAGE LINE PRINTS ON THIS PATH TOO. "which levels were EXAMINED" and
+// "which nodes went UNREAD" are two halves of the same question, and a reader
+// handed only the second cannot tell whether the levels it did reach were even
+// checked.
+func TestTreeDoctorNamesTheLevelsOnTheCouldNotLookPath(t *testing.T) {
+	withRouting(t, labelledFourLevelStructure)
+	f := wireFake()
+	f.children = map[string][]ghx.IssueRef{
+		"acme/lab#46": {iref("acme", "doctrine", 282)},
+	}
+	f.childErrs = map[string]error{
+		"acme/doctrine#282": errors.New("repos/acme/doctrine/issues/282: HTTP 404"),
+	}
+	var out bytes.Buffer
+
+	err := runTreeDoctor(&out, f, iref("acme", "lab", 46), false)
+	if err == nil {
+		t.Fatal("an unread node was reported as clean")
+	}
+	if got := exitCodeFor(err); got != exitCantLook {
+		t.Fatalf("exit code = %d, want %d", got, exitCantLook)
+	}
+	got := out.String()
+	if !strings.Contains(got, "COULD NOT LOOK") {
+		t.Errorf("the unread node is not under its own heading:\n%s", got)
+	}
+	if !strings.Contains(got, "checked the shape against") {
+		t.Errorf("a could-not-look run does not say which levels it examined:\n%s", got)
+	}
+	// AND IT MUST NOT SAY "no defects". A run that could not see part of the
+	// tree is not a clean bill of health, and printing that beside a list of
+	// things it could not read is the exact conflation both issues remove.
+	if strings.Contains(got, "no defects") {
+		t.Errorf("a run with unread nodes claimed a clean tree:\n%s", got)
+	}
+}
+
+// THE STATE facet#146 WAS REPORTED FROM, said out loud rather than left to be
+// inferred from silence: no rung asks to hold children, so no empty node
+// anywhere can ever be reported. That sentence is what would have made the gap
+// visible without anyone having to notice an absence.
+func TestTreeDoctorSaysWhenNoLevelRequiresChildren(t *testing.T) {
+	withRouting(t, noHolderStructure)
+	f := wireFake()
+	f.issues["acme/lab#46"] = &ghx.Issue{Title: "commission 1", State: "OPEN",
+		Labels: []ghx.Label{{Name: "type/commission"}}}
+	f.children = map[string][]ghx.IssueRef{}
+	var out bytes.Buffer
+
+	if err := runTreeDoctor(&out, f, iref("acme", "lab", 46), false); err != nil {
+		t.Fatalf("doctor: %v", err)
+	}
+	if !strings.Contains(out.String(), "NO level requires children") {
+		t.Errorf("a structure that checks no rung for emptiness does not say so:\n%s", out.String())
+	}
+}
+
 func TestTreeDoctorSaysWhatItDidNotCheck(t *testing.T) {
 	withRouting(t, "")
 	f := wireFake()

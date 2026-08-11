@@ -526,6 +526,25 @@ func runTreeDoctor(w io.Writer, gh treeGH, ref ghx.IssueRef, fixLabels bool) err
 			_, _ = fmt.Fprintln(w, u)
 		}
 	}
+	// Only when there is nothing to report AND nothing went unread. With an
+	// unread node this run is not a clean bill of health, and saying "no
+	// defects" beside a list of things it could not see would be the exact
+	// conflation the section above exists to remove.
+	if len(rep.Defects) == 0 && len(rep.Unread) == 0 {
+		_, _ = fmt.Fprintf(w, "no defects in %s\n", ref)
+	}
+
+	// ON EVERY PATH, and the clean one is why this exists. "no defects" is a
+	// claim about WHAT WAS CHECKED and reads as a claim about the tree, so a
+	// clean result was indistinguishable from an unexamined level -- which is
+	// exactly how a closed block with no children sat in a tree that reported
+	// itself clean, while the same run correctly reported three childless
+	// holders (facet#146).
+	//
+	// It is printed on the could-not-look path too: which levels were EXAMINED
+	// and which nodes were UNREAD are different halves of the same question,
+	// and a reader needs both to know what the run actually covered.
+	printCoverage(w, route)
 
 	switch {
 	case len(rep.Unread) > 0:
@@ -543,14 +562,53 @@ func runTreeDoctor(w io.Writer, gh treeGH, ref ghx.IssueRef, fixLabels bool) err
 	case len(rep.Defects) > 0:
 		return withCode(exitLooked, fmt.Errorf("%d defect(s) in %s", len(rep.Defects), ref))
 	}
+	return nil
+}
 
-	_, _ = fmt.Fprintf(w, "no defects in %s\n", ref)
-	if route.Structure == nil {
+// printCoverage says what this run actually examined.
+//
+// A CLEAN RESULT AND AN UNEXAMINED LEVEL PRINTED IDENTICALLY, which is the
+// third value applied to the ANSWER "nothing is wrong" rather than to a failure
+// to look. `no defects` is a claim about what the checker checks, and every
+// reader takes it as a claim about the tree.
+//
+// It lists the levels rather than the check names alone, because the levels are
+// where the gap was: the childless check ran on one rung and not another, and
+// nothing in the output said which rungs had been considered at all.
+func printCoverage(w io.Writer, route *routing.Routing) {
+	_, _ = fmt.Fprintf(w, "\nchecked every node for: an unreadable node, a parent cycle, "+
+		"and a closed parent with open children\n")
+
+	if route == nil || route.Structure == nil || len(route.Structure.Levels) == 0 {
 		// Say what was NOT checked. Silence about the shape reads as a clean
 		// bill of health for it.
-		_, _ = fmt.Fprintf(w, "  (shape was not checked: no `structure` block in the routing file)\n")
+		_, _ = fmt.Fprintf(w, "shape was not checked: no `structure` block in the routing file\n")
+		return
 	}
-	return nil
+
+	var names, holders []string
+	for _, l := range route.Structure.Levels {
+		names = append(names, l.Name)
+		if l.RequiresChildren != routing.ChildrenNotRequired {
+			holders = append(holders, fmt.Sprintf("%s (%s)", l.Name, childRequirementPhrase(l.RequiresChildren)))
+		}
+	}
+	_, _ = fmt.Fprintf(w, "checked the shape against: %s\n", strings.Join(names, " > "))
+	_, _ = fmt.Fprintf(w, "  level recorded as a label, and a node at a rung its parent may not hold\n")
+	if len(holders) == 0 {
+		// The state facet#146 was reported from, named rather than left silent:
+		// no rung asks to hold children, so no empty node can ever be reported.
+		_, _ = fmt.Fprintf(w, "  NO level requires children, so an empty node at any rung is NOT reported\n")
+		return
+	}
+	_, _ = fmt.Fprintf(w, "  requires children: %s\n", strings.Join(holders, ", "))
+}
+
+func childRequirementPhrase(c routing.ChildRequirement) string {
+	if c == routing.ChildrenRequiredAlways {
+		return "open or closed"
+	}
+	return "once closed"
 }
 
 // backfillLabels records the level on every node that is missing it.

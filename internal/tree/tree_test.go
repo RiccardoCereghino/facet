@@ -111,7 +111,7 @@ func routeWithStructure() *routing.Routing {
 		},
 		Structure: &routing.Structure{Levels: []routing.Level{
 			{Name: "commission"},
-			{Name: "seat", RequiresChildren: true, Accepts: []routing.LevelMatch{
+			{Name: "seat", RequiresChildren: routing.ChildrenRequiredWhenClosed, Accepts: []routing.LevelMatch{
 				{Repo: "doctrine", TitlePattern: "^seat: "},
 			}},
 			{Name: "block", Optional: true},
@@ -568,7 +568,7 @@ func labelledRouteWithStructure() *routing.Routing {
 		},
 		Structure: &routing.Structure{Levels: []routing.Level{
 			{Name: "commission", Label: "type/commission"},
-			{Name: "seat", RequiresChildren: true, Accepts: []routing.LevelMatch{
+			{Name: "seat", RequiresChildren: routing.ChildrenRequiredWhenClosed, Accepts: []routing.LevelMatch{
 				{Repo: "doctrine", TitlePattern: "^seat: ", Label: "type/seat"},
 			}},
 			{Name: "block", Optional: true, Label: "type/block"},
