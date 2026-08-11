@@ -509,22 +509,48 @@ func runTreeDoctor(w io.Writer, gh treeGH, ref ghx.IssueRef, fixLabels bool) err
 			return withCode(exitCantLook, err)
 		}
 	}
-	defects := tree.Doctor(root, route)
-	if len(defects) == 0 {
-		if route.Structure == nil {
-			_, _ = fmt.Fprintf(w, "no defects in %s\n", ref)
-			// Say what was NOT checked. Silence about the shape reads as a
-			// clean bill of health for it.
-			_, _ = fmt.Fprintf(w, "  (shape was not checked: no `structure` block in the routing file)\n")
-			return nil
-		}
-		_, _ = fmt.Fprintf(w, "no defects in %s\n", ref)
-		return nil
-	}
-	for _, d := range defects {
+	rep := tree.Doctor(root, route)
+
+	// THE DEFECTS ARE PRINTED FIRST AND ALWAYS, even when the exit code is
+	// about to say "could not look". An honest exit code that swallows findings
+	// costs the bracket the thing it exists for -- and `doctor` brackets every
+	// write to the tree.
+	for _, d := range rep.Defects {
 		_, _ = fmt.Fprintln(w, d)
 	}
-	return withCode(exitLooked, fmt.Errorf("%d defect(s) in %s", len(defects), ref))
+	if len(rep.Unread) > 0 {
+		_, _ = fmt.Fprintf(w,
+			"\nCOULD NOT LOOK -- %d %s not read, so nothing below is reported OR ruled out:\n",
+			len(rep.Unread), plural(len(rep.Unread), "node was", "nodes were"))
+		for _, u := range rep.Unread {
+			_, _ = fmt.Fprintln(w, u)
+		}
+	}
+
+	switch {
+	case len(rep.Unread) > 0:
+		// COULD-NOT-LOOK WINS OVER A FINDING HERE, and the reason is specific to
+		// this verb rather than a house preference. `tree labels` answers 1 for
+		// a finding alongside an unreadable repository, because its finding is
+		// complete and independent of what it could not read. `doctor` walks ONE
+		// tree: an unread node makes the report silent about everything beneath
+		// it, so the findings that ARE present cannot be trusted as the whole
+		// answer. The difference is whether the unread part could have changed
+		// the reported part.
+		return withCode(exitCantLook, fmt.Errorf(
+			"%d node(s) in %s could not be read, so this is not a verdict on the tree (%d defect(s) found in what could be read)",
+			len(rep.Unread), ref, len(rep.Defects)))
+	case len(rep.Defects) > 0:
+		return withCode(exitLooked, fmt.Errorf("%d defect(s) in %s", len(rep.Defects), ref))
+	}
+
+	_, _ = fmt.Fprintf(w, "no defects in %s\n", ref)
+	if route.Structure == nil {
+		// Say what was NOT checked. Silence about the shape reads as a clean
+		// bill of health for it.
+		_, _ = fmt.Fprintf(w, "  (shape was not checked: no `structure` block in the routing file)\n")
+	}
+	return nil
 }
 
 // backfillLabels records the level on every node that is missing it.

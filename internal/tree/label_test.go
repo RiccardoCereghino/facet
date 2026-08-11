@@ -42,7 +42,7 @@ func labelNode(ref string, n int, title string, level int, labels ...string) *No
 // cannot fail is not a check.
 func TestDoctorReportsAMissingLevelLabel(t *testing.T) {
 	root := labelNode("gad", 1, "some work", 3)
-	ds := Doctor(root, routeFor(levelStructure()))
+	ds := Doctor(root, routeFor(levelStructure())).Defects
 	if len(ds) == 0 {
 		t.Fatal("doctor is silent about a node that records no level")
 	}
@@ -59,7 +59,7 @@ func TestDoctorReportsAMissingLevelLabel(t *testing.T) {
 // of truth is the defect, not the fix, so it is never silently corrected.
 func TestDoctorReportsALabelThatDisagreesWithTheTree(t *testing.T) {
 	root := labelNode("gad", 1, "some work", 3, "type/block")
-	ds := Doctor(root, routeFor(levelStructure()))
+	ds := Doctor(root, routeFor(levelStructure())).Defects
 	if len(ds) == 0 {
 		t.Fatal("doctor is silent about a label that contradicts the tree")
 	}
@@ -73,7 +73,7 @@ func TestDoctorReportsALabelThatDisagreesWithTheTree(t *testing.T) {
 
 func TestDoctorIsSilentWhenTheLabelIsRight(t *testing.T) {
 	root := labelNode("gad", 1, "some work", 3, "type/work", "complexity/1")
-	if ds := Doctor(root, routeFor(levelStructure())); len(ds) != 0 {
+	if ds := Doctor(root, routeFor(levelStructure())).Defects; len(ds) != 0 {
 		t.Fatalf("doctor complained about a correctly labelled node: %+v", ds)
 	}
 }
@@ -101,7 +101,7 @@ func TestNoDeclaredLabelsIsSilent(t *testing.T) {
 	if _, ok := s.LabelFor(1, "gad", "x", nil); ok {
 		t.Fatal("a structure with no labels claimed one")
 	}
-	if ds := Doctor(labelNode("gad", 1, "work", 1), routeFor(s)); len(ds) != 0 {
+	if ds := Doctor(labelNode("gad", 1, "work", 1), routeFor(s)).Defects; len(ds) != 0 {
 		t.Fatalf("doctor complained with no labels declared: %+v", ds)
 	}
 }

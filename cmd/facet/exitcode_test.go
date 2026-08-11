@@ -60,12 +60,22 @@ func TestTreeDoctorDistinguishesFindingsFromNotHavingLooked(t *testing.T) {
 				}
 				return runTreeDoctor(&bytes.Buffer{}, f, iref("acme", "lab", 46), false)
 			},
-			// The walk itself does NOT fail on an unreadable child -- it
-			// records the node and keeps going, deliberately, so the rest of
-			// the tree still answers. That is a finding about the tree, and
-			// this asserts the distinction is drawn where the read stopped
-			// rather than wherever an error happened to appear.
-			want: exitLooked,
+			// !! THIS CASE EXPECTED exitLooked UNTIL facet#147, AND THAT WAS
+			// THE DEFECT. !!
+			//
+			// The property it was written to protect is UNCHANGED and still
+			// asserted elsewhere: the walk does not fail on an unreadable
+			// child, it records the node and keeps going, so the rest of the
+			// tree still answers, and the node is still named in the output.
+			// What was wrong was calling that a FINDING -- exit 1 means "I
+			// looked, and here is what is wrong", and nobody looked at this
+			// node.
+			//
+			// Measured live under a GraphQL exhaustion on 2026-08-11: a run
+			// against a node whose read did not answer printed "1 defect(s)"
+			// and exited 1, from the verb whose own --help tells callers not to
+			// read a could-not-look as a finding.
+			want: exitCantLook,
 		},
 		{
 			name: "the root itself is unreachable",
@@ -104,6 +114,46 @@ func TestTreeDoctorDistinguishesFindingsFromNotHavingLooked(t *testing.T) {
 				t.Errorf("exit code = %d, want %d\n  error: %v", got, tc.want, err)
 			}
 		})
+	}
+}
+
+// !! AN HONEST EXIT CODE MUST NOT SWALLOW THE FINDINGS. !!
+//
+// `tree doctor` brackets every write to the commission tree -- run before and
+// after, where the "after" is what catches the defect just introduced. Exiting
+// 2 because some node could not be read is correct; printing nothing about the
+// defects it DID find would cost the bracket the thing it exists for.
+func TestDoctorStillPrintsTheDefectsWhenItExitsCouldNotLook(t *testing.T) {
+	withRouting(t, labelledFourLevelStructure)
+	f := wireFake()
+	// A real, readable defect: a closed parent holding an open child.
+	f.issues["acme/lab#46"] = &ghx.Issue{Title: "commission 1", State: "CLOSED"}
+	f.children = map[string][]ghx.IssueRef{
+		"acme/lab#46": {iref("acme", "doctrine", 282), iref("acme", "harness", 121)},
+	}
+	// And one node nobody could read.
+	f.childErrs = map[string]error{
+		"acme/doctrine#282": errors.New("repos/acme/doctrine/issues/282: HTTP 404"),
+	}
+
+	var out bytes.Buffer
+	err := runTreeDoctor(&out, f, iref("acme", "lab", 46), false)
+	if err == nil {
+		t.Fatal("doctor reported a tree with an unread node as clean")
+	}
+	if got := exitCodeFor(err); got != exitCantLook {
+		t.Errorf("exit code = %d, want %d (could not look)\n  error: %v", got, exitCantLook, err)
+	}
+	printed := out.String()
+	if !strings.Contains(printed, "is closed, but") {
+		t.Errorf("the real defect was not printed:\n%s", printed)
+	}
+	if !strings.Contains(printed, "COULD NOT LOOK") {
+		t.Errorf("the unread node is not under its own heading:\n%s", printed)
+	}
+	// And the two must not be conflated in the count a human reads.
+	if !strings.Contains(err.Error(), "not a verdict on the tree") {
+		t.Errorf("the error does not say the report is not a verdict:\n%v", err)
 	}
 }
 
