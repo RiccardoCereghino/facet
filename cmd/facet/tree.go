@@ -51,17 +51,26 @@ func newTreeOrphansCmd() *cobra.Command {
 			"valid issue -- facet has no opinion about whether issues are arranged in a\n" +
 			"hierarchy at all, and plenty of them are deliberately outside one. This\n" +
 			"reports the set; deciding which of them is a gap is triage's job.\n\n" +
-			"So FINDING ORPHANS IS EXIT 0. Exit 1 means a repository could not be read,\n" +
-			"which is a different fact and the one worth failing on: silence about a\n" +
-			"repository nobody could list would read as \"nothing unparented there\".\n\n" +
 			"It is repo-scoped rather than a check inside `doctor` because `doctor`\n" +
 			"takes a root, and an orphan is not under one.\n\n" +
 			"--json, because the consumer is as likely to be a scheduled planner as a\n" +
-			"human.",
-		Args: cobra.NoArgs,
+			"human.\n\n" +
+			"EXIT CODES, the same ones `tree doctor` and `tree labels` use:\n" +
+			"  0  looked -- here is the set, orphans included\n" +
+			"  2  could NOT look: a repository could not be read, a malformed flag, or\n" +
+			"     no repository named at all\n\n" +
+			"THERE IS NO 1 HERE, and that is the shape rather than an omission.\n" +
+			"FINDING ORPHANS IS EXIT 0 -- an unparented issue is a valid issue, and\n" +
+			"this reports the set, not a verdict -- so the only failure left is not\n" +
+			"having been able to ask. Silence about a repository nobody could list\n" +
+			"would read as \"nothing unparented there\", which is the one answer a\n" +
+			"caller must never be given by accident.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if len(repos) == 0 {
-				return fmt.Errorf("no repository named\nfix: facet tree orphans --repo owner/name")
+				// Nothing was read, so nothing is reported and nothing is
+				// ruled out -- the purest could-not-look there is.
+				return withCode(exitCantLook, fmt.Errorf(
+					"no repository named\nfix: facet tree orphans --repo owner/name"))
 			}
 			return runTreeOrphans(cmd.OutOrStdout(), gh, repos, asJSON)
 		},
@@ -69,6 +78,10 @@ func newTreeOrphansCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&repos, "repo", nil,
 		"a repository to scan, as owner/name; repeat for several")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit JSON rather than lines")
+	// Every ENTRANCE owes the same code: a bad arg count or a mistyped flag read
+	// nothing, so neither may exit 1 and claim a finding. This is the gap
+	// tagCantLook exists to close in one call rather than three.
+	tagCantLook(cmd, cobra.NoArgs)
 	return cmd
 }
 
