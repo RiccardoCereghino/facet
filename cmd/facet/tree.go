@@ -261,9 +261,20 @@ func newTreeDoctorCmd() *cobra.Command {
 			"  0  looked, and the tree is clean\n" +
 			"  1  looked, and here are the defects\n" +
 			"  2  could NOT look -- a malformed reference, an issue that does not exist,\n" +
-			"     an HTTP error, an unreadable routing file\n\n" +
-			"A caller must not read 2 as a finding. Only the failure path moved, so\n" +
-			"anything treating non-zero as \"not clean\" keeps working unchanged.",
+			"     an HTTP error, an unreadable routing file, OR any node inside the tree\n" +
+			"     whose read did not answer\n\n" +
+			"A caller must not read 2 as a finding.\n\n" +
+			"A NODE THAT COULD NOT BE READ IS NOT A DEFECT, AND MAKES THE WHOLE RUN A 2.\n" +
+			"It used to be counted as a finding, so a walk that never managed to read an\n" +
+			"issue's ancestry printed \"1 defect(s)\" and exited 1 -- this verb answering\n" +
+			"\"I looked, and here is what is wrong\" for a read that never happened.\n" +
+			"`doctor` walks ONE tree, so an unread node makes the report silent about\n" +
+			"everything beneath it: the defects that ARE found cannot be trusted as the\n" +
+			"whole answer. (`tree labels` differs deliberately -- its finding is complete\n" +
+			"and independent of the repository it could not read, so it answers 1.)\n\n" +
+			"THE DEFECTS ARE STILL PRINTED when the exit is 2, under their own heading.\n" +
+			"An honest exit code that swallowed the findings would cost this command the\n" +
+			"thing it exists for.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ref, err := parseIssueRef(args[0])
 			if err != nil {

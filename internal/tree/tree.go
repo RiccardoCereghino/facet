@@ -165,9 +165,15 @@ func descend(src Source, parent *Node, maxDepth int, route *routing.Routing, pat
 		if path[key] {
 			// Self-ancestry. Record it as a childless node so the report can
 			// name it, and do not follow it.
+			//
+			// TYPED, because a report has to tell this apart from a node it
+			// could not READ. Both stop the walk here and both land in Err, and
+			// they are opposite facts: a cycle is fully known and is a defect
+			// in the record, while an unreadable node is a read that did not
+			// happen and asserts nothing (facet#147).
 			parent.Children = append(parent.Children, &Node{
 				Ref: k.Ref, Depth: parent.Depth + 1,
-				Err: fmt.Errorf("cycle: %s is its own ancestor", key),
+				Err: &SelfAncestorError{Ref: k.Ref},
 			})
 			continue
 		}
@@ -286,6 +292,17 @@ func (c Counts) StatusNames() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// SelfAncestorError marks a child reached during a DESCENT that is already on
+// the path -- the downward twin of ParentCycleError, which the upward climb
+// produces. It is typed for the same reason: a cycle is a defect in the record,
+// while every other reason a node stops the walk is a read that did not answer,
+// and one report must not present them as the same answer.
+type SelfAncestorError struct{ Ref ghx.IssueRef }
+
+func (e *SelfAncestorError) Error() string {
+	return fmt.Sprintf("cycle: %s is its own ancestor", e.Ref)
 }
 
 // ParentCycleError reports an issue that is its own ancestor. It is a typed

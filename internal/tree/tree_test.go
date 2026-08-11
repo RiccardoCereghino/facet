@@ -213,8 +213,8 @@ func TestWalkSkipsAnOptionalLevel(t *testing.T) {
 	// declared structure simply does not distinguish a bundle from the work,
 	// and facet does not invent a distinction the configuration lacks. What
 	// matters is that the rung was skippable and nothing is reported wrong.
-	if len(Doctor(root, route)) != 0 {
-		t.Errorf("a skipped optional rung was reported as a defect: %v", Doctor(root, route))
+	if len(Doctor(root, route).Defects) != 0 {
+		t.Errorf("a skipped optional rung was reported as a defect: %v", Doctor(root, route).Defects)
 	}
 }
 
@@ -241,7 +241,7 @@ func TestAConstrainedOptionalLevelLetsTheRungBelowBeReached(t *testing.T) {
 	if name := route.Structure.Levels[work.Level].Name; name != "issue" {
 		t.Errorf("level = %q, want issue once the skippable rung is constrained", name)
 	}
-	if got := Doctor(root, route); len(got) != 0 {
+	if got := Doctor(root, route).Defects; len(got) != 0 {
 		t.Errorf("defects = %v, want none", got)
 	}
 }
@@ -270,7 +270,7 @@ func TestDoctorCatchesTheFlatTree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Walk: %v", err)
 	}
-	defects := Doctor(root, route)
+	defects := Doctor(root, route).Defects
 
 	var flagged []string
 	for _, d := range defects {
@@ -317,7 +317,7 @@ func TestDoctorDerivesTheExpectationFromTheParentsLevelNotItsDepth(t *testing.T)
 	// level -- then anything below it has nowhere to go.
 	route.Structure.Levels[2].Accepts = []routing.LevelMatch{{TitlePattern: "^block: "}}
 
-	defects := Doctor(mustWalk(t, src, ref("acme", "lab", 46), route), route)
+	defects := Doctor(mustWalk(t, src, ref("acme", "lab", 46), route), route).Defects
 	if len(defects) != 1 {
 		t.Fatalf("defects = %v, want exactly one", defects)
 	}
@@ -349,18 +349,18 @@ func TestDoctorWithNoStructureReportsNoShapeDefects(t *testing.T) {
 	}
 	route := &routing.Routing{Repos: map[string]routing.Repo{"lab": {}}}
 
-	if got := Doctor(mustWalk(t, src, ref("acme", "lab", 46), route), route); len(got) != 0 {
+	if got := Doctor(mustWalk(t, src, ref("acme", "lab", 46), route), route).Defects; len(got) != 0 {
 		t.Fatalf("structure checks ran without a structure block: %v", got)
 	}
 
 	// And a lone issue with no parent and no children is simply an issue.
 	lone := &fakeSource{issues: map[string]*ghx.Issue{"acme/lab#9": issue("standalone", "OPEN")}}
-	if got := Doctor(mustWalk(t, lone, ref("acme", "lab", 9), route), route); len(got) != 0 {
+	if got := Doctor(mustWalk(t, lone, ref("acme", "lab", 9), route), route).Defects; len(got) != 0 {
 		t.Errorf("an unparented issue was reported as a defect: %v", got)
 	}
 	// Also with a structure configured: no parent is still not a defect.
 	withStructure := routeWithStructure()
-	if got := Doctor(mustWalk(t, lone, ref("acme", "lab", 9), withStructure), withStructure); len(got) != 0 {
+	if got := Doctor(mustWalk(t, lone, ref("acme", "lab", 9), withStructure), withStructure).Defects; len(got) != 0 {
 		t.Errorf("an unparented issue was a defect even under a structure: %v", got)
 	}
 }
@@ -377,7 +377,7 @@ func TestDoctorCatchesClosedParentWithOpenChildrenWithoutAStructure(t *testing.T
 		},
 	}
 	route := &routing.Routing{Repos: map[string]routing.Repo{"lab": {}}}
-	defects := Doctor(mustWalk(t, src, ref("acme", "lab", 46), route), route)
+	defects := Doctor(mustWalk(t, src, ref("acme", "lab", 46), route), route).Defects
 	if len(defects) != 1 || !strings.Contains(defects[0].What, "is closed") {
 		t.Fatalf("defects = %v, want one closed-parent report", defects)
 	}
@@ -399,7 +399,7 @@ func TestDoctorCatchesAClosedLevelThatShouldHoldChildren(t *testing.T) {
 		},
 	}
 	route := routeWithStructure()
-	defects := Doctor(mustWalk(t, src, ref("acme", "lab", 46), route), route)
+	defects := Doctor(mustWalk(t, src, ref("acme", "lab", 46), route), route).Defects
 	if len(defects) != 1 || !strings.Contains(defects[0].What, "no children") {
 		t.Fatalf("defects = %v, want one childless-record report", defects)
 	}
@@ -419,7 +419,7 @@ func TestWalkStopsAtACycle(t *testing.T) {
 	route := &routing.Routing{Repos: map[string]routing.Repo{"lab": {}}}
 	root := mustWalk(t, src, ref("acme", "lab", 1), route)
 
-	defects := Doctor(root, route)
+	defects := Doctor(root, route).Defects
 	var found bool
 	for _, d := range defects {
 		if strings.Contains(d.What, "cycle") {
@@ -450,15 +450,24 @@ func TestWalkKeepsGoingPastAnUnreadableNode(t *testing.T) {
 	if len(root.Children) != 2 {
 		t.Fatalf("got %d children, want 2 -- the readable sibling was dropped", len(root.Children))
 	}
-	defects := Doctor(root, route)
+	rep := Doctor(root, route)
 	var named bool
-	for _, d := range defects {
+	for _, d := range rep.Unread {
 		if d.Ref.String() == "acme/doctrine#282" && strings.Contains(d.What, "could not be read") {
 			named = true
 		}
 	}
 	if !named {
-		t.Errorf("the unreadable node was not reported: %v", defects)
+		t.Errorf("the unreadable node was not reported: %+v", rep)
+	}
+	// AND IT IS NOT A FINDING (facet#147). It is still named -- a partial
+	// answer that says which part is missing beats no answer -- but naming it
+	// among the defects made `doctor` answer "I looked, and here is what is
+	// wrong" about a read that never happened.
+	for _, d := range rep.Defects {
+		if d.Ref.String() == "acme/doctrine#282" {
+			t.Errorf("an unreadable node was counted as a defect: %s", d)
+		}
 	}
 }
 
@@ -543,7 +552,7 @@ func TestWalkFromASubtreeResolvesItsRealLevel(t *testing.T) {
 	}
 	// And the subtree below it must come out clean, exactly as it does when
 	// the same nodes are reached from the commission.
-	if got := Doctor(root, route); len(got) != 0 {
+	if got := Doctor(root, route).Defects; len(got) != 0 {
 		t.Errorf("doctoring a correct subtree directly reported %d defect(s): %v", len(got), got)
 	}
 }
@@ -664,7 +673,7 @@ func TestWalkResolvesAnOrphanedBlockAndItsWorkChild(t *testing.T) {
 	if !child.Assigned || route.Structure.Levels[child.Level].Name != "issue" {
 		t.Errorf("child: assigned=%v level=%v, want the issue level", child.Assigned, child.Level)
 	}
-	if got := Doctor(root, route); len(got) != 0 {
+	if got := Doctor(root, route).Defects; len(got) != 0 {
 		t.Errorf("the worked example was reported as a defect: %v", got)
 	}
 }
@@ -693,7 +702,7 @@ func TestWalkFromAMisplacedNodeDoesNotCascade(t *testing.T) {
 	if root.Assigned {
 		t.Fatal("a node at no declared level was assigned one")
 	}
-	defects := Doctor(root, route)
+	defects := Doctor(root, route).Defects
 	if len(defects) != 1 {
 		t.Fatalf("got %d defects, want exactly 1 -- the misplaced node itself, not a cascade: %v",
 			len(defects), defects)
@@ -729,7 +738,7 @@ func TestDoctorExplainsAnUnplaceableStartNodeWithoutBlamingIt(t *testing.T) {
 	route := routeWithStructure()
 
 	// Start at the work, whose ancestor #99 is the thing actually misplaced.
-	defects := Doctor(mustWalk(t, src, ref("acme", "harness", 121), route), route)
+	defects := Doctor(mustWalk(t, src, ref("acme", "harness", 121), route), route).Defects
 	if len(defects) != 1 {
 		t.Fatalf("got %d defects, want 1: %v", len(defects), defects)
 	}
@@ -779,6 +788,11 @@ func TestEveryLevelResolutionStateHasItsOwnMessage(t *testing.T) {
 		structure *routing.Routing
 		wantSays  []string
 		wantNever []string
+		// unread asserts WHICH LIST the message lands in (facet#147). The
+		// wording assertions below are about the sentence; this is about the
+		// answer. A state whose read did not happen must never be counted as a
+		// finding, however well it is worded.
+		unread bool
 	}{{
 		state: "S1 unreadable -- universal check owns it, structural must stay silent",
 		node: &Node{Ref: ref("acme", "lab", 1), LevelKnown: true,
@@ -788,6 +802,7 @@ func TestEveryLevelResolutionStateHasItsOwnMessage(t *testing.T) {
 		// It must not also be judged for shape: nothing is known about a node
 		// that could not be read, including where it belongs.
 		wantNever: []string{"could not be placed", "sits below", "no children"},
+		unread:    true,
 	}, {
 		state:     "S2 level unknown -- no structure, or a parent that was itself unplaceable",
 		node:      &Node{Ref: ref("acme", "lab", 2), State: "OPEN"},
@@ -816,6 +831,7 @@ func TestEveryLevelResolutionStateHasItsOwnMessage(t *testing.T) {
 		// The node itself read fine, so it is not unreadable; and nothing is
 		// known about where it belongs, so no placement wording may appear.
 		wantNever: []string{"could not be read", "sits below", "could not be placed", "cycle"},
+		unread:    true,
 	}, {
 		state: "S9 a cycle in the ancestry -- known, nameable, and a record defect",
 		node: &Node{Ref: ref("acme", "lab", 9), State: "OPEN",
@@ -860,13 +876,25 @@ func TestEveryLevelResolutionStateHasItsOwnMessage(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.state, func(t *testing.T) {
-			got := Doctor(c.node, c.structure)
+			rep := Doctor(c.node, c.structure)
+			// The WORDING assertions read both lists: this table is about each
+			// state having its own sentence, which is true wherever the
+			// sentence lands.
+			got := append(append([]Defect{}, rep.Defects...), rep.Unread...)
 			var text string
 			for _, d := range got {
 				text += d.String() + "\n"
 			}
 			if len(c.wantSays) == 0 && len(got) != 0 {
 				t.Fatalf("state should be silent, got:\n%s", text)
+			}
+			if len(c.wantSays) > 0 {
+				if c.unread && len(rep.Unread) == 0 {
+					t.Errorf("a read that did not happen was reported as a FINDING:\n%s", text)
+				}
+				if !c.unread && len(rep.Defects) == 0 {
+					t.Errorf("a real finding was demoted to could-not-look:\n%s", text)
+				}
 			}
 			for _, w := range c.wantSays {
 				if !strings.Contains(text, w) {
@@ -1019,9 +1047,17 @@ func TestWalkCarriesAFailedParentReadInsteadOfBlankingTheReport(t *testing.T) {
 		t.Error("the tree below the failure was lost")
 	}
 
-	got := Doctor(root, route)
+	rep := Doctor(root, route)
+	// A FAILED ANCESTRY READ IS COULD-NOT-LOOK, NOT A DEFECT (facet#147). An
+	// issue's parent has no REST endpoint, so this climb is the one GraphQL
+	// call left in a walk and the first thing an exhausted budget takes away --
+	// measured live on 2026-08-11, where it printed "1 defect(s)" and exited 1.
+	if len(rep.Defects) != 0 {
+		t.Errorf("a read that did not answer was counted as a defect: %v", rep.Defects)
+	}
+	got := rep.Unread
 	if len(got) != 1 {
-		t.Fatalf("got %d defects, want 1: %v", len(got), got)
+		t.Fatalf("got %d unread, want 1: %v", len(got), got)
 	}
 	text := got[0].String()
 	for _, w := range []string{"position in the tree could not be established", "HTTP 502", "another repo"} {
@@ -1061,7 +1097,7 @@ func TestWalkReportsAParentCycleAsADefectRatherThanFailing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a parent cycle blanked the whole report: %v", err)
 	}
-	got := Doctor(root, route)
+	got := Doctor(root, route).Defects
 	var found string
 	for _, d := range got {
 		if strings.Contains(d.What, "parent cycle") {

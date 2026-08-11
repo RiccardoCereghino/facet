@@ -155,6 +155,52 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   message stay where they were — and a differential test walks the same fixture
   both ways and requires the reported trees to be identical.
 
+### Fixed
+
+- **`facet tree doctor` no longer reports a read that never happened as a
+  finding.** A node whose read did not answer was counted among the defects, so
+  a walk that could not read an issue's ancestry printed `1 defect(s)` and
+  **exited 1 — the verb whose own `--help` documents exit 2 as *could NOT look*
+  and tells callers not to read it as a finding.** Measured live under a GraphQL
+  exhaustion: an issue's parent has no REST endpoint at all, so the level climb
+  is the one GraphQL call left in a walk and the first thing an exhausted budget
+  takes away.
+
+  The report now separates **defects** from **could not look**, and an unread
+  node makes the whole run exit 2. `doctor` walks ONE tree, so an unread node
+  makes the report silent about everything beneath it and the defects that *are*
+  found cannot be trusted as the whole answer. (`tree labels` deliberately
+  differs — its finding is complete and independent of the repository it could
+  not read, so it answers 1. The difference is whether the unread part could
+  have changed the reported part.)
+
+  **The defects are still printed when the exit is 2**, under their own heading.
+  `doctor` brackets every write to the tree, and an honest exit code that
+  swallowed the findings would cost the bracket the thing it exists for.
+
+  A **cycle stays a finding**, and is now typed rather than inferred from a
+  message: a cycle is fully read and the record really is malformed, where an
+  unreadable node is a read that did not happen. Both stopped the walk and both
+  arrived in the same field.
+
+- **A defect's `fix:` no longer removes the label it is about to add.** When a
+  node carried the RIGHT level label alongside a wrong one — what a
+  half-finished repair looks like — the remedy read `--remove-label type/block
+  --remove-label type/work --add-label type/work`.
+
+  **That no-op was the only signal anything was odd, and it pointed the wrong
+  way.** Two such defects were doubted and hunted as phantoms for an hour; the
+  label event timelines later showed both issues had genuinely carried both
+  labels for about fifty seconds while a repair was mid-flight, and the run
+  landed in that window. **The report was right, and its own fix line is what
+  made it look invented.**
+
+- **A defect now states the evidence it read** on a `read:` line — the labels
+  actually seen, the level actually assigned, the rungs it was judged against.
+  A conclusion checked against a live read minutes later answers a different
+  question; `read: labels type/block, type/work` is falsifiable at the point of
+  reading, and would have settled the incident above in seconds.
+
 ### Added
 
 - **A grouping nobody is working can be placed in the tree, without inventing a
