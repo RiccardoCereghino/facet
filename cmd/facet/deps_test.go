@@ -91,20 +91,61 @@ func TestDepsCheckPassesWhenTheyAgree(t *testing.T) {
 // reference as a bare one and defaulting it to the current repository. A check
 // that disagrees with the filer reports drift that is its own.
 //
-// The consequence, pinned here because it is a live limitation rather than a
-// preference: shorthand like "harness#121" is NOT read as a reference, so a
-// dependency written that way is invisible to the wiring. Write blockers as
-// owner/repo#n.
-func TestDepsCheckUsesTheFilersParserAndSoIgnoresRepoShorthand(t *testing.T) {
+// !! facet#104: AND NOW THE SAME ROUTING TABLE. !! This test used to assert the
+// opposite -- that "harness#121" is NOT read as a reference -- and said so as a
+// "live limitation rather than a preference", with the remedy "write blockers
+// as owner/repo#n". THE LIMITATION WAS THE DEFECT, and pinning it here is what
+// made it look decided. A prefix naming a repo in `repos` resolves to that
+// repo, so the check and the filer agree about a form people actually write.
+func TestDepsCheckUsesTheFilersParserAndSoResolvesRepoShorthand(t *testing.T) {
 	withRouting(t, "")
 	f := depsFake("### Blocked by / waiting on\n\nharness#121 has landed already\n")
 	var out bytes.Buffer
 
+	err := runDepsCheck(&out, f, iref("acme", "lab", 75))
+	if err == nil {
+		t.Fatal("a declared shorthand blocker with no wired edge was reported as agreeing")
+	}
+	// It must be counted against the repository the shorthand NAMES, not
+	// defaulted to the issue's own -- which is the false-blocker mistake the
+	// hand-rolled parser made, arriving from the other direction.
+	if !strings.Contains(out.String(), "acme/harness#121") {
+		t.Errorf("the shorthand did not resolve to the repository it names:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "acme/lab#121") {
+		t.Errorf("the shorthand was defaulted to the issue's own repository:\n%s", out.String())
+	}
+}
+
+// And the agreeing half: a shorthand blocker whose edge IS wired must read as
+// wired. Without this the test above passes for a parser that resolves the
+// reference to any repository at all.
+func TestDepsCheckPassesWhenAShorthandBlockerIsWired(t *testing.T) {
+	withRouting(t, "")
+	f := depsFake("### Blocked by / waiting on\n\nharness#121\n")
+	f.blockedBy["acme/lab#75"] = []ghx.IssueRef{iref("acme", "harness", 121)}
+	var out bytes.Buffer
+
 	if err := runDepsCheck(&out, f, iref("acme", "lab", 75)); err != nil {
-		t.Fatalf("shorthand was read as a reference and reported missing: %v", err)
+		t.Fatalf("a wired shorthand blocker was reported as missing: %v", err)
+	}
+	if !strings.Contains(out.String(), "every declared blocker is wired") {
+		t.Errorf("output = %q", out.String())
+	}
+}
+
+// The regression case named in facet#104, at the command level rather than the
+// parser's: "PR" names no repository, so PR#3 is still a word.
+func TestDepsCheckStillIgnoresANonRepoPrefix(t *testing.T) {
+	withRouting(t, "")
+	f := depsFake("### Blocked by / waiting on\n\nsee PR#3 for context\n")
+	var out bytes.Buffer
+
+	if err := runDepsCheck(&out, f, iref("acme", "lab", 75)); err != nil {
+		t.Fatalf("PR#3 was read as a reference and reported missing: %v", err)
 	}
 	if !strings.Contains(out.String(), "0 declared") {
-		t.Errorf("shorthand was counted as a declared blocker:\n%s", out.String())
+		t.Errorf("PR#3 was counted as a declared blocker:\n%s", out.String())
 	}
 }
 

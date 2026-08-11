@@ -145,7 +145,16 @@ func runDepsCheck(w io.Writer, gh depsGH, ref ghx.IssueRef) error {
 	// second answer: a hand-rolled pattern reported false blockers by reading
 	// the number in a shorthand reference as a bare one, and a check that
 	// disagrees with the filer reports drift that is its own.
-	declared := routing.ParseBlockedBy(iss.Body)
+	//
+	// AND WITH THE SAME ROUTING TABLE, for the same reason one step along: the
+	// parser resolves a repo shorthand against `repos`, so a check reading it
+	// without the table would see fewer declared blockers than the filer wired
+	// and report them as undeclared (facet#104).
+	route, err := loadRouting()
+	if err != nil {
+		return err
+	}
+	declared := route.ParseBlockedBy(iss.Body)
 
 	wiredSet := map[string]bool{}
 	for _, r := range wired {
