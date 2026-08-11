@@ -201,6 +201,35 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   question; `read: labels type/block, type/work` is falsifiable at the point of
   reading, and would have settled the incident above in seconds.
 
+- **A repo-shorthand blocker is no longer silently dropped, so the edge is
+  actually wired.** `ParseBlockedBy` matched `owner/repo#n` or a bare `#n`, and
+  a bare `#n` stuck to a preceding token was rejected so that the `3` in `PR#3`
+  is not read as a reference. **That guard is correct, and it also rejected
+  `harness#121`, where the prefix genuinely names a repository.**
+
+  **The rejection was silent.** `facet file` read the section, found nothing,
+  and created no edge — so the dependency existed only as prose. **Shorthand is
+  the dominant form in these bodies**, because it is how people write when the
+  repo is obvious from context, so every blocker written that way has been
+  dropped since the feature shipped.
+
+  The routing table already held what `refBoundaryChar` lacks: **a prefix
+  matching a key in `repos` is a reference; one that does not is a word.** No
+  new configuration and no guessing. `ParseBlockedBy` is now a method on
+  `*Routing`, and **a nil receiver parses exactly as the package function did**,
+  so a caller with no routing file loses nothing.
+
+  **`aliases` are deliberately not consulted** — they are loose spellings by
+  design (`site`, `dns`), and admitting them would read `site#3` in prose as a
+  dependency. An **ambiguous** key resolves to nothing rather than to whichever
+  spelling map iteration reached first: an edge wired to the wrong repository is
+  worse than one not wired at all, because only the second is visible as
+  missing.
+
+  `facet deps check` shares this parser by design and now shares the table too —
+  reading it without one would see fewer declared blockers than the filer wired
+  and report them as undeclared.
+
 ### Added
 
 - **A grouping nobody is working can be placed in the tree, without inventing a
