@@ -274,7 +274,16 @@ func newTreeDoctorCmd() *cobra.Command {
 			"and independent of the repository it could not read, so it answers 1.)\n\n" +
 			"THE DEFECTS ARE STILL PRINTED when the exit is 2, under their own heading.\n" +
 			"An honest exit code that swallowed the findings would cost this command the\n" +
-			"thing it exists for.",
+			"thing it exists for.\n\n" +
+			"A THIRD VERDICT: ACKNOWLEDGED. A closed holder with no children is\n" +
+			"sometimes the TRUTH -- a deferred slate whose live blocks were correctly\n" +
+			"re-homed elsewhere, say -- and GitHub's one-parent-per-issue limit means\n" +
+			"re-parenting it back is not always available. Label it `tree/acknowledged`\n" +
+			"AND write a reason under an \"Acknowledged\" heading in the issue body; a\n" +
+			"bare label with no reason is still reported, as its own defect naming what\n" +
+			"is missing. Acknowledged items are COUNTED AND PRINTED SEPARATELY, under\n" +
+			"their own heading, and never fold into the defect count -- \"3 defect(s), 2\n" +
+			"acknowledged\", never a lowered headline.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ref, err := parseIssueRef(args[0])
 			if err != nil {

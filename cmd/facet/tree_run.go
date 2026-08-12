@@ -509,7 +509,7 @@ func runTreeDoctor(w io.Writer, gh treeGH, ref ghx.IssueRef, fixLabels bool) err
 			return withCode(exitCantLook, err)
 		}
 	}
-	rep := tree.Doctor(root, route)
+	rep := tree.DoctorWithSource(root, route, gh)
 
 	// THE DEFECTS ARE PRINTED FIRST AND ALWAYS, even when the exit code is
 	// about to say "could not look". An honest exit code that swallows findings
@@ -526,12 +526,28 @@ func runTreeDoctor(w io.Writer, gh treeGH, ref ghx.IssueRef, fixLabels bool) err
 			_, _ = fmt.Fprintln(w, u)
 		}
 	}
+	// ACKNOWLEDGED IS COUNTED AND PRINTED SEPARATELY, NEVER HIDDEN (facet#159).
+	// A suppression that lowers the headline defect count is how an instrument
+	// starts lying politely -- so a run with acknowledged items still says
+	// "N defect(s), M acknowledged" rather than a lowered N alone.
+	if len(rep.Acknowledged) > 0 {
+		_, _ = fmt.Fprintf(w,
+			"\nACKNOWLEDGED -- %d closed holder(s) with no children, verified against a reason on the record:\n",
+			len(rep.Acknowledged))
+		for _, a := range rep.Acknowledged {
+			_, _ = fmt.Fprintln(w, a)
+		}
+	}
 	// Only when there is nothing to report AND nothing went unread. With an
 	// unread node this run is not a clean bill of health, and saying "no
 	// defects" beside a list of things it could not see would be the exact
 	// conflation the section above exists to remove.
 	if len(rep.Defects) == 0 && len(rep.Unread) == 0 {
-		_, _ = fmt.Fprintf(w, "no defects in %s\n", ref)
+		if len(rep.Acknowledged) > 0 {
+			_, _ = fmt.Fprintf(w, "0 defect(s), %d acknowledged in %s\n", len(rep.Acknowledged), ref)
+		} else {
+			_, _ = fmt.Fprintf(w, "no defects in %s\n", ref)
+		}
 	}
 
 	// ON EVERY PATH, and the clean one is why this exists. "no defects" is a
@@ -560,6 +576,10 @@ func runTreeDoctor(w io.Writer, gh treeGH, ref ghx.IssueRef, fixLabels bool) err
 			"%d node(s) in %s could not be read, so this is not a verdict on the tree (%d defect(s) found in what could be read)",
 			len(rep.Unread), ref, len(rep.Defects)))
 	case len(rep.Defects) > 0:
+		if len(rep.Acknowledged) > 0 {
+			return withCode(exitLooked, fmt.Errorf("%d defect(s), %d acknowledged in %s",
+				len(rep.Defects), len(rep.Acknowledged), ref))
+		}
 		return withCode(exitLooked, fmt.Errorf("%d defect(s) in %s", len(rep.Defects), ref))
 	}
 	return nil

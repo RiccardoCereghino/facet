@@ -60,6 +60,18 @@ func (d Defect) String() string {
 type Report struct {
 	Defects []Defect
 	Unread  []Defect
+	// Acknowledged is the THIRD verdict (facet#159): a closed holder with no
+	// children that carries acknowledgedLabel AND a reason on the record. It
+	// is COUNTED AND PRINTED SEPARATELY, NEVER folded into Defects or hidden
+	// -- a suppression that lowers the headline defect count is how an
+	// instrument starts lying politely. Some legitimately ARE this shape: a
+	// slate that was deferred, whose live blocks were correctly re-homed
+	// elsewhere, should be childless, and GitHub allows exactly one parent
+	// per issue -- so re-parenting the closed work back is not always
+	// available, and where it is, doing it to a holder whose work is still
+	// OPEN would produce a closed-parent-with-open-children defect on
+	// purpose (facet#132's shape).
+	Acknowledged []Defect
 }
 
 // Doctor reports every defect in the tree below root, root included, and
@@ -73,6 +85,19 @@ type Report struct {
 // else. In particular an issue with no parent is NEVER reported: that is the
 // ordinary state of an issue, not a defect.
 func Doctor(root *Node, route *routing.Routing) Report {
+	return DoctorWithSource(root, route, nil)
+}
+
+// DoctorWithSource is [Doctor] with the acknowledgment check ACTIVE: src is
+// used to fetch the body of a candidate closed-empty holder (only when it
+// already carries acknowledgedLabel) and look for a reason recorded there.
+//
+// src IS OPTIONAL, and nil is not a degraded mode to apologise for --
+// "automation arrives as a setting and it starts off" applies here exactly as
+// it does everywhere else in the bottega: with src == nil the acknowledged
+// label is READ but cannot be VERIFIED, so it changes nothing and the node
+// still reports as a defect. A label nobody can check is not a suppression.
+func DoctorWithSource(root *Node, route *routing.Routing, src Source) Report {
 	var rep Report
 	nodes := append([]*Node{root}, root.Descendants()...)
 
@@ -85,9 +110,10 @@ func Doctor(root *Node, route *routing.Routing) Report {
 		return rep
 	}
 	for _, n := range nodes {
-		d, unread := structural(n, route.Structure)
+		d, unread, ack := structural(n, route.Structure, src)
 		rep.Defects = append(rep.Defects, d...)
 		rep.Unread = append(rep.Unread, unread...)
+		rep.Acknowledged = append(rep.Acknowledged, ack...)
 		if n.Err == nil && n.Assigned {
 			rep.Defects = append(rep.Defects,
 				levelLabel(n, route.Structure, route.KeyForRepo(n.Ref.OwnerRepo()))...)
@@ -250,10 +276,10 @@ func labelList(labels []string) string {
 
 // structural holds only where levels are declared. Like universal it returns
 // findings and could-not-looks separately.
-func structural(n *Node, s *routing.Structure) (defects, unread []Defect) {
+func structural(n *Node, s *routing.Structure, src Source) (defects, unread, acknowledged []Defect) {
 	var out []Defect
 	if n.Err != nil {
-		return nil, nil // universal already reported it as unread
+		return nil, nil, nil // universal already reported it as unread
 	}
 
 	// The node read fine and its POSITION could not be established. Two
@@ -274,7 +300,7 @@ func structural(n *Node, s *routing.Structure) (defects, unread []Defect) {
 				Why:  "an issue that is its own ancestor has no level, and any walk of its ancestry runs forever -- so nothing above it can be judged, by this report or any other",
 				Fix: fmt.Sprintf("break it at the closing edge: re-parent %s away from %s",
 					cyc.Child, cyc.Ancestor),
-			}}, nil
+			}}, nil, nil
 		}
 		// A read that did not answer. Nothing is known, and saying more than
 		// that would be inventing it -- WHICH IS WHY IT IS NOT A FINDING. This
@@ -286,11 +312,11 @@ func structural(n *Node, s *routing.Structure) (defects, unread []Defect) {
 			What: "its position in the tree could not be established: " + n.LevelErr.Error(),
 			Why:  "the node itself was read; its ancestry was not, and that is where a level comes from -- so the tree below is shown but nothing here says whether it sits in the right place",
 			Fix:  "retry, or check this credential can read the repositories its parents live in -- a parent routinely lives in another repo",
-		}}
+		}}, nil
 	}
 
 	if !n.LevelKnown {
-		return out, nil
+		return out, nil, nil
 	}
 
 	// The defect the whole feature exists for: something at a depth where it
@@ -317,7 +343,7 @@ func structural(n *Node, s *routing.Structure) (defects, unread []Defect) {
 			// different fact from a read that did not happen, and widening the
 			// third value to cover it would be a second change wearing this
 			// one's clothes.
-			return out, nil
+			return out, nil, nil
 		}
 
 		// Report the expectation the assignment ACTUALLY USED, recorded on the
@@ -347,7 +373,7 @@ func structural(n *Node, s *routing.Structure) (defects, unread []Defect) {
 			Why: "a node at the wrong level collapses the ones above it, and every individual edge still looks reasonable while it happens",
 			Fix: "re-parent it, correct its title or repo, or declare the level it belongs to",
 		})
-		return out, nil
+		return out, nil, nil
 	}
 
 	// A rung whose purpose is to hold others, holding nothing.
@@ -368,6 +394,55 @@ func structural(n *Node, s *routing.Structure) (defects, unread []Defect) {
 			why = "this level exists to hold the work it accounts for; closed and empty, whatever it covered can no longer be attributed to it"
 			fix = "wire its work under it before closing, or record why there was none"
 		}
+		read := fmt.Sprintf("state %s, %d children read, level %q requires children %s",
+			n.State, len(n.Children), lvl.Name, requirementPhrase(lvl.RequiresChildren))
+
+		// THE THIRD VERDICT (facet#159): a closed holder with no children can
+		// be the TRUTH -- a slate that was deferred, whose live blocks were
+		// correctly re-homed elsewhere, should end up childless, and GitHub's
+		// one-parent-per-issue limit means that is not always fixable by
+		// re-parenting. acknowledgedLabel alone is not enough: a bare label is
+		// a claim nobody re-checks, so it is verified against a reason
+		// recorded ON THE ISSUE, fetched only for this one candidate.
+		if n.IsClosed() && hasLabel(n.Labels, acknowledgedLabel) {
+			switch reason, err := acknowledgedReason(n.Ref, src); {
+			case err != nil:
+				// COULD NOT VERIFY IS NOT ACKNOWLEDGED. A label that cannot be
+				// checked must not suppress anything -- that would let a read
+				// failure quietly turn into "no defect here", the same
+				// pass-by-absence class this whole report exists to refuse.
+				out = append(out, Defect{
+					Ref:  n.Ref,
+					What: what + fmt.Sprintf(" and carries %s, but its reason could not be verified: %s", acknowledgedLabel, err),
+					Read: read,
+					Why:  why + " -- and a suppression that cannot be checked is not a suppression",
+					Fix:  fmt.Sprintf("retry, or check this credential can read %s", n.Ref),
+				})
+			case reason != "":
+				return out, nil, []Defect{{
+					Ref:  n.Ref,
+					What: what,
+					Read: read + fmt.Sprintf("; %s present, reason: %q", acknowledgedLabel, reason),
+					Why:  "acknowledged with a reason on the record -- a legitimate terminal state, not a loss",
+					Fix:  "",
+				}}
+			default:
+				// The label is set but no reason section was found. Reported
+				// as its OWN defect, distinct from the ordinary childless
+				// one, so the fix a reader gets is "write the reason", not
+				// "wire work under it" -- the label already says there is
+				// none to wire.
+				out = append(out, Defect{
+					Ref:  n.Ref,
+					What: what + fmt.Sprintf(" and carries %s with NO reason recorded", acknowledgedLabel),
+					Read: read,
+					Why:  "a bare acknowledged label is a claim nobody re-checks, and this report requires a reason before it will suppress anything",
+					Fix:  fmt.Sprintf("add a %q section to the issue body naming why it is legitimately childless", acknowledgedHeading),
+				})
+			}
+			return out, nil, nil
+		}
+
 		out = append(out, Defect{
 			Ref:  n.Ref,
 			What: what,
@@ -376,13 +451,81 @@ func structural(n *Node, s *routing.Structure) (defects, unread []Defect) {
 			// all times -- and those are the two states a reader has to tell
 			// apart to know whether the report is about a loss or about work
 			// standing empty on the board.
-			Read: fmt.Sprintf("state %s, %d children read, level %q requires children %s",
-				n.State, len(n.Children), lvl.Name, requirementPhrase(lvl.RequiresChildren)),
-			Why: why,
-			Fix: fix,
+			Read: read,
+			Why:  why,
+			Fix:  fix,
 		})
 	}
-	return out, nil
+	return out, nil, nil
+}
+
+// acknowledgedLabel is the label [DoctorWithSource] honours for the third
+// verdict (facet#159). The prefix matches the shape this repo's other level
+// labels already use (type/block, type/work); the name is this feature's own
+// choice.
+const acknowledgedLabel = "tree/acknowledged"
+
+// acknowledgedHeading is the section a reason must be written under. Level
+// and case insensitive, like every other section this bottega's tools parse.
+const acknowledgedHeading = "acknowledged"
+
+// hasLabel reports whether name is among labels.
+func hasLabel(labels []string, name string) bool {
+	for _, l := range labels {
+		if l == name {
+			return true
+		}
+	}
+	return false
+}
+
+// acknowledgedReason fetches ref's body (only ever called for a node already
+// carrying acknowledgedLabel) and returns the text under an "Acknowledged"
+// heading. Empty, nil means the label is set but no reason was written --
+// distinct from a non-nil error, which means the check could not run at all.
+//
+// src == nil is not an error: it means the caller did not wire a source
+// ([Doctor] itself never does), and an unverifiable label is reported exactly
+// like an unfound reason -- the difference between the two is stated in the
+// caller's own two branches, not folded together here.
+func acknowledgedReason(ref ghx.IssueRef, src Source) (string, error) {
+	if src == nil {
+		return "", nil
+	}
+	issue, err := src.ViewIssue(ref.OwnerRepo(), ref.Number)
+	if err != nil {
+		return "", err
+	}
+	return sectionBody(issue.Body, acknowledgedHeading), nil
+}
+
+// sectionBody returns the non-empty text under a markdown heading matching
+// name (case insensitive), up to the next heading of any level or the end of
+// the body. Whitespace-only content between headings reads as no reason,
+// which is the same rule [structural]'s caller acts on: a section present but
+// empty is not a reason recorded.
+func sectionBody(body, name string) string {
+	lines := strings.Split(body, "\n")
+	var found bool
+	var b strings.Builder
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			heading := strings.ToLower(strings.TrimSpace(strings.TrimLeft(trimmed, "#")))
+			if found {
+				break // the next heading of any level ends the section
+			}
+			if heading == strings.ToLower(name) {
+				found = true
+			}
+			continue
+		}
+		if found {
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // requirementPhrase renders a level's child requirement for an evidence line,
