@@ -157,6 +157,39 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`facet spawn` no longer discards a `--clone`, `--add` or `--rm` value it
+  does not recognise.** All three took a routing key and skipped anything that
+  was not one — `--clone` by acting only on a hit, `--add` and `--rm` by
+  discarding a miss — so a value the operator typed could be thrown away at
+  **exit 0, with nothing in the output distinguishing *I applied your override*
+  from *I threw it away***. The only reason such a spawn produced anything at
+  all is that the home repo is added unconditionally.
+
+  **Measured on the harness that drives every seating:** it passes one
+  `--clone <name>=<url>` per repository a seat's scope names, which is never a
+  bare routing key, **so every multi-repo workspace it ever created held the
+  home repository alone.** The one thing that caught it was a downstream check
+  comparing the scope against the clones — and only when the scope happened to
+  name the missing repository.
+
+  **`--clone`, `--add` and `--rm` now take either spelling — a bare routing key,
+  or `key=url` — and refuse anything else**, naming the value, which half of it
+  failed to resolve, and every known key. `key=url` is what `facet new` and
+  `facet edit` have always meant by `--clone`, so one flag name now means one
+  thing across the CLI. **A supplied url is checked rather than ignored**: it
+  must be the one routing holds for that key, because a selection takes its
+  directory, extra remotes and LFS flag from routing and a url paired with
+  routing's directory would be a half-applied override — and silently dropping
+  it is the defect being fixed. The refusal happens before the issue branch is
+  created and before the workspace directory exists, so nothing is left behind.
+
+  **They also resolve routing aliases now, as the inference always has.**
+  `--clone doctrine` was dropped while an issue body saying "doctrine" routed to
+  `stele` — the same table, read by one code path and not the other. Refusing it
+  would have been a refusal routing itself can answer, so the two paths now
+  resolve a spelling the same way. Two spellings of one repository
+  (`--clone stele --clone doctrine`) select it once.
+
 - **`facet tree doctor` no longer reports a read that never happened as a
   finding.** A node whose read did not answer was counted among the defects, so
   a walk that could not read an issue's ancestry printed `1 defect(s)` and
