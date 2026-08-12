@@ -68,9 +68,9 @@ func newSpawnCmd() *cobra.Command {
 	}
 	f := cmd.Flags()
 	f.StringVar(&repo, "repo", "", "the issue's home repository, as owner/name (required)")
-	f.StringSliceVar(&clones, "clone", nil, "replace the inferred repo set entirely")
-	f.StringSliceVar(&addClones, "add", nil, "add repos to the inferred set")
-	f.StringSliceVar(&rmClones, "rm", nil, "drop repos from the inferred set")
+	f.StringSliceVar(&clones, "clone", nil, "replace the inferred repo set entirely: a routing key, or key=url; repeatable. An unrecognised value refuses")
+	f.StringSliceVar(&addClones, "add", nil, "add repos to the inferred set: a routing key, or key=url; repeatable. An unrecognised value refuses")
+	f.StringSliceVar(&rmClones, "rm", nil, "drop repos from the inferred set: a routing key, or key=url; repeatable. An unrecognised value refuses")
 	f.StringVar(&seatName, "seat", "", "name of the seat this workspace belongs to, written to .seat (required)")
 	f.StringSliceVar(&scope, "scope", nil, "another issue this workspace covers, as owner/repo#n; repeatable. The spawned issue is always included")
 	f.StringVar(&seatIssue, "seat-issue", "", "the issue that describes this SEAT — its workload, order, orchestration notes and escalation channel — as owner/repo#n, written to .seat-issue")

@@ -158,7 +158,9 @@ for issues filed through a form — an explicit "Repos in scope" field. The issu
 above is labelled `area/backups` with no Terraform label, and still cannot be
 closed without a change in another repository. So the inference is always shown,
 never silently trusted, and correctable with `--clone` / `--add` / `--rm`.
-`--dry-run` prints it and creates nothing.
+Each of those takes a routing key or `key=url`, repeatably, and **refuses a
+value it cannot resolve** rather than skipping it — a discarded override and an
+applied one must not look the same. `--dry-run` prints it and creates nothing.
 
 ### Moving the issue on a project board
 

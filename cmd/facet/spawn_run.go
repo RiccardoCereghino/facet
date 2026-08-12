@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -98,7 +99,10 @@ func runSpawn(o spawnOpts) error {
 	}
 
 	sel, hints := route.Infer(o.Repo, iss)
-	sel = applyOverrides(sel, route, homeKey, o)
+	sel, err = applyOverrides(sel, route, homeKey, o)
+	if err != nil {
+		return err
+	}
 
 	slug := o.Slug
 	if slug == "" {
@@ -359,24 +363,139 @@ func checkoutIssueBranch(dir, branch string) error {
 	return err
 }
 
+// overrideKey resolves one --clone/--add/--rm value to a routing key, and
+// REFUSES anything that cannot be one.
+//
+// Two spellings are accepted, deliberately: a bare routing key, and
+// `key=url`. The second is what `facet new`/`facet edit` have always meant by
+// --clone (dir=giturl), and it is the only form the harness emits --
+// stele-home's lib/identity.sh passes `--clone <short-name>=git@github.com:…`,
+// one per repo the seat's scope names. Every routing key today IS the short
+// repo name, so the two grammars pick out the same repo.
+//
+// THE URL IS CHECKED RATHER THAN IGNORED. It cannot be honoured as an override:
+// a selection resolves its directory, extra remotes and LFS flag out of
+// route.Repos[key], so an override URL paired with routing's directory would be
+// a half-applied override. And it cannot be discarded, because a discarded
+// override that looks like an applied one is this function's whole defect
+// (facet#160). So a URL that disagrees with routing refuses and prints both.
+func overrideKey(flag, value string, route *routing.Routing) (string, error) {
+	key, url, hasURL := strings.Cut(value, "=")
+	if key == "" {
+		return "", fmt.Errorf("--%s %q names no repository\n"+
+			"fix: pass a routing key, or key=url: --%s %s", flag, value, flag, someKey(route))
+	}
+	// Aliases resolve here for the same reason they resolve in Infer
+	// (routing.go): routing says `doctrine` names `stele`, so a flag that
+	// refused it would be refusing a value routing itself can resolve. Repos
+	// first, then aliases -- Infer's order, so one spelling cannot mean two
+	// repos depending on which code path read it.
+	r, ok := route.Repos[key]
+	if !ok {
+		if alias, hit := route.Aliases[key]; hit {
+			ar, defined := route.Repos[alias]
+			if !defined {
+				// A dangling alias is a defect in routing, and saying which
+				// hop is missing is the difference between fixing it and
+				// re-typing the flag.
+				return "", fmt.Errorf("--%s %q resolves through alias %q to %q, which %s defines no repo for\n"+
+					"fix: correct the alias in routing, or name a key from: %s",
+					flag, value, key, alias, roots.Routing, strings.Join(routeKeys(route), " "))
+			}
+			key, r, ok = alias, ar, true
+		}
+	}
+	if !ok {
+		spelling := "is not a routing key or alias"
+		if hasURL {
+			spelling = fmt.Sprintf("parses as key %q plus a url, and %q is not a routing key or alias", key, key)
+		}
+		return "", fmt.Errorf("--%s %q %s\n"+
+			"known keys: %s\n"+
+			"fix: name one of those, as a bare key or key=url",
+			flag, value, spelling, strings.Join(routeKeys(route), " "))
+	}
+	if hasURL && url != r.URL {
+		return "", fmt.Errorf("--%s %q supplies a url that is not the one routing has for %q\n"+
+			"  you passed: %s\n"+
+			"  routing has: %s\n"+
+			"fix: drop the url and pass the bare key (routing's is what would be cloned), "+
+			"or correct one of the two so they agree", flag, value, key, url, r.URL)
+	}
+	return key, nil
+}
+
+// routeKeys lists every routing key, sorted, for a refusal to print. Sorted
+// because a map's order is random and a refusal that reads differently on every
+// run is one nobody can diff.
+func routeKeys(route *routing.Routing) []string {
+	keys := make([]string, 0, len(route.Repos))
+	for k := range route.Repos {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// someKey is one real key to show in a usage line, or a placeholder when
+// routing knows none.
+func someKey(route *routing.Routing) string {
+	if keys := routeKeys(route); len(keys) > 0 {
+		return keys[0]
+	}
+	return "<routing-key>"
+}
+
 // applyOverrides lets the operator correct the inference. --clone replaces it
 // wholesale; --add and --rm adjust it. The home repo can never be removed: it
 // carries the branch.
-func applyOverrides(sel []routing.Selection, route *routing.Routing, homeKey string, o spawnOpts) []routing.Selection {
+//
+// EVERY VALUE IS RESOLVED THROUGH overrideKey, AND AN UNRESOLVABLE ONE REFUSES.
+// All three flags used to skip what they could not recognise -- --clone by
+// entering its `if ok` branch only on a hit, --add and --rm by discarding a
+// miss -- so `facet spawn --clone stele=git@…` produced a workspace holding the
+// home repo alone, at exit 0, with nothing in the output distinguishing "I
+// applied your override" from "I threw it away" (facet#160). It ran that way
+// under every multi-repo seating the harness ever performed.
+//
+// This returns an error rather than warning, and it is called before the issue
+// branch is created and before the workspace directory exists, so a refusal
+// leaves nothing behind on disk or on the forge.
+func applyOverrides(sel []routing.Selection, route *routing.Routing, homeKey string, o spawnOpts) ([]routing.Selection, error) {
 	if len(o.Clones) > 0 {
-		sel = []routing.Selection{{Key: homeKey, Reasons: []string{"home"}, Home: true}}
-		for _, k := range o.Clones {
+		replaced := []routing.Selection{{Key: homeKey, Reasons: []string{"home"}, Home: true}}
+		for _, v := range o.Clones {
+			k, err := overrideKey("clone", v, route)
+			if err != nil {
+				return nil, err
+			}
+			// The home repo is accepted and skipped rather than refused: it is
+			// already in the set, it carries the branch, and the harness passes
+			// it alongside the rest.
 			if k == homeKey {
 				continue
 			}
-			if _, ok := route.Repos[k]; ok {
-				sel = append(sel, routing.Selection{Key: k, Reasons: []string{"manual"}})
+			// Deduplicated because two spellings can now resolve to one repo:
+			// `--clone stele --clone doctrine` is one repository named twice,
+			// and a set listing it twice would print it twice, count it twice
+			// in the confirmation, and clone it twice.
+			seen := false
+			for _, s := range replaced {
+				if s.Key == k {
+					seen = true
+				}
 			}
+			if seen {
+				continue
+			}
+			replaced = append(replaced, routing.Selection{Key: k, Reasons: []string{"manual"}})
 		}
+		sel = replaced
 	}
-	for _, k := range o.Add {
-		if _, ok := route.Repos[k]; !ok {
-			continue
+	for _, v := range o.Add {
+		k, err := overrideKey("add", v, route)
+		if err != nil {
+			return nil, err
 		}
 		found := false
 		for _, s := range sel {
@@ -390,9 +509,17 @@ func applyOverrides(sel []routing.Selection, route *routing.Routing, homeKey str
 	}
 	if len(o.Remove) > 0 {
 		drop := map[string]bool{}
-		for _, k := range o.Remove {
+		for _, v := range o.Remove {
+			k, err := overrideKey("rm", v, route)
+			if err != nil {
+				return nil, err
+			}
 			drop[k] = true
 		}
+		// A key that routing knows but the set does not hold stays a no-op: the
+		// state the operator asked for -- that repo absent -- is the state they
+		// get. What refuses above is a value that could never name a repo at
+		// all, which is a different thing and is never satisfied by silence.
 		var kept []routing.Selection
 		for _, s := range sel {
 			if drop[s.Key] && !s.Home {
@@ -402,7 +529,7 @@ func applyOverrides(sel []routing.Selection, route *routing.Routing, homeKey str
 		}
 		sel = kept
 	}
-	return sel
+	return sel, nil
 }
 
 func printPlan(ws, repo string, iss *ghx.Issue, sel []routing.Selection, hints []routing.Hint,
