@@ -23,6 +23,9 @@ type treeGH interface {
 	IssueParent(repo string, number int) (ghx.IssueRef, bool, error)
 	AddSubIssue(repo string, number int, childID int64) error
 	AddLabel(repo string, number int, label string) error
+	// RemoveLabel is how a wire that moves a node drops the rung label of the
+	// rung it left -- see removeStaleRungLabel.
+	RemoveLabel(repo string, number int, label string) error
 	// RepoLabels and CreateLabel are how `wire` answers "does this label exist
 	// at all?" without reading gh's prose -- see recordLevel.
 	RepoLabels(repo string) ([]ghx.RepoLabel, error)
@@ -164,6 +167,8 @@ func recordLevel(w io.Writer, gh treeGH, route *routing.Routing, child ghx.Issue
 		return nil
 	}
 
+	removeStaleRungLabel(w, gh, route, child, ci, label)
+
 	addErr := gh.AddLabel(child.OwnerRepo(), child.Number, label)
 	if addErr == nil {
 		_, _ = fmt.Fprintf(w, "  level recorded: %s\n", label)
@@ -196,6 +201,44 @@ func recordLevel(w io.Writer, gh treeGH, route *routing.Routing, child ghx.Issue
 		"  the tree now holds a node whose level nothing can read, and `tree doctor` can only check a level it can see\n"+
 		"fix: gh issue edit %d --repo %s --add-label %s",
 		child, label, addErr, child.Number, child.OwnerRepo(), label)
+}
+
+// removeStaleRungLabel drops the type/* label of a rung ci no longer
+// occupies, using the labels ci carried BEFORE this wire (the caller reads
+// the issue once, at the top of runTreeWire, before any write).
+//
+// recordLevel ADDS the new rung's label unconditionally and always has: a
+// move never removed what an earlier wire recorded, so reverting an edge put
+// the node back where it started while its declared identity stayed at
+// wherever it had last been moved to -- both labels present, `tree doctor`
+// unable to tell which one is true (facet#167).
+//
+// It refuses rather than guesses when ci already carries labels for more than
+// one declared level: that is a pre-existing two-sources-of-truth defect this
+// wire did not create, and picking one of the two to strip would destroy
+// evidence about which write caused it rather than fix anything.
+func removeStaleRungLabel(w io.Writer, gh treeGH, route *routing.Routing, child ghx.IssueRef, ci *ghx.Issue, newLabel string) {
+	key := route.KeyForRepo(child.OwnerRepo())
+	oldLevel, ok, ambiguous := route.Structure.LevelForLabels(key, ci.LabelNames())
+	if ambiguous {
+		_, _ = fmt.Fprintf(w, "  rung label not touched: %s already carries labels for more than one level; not guessing which to drop\n", child)
+		return
+	}
+	if !ok {
+		// Nothing declared a rung before this wire, so there is nothing stale
+		// to remove -- the common case, a node wired for the first time.
+		return
+	}
+	oldLabel, ok := route.Structure.LabelFor(oldLevel, key, ci.Title, ci.LabelNames())
+	if !ok || oldLabel == newLabel {
+		// Same rung, or that rung records no label at all -- nothing changed.
+		return
+	}
+	if err := gh.RemoveLabel(child.OwnerRepo(), child.Number, oldLabel); err != nil {
+		_, _ = fmt.Fprintf(w, "  rung label NOT removed: %s still carries %s, the label of the rung it left: %v\n", child, oldLabel, err)
+		return
+	}
+	_, _ = fmt.Fprintf(w, "  rung label removed: %s (the rung %s left)\n", oldLabel, child)
 }
 
 // createDeclaredLabel defines label in repo IF the repository genuinely does
