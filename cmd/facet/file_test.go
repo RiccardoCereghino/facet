@@ -19,6 +19,9 @@ type fakeGH struct {
 	addedLabels []string
 	addLabelErr error
 
+	removedLabels  []string
+	removeLabelErr error
+
 	// The repository-side label definitions, which is what AddLabel needs to
 	// already exist. nil means "defines nothing", which is only ever read by
 	// the tests that care.
@@ -128,6 +131,13 @@ func (f *fakeGH) AddLabel(repo string, number int, label string) error {
 	}
 	f.addedLabels = append(f.addedLabels, f.key(repo, number)+"+"+label)
 	return f.addLabelErr
+}
+
+// RemoveLabel records every removal, so a test can assert `tree wire` dropped
+// the label of the rung a moved node left.
+func (f *fakeGH) RemoveLabel(repo string, number int, label string) error {
+	f.removedLabels = append(f.removedLabels, f.key(repo, number)+"-"+label)
+	return f.removeLabelErr
 }
 
 func (f *fakeGH) definesLabel(repo, label string) bool {

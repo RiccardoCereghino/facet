@@ -121,6 +121,9 @@ type Client interface {
 	// AddBlockedBy declares repo#number is blocked by the issue with database
 	// id blockingID, as a native GitHub issue-dependency edge.
 	AddLabel(repo string, number int, label string) error
+	// RemoveLabel strips a label a previous wire applied, e.g. the rung label
+	// of a level a node has moved away from.
+	RemoveLabel(repo string, number int, label string) error
 	AddBlockedBy(repo string, number int, blockingID int64) error
 	// RepoLabels lists the labels DEFINED in a repository, which is a different
 	// question from what labels an issue carries: AddLabel fails when the
@@ -296,6 +299,14 @@ func (CLI) IssueID(repo string, number int) (int64, error) {
 // be re-applied on every wire without a read first.
 func (CLI) AddLabel(repo string, number int, label string) error {
 	_, err := run("issue", "edit", strconv.Itoa(number), "--repo", repo, "--add-label", label)
+	return err
+}
+
+// RemoveLabel strips a label from an issue. Like AddLabel, gh does not
+// complain about a label that is already absent, so this needs no read first
+// either.
+func (CLI) RemoveLabel(repo string, number int, label string) error {
+	_, err := run("issue", "edit", strconv.Itoa(number), "--repo", repo, "--remove-label", label)
 	return err
 }
 

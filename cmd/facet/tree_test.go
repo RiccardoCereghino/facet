@@ -148,6 +148,49 @@ func (f *treeFake) AddSubIssue(repo string, number int, childID int64) error {
 	return nil
 }
 
+// AddLabel and RemoveLabel keep f.issues in sync with what they scripted, the
+// same reason AddSubIssue above updates f.parents: a second wire against this
+// fake must see the true post-write label set, or a move-then-revert test
+// would read the FIRST wire's stale labels rather than what it actually left
+// behind -- and that stale read is exactly the bug facet#167 is about.
+func (f *treeFake) AddLabel(repo string, number int, label string) error {
+	if err := f.fakeGH.AddLabel(repo, number, label); err != nil {
+		return err
+	}
+	f.setLabel(repo, number, label, true)
+	return nil
+}
+
+func (f *treeFake) RemoveLabel(repo string, number int, label string) error {
+	if err := f.fakeGH.RemoveLabel(repo, number, label); err != nil {
+		return err
+	}
+	f.setLabel(repo, number, label, false)
+	return nil
+}
+
+func (f *treeFake) setLabel(repo string, number int, label string, present bool) {
+	iss, ok := f.issues[repo+"#"+itoa(number)]
+	if !ok {
+		return
+	}
+	out := iss.Labels[:0:0]
+	found := false
+	for _, l := range iss.Labels {
+		if l.Name == label {
+			found = true
+			if !present {
+				continue
+			}
+		}
+		out = append(out, l)
+	}
+	if present && !found {
+		out = append(out, ghx.Label{Name: label})
+	}
+	iss.Labels = out
+}
+
 func itoa(n int) string {
 	if n == 0 {
 		return "0"
@@ -314,6 +357,88 @@ func TestTreeWireStillAcceptsTheCorrectShapeWithLabels(t *testing.T) {
 	want := "acme/doctrine#282<-5049244556"
 	if len(f.addSubIssueCalls) != 1 || f.addSubIssueCalls[0] != want {
 		t.Errorf("calls = %v, want [%s]", f.addSubIssueCalls, want)
+	}
+}
+
+// facet#167: a wire that MOVES a node to a new rung must drop the rung label
+// it came in with, not just stamp the new one -- or the node ends up
+// declaring two levels at once.
+//
+// A seat record (type/seat) is moved under an orphaned block, which puts it
+// at "issue" (type/work): the block's only permitted child is the deepest
+// rung, regardless of the seat's own title pattern.
+func TestTreeWireRemovesTheRungLabelOfTheRungItLeft(t *testing.T) {
+	withRouting(t, labelledFourLevelStructure)
+	f := wireFake()
+	f.issues["acme/doctrine#282"] = issueWith("seat: c1-structure", "complexity/3", "type/seat")
+	f.issues["acme/lab#75"] = issueWith("some future work", "type/block") // orphaned block
+	var out bytes.Buffer
+
+	if err := runTreeWire(&out, f, iref("acme", "doctrine", 282), iref("acme", "lab", 75)); err != nil {
+		t.Fatalf("wire: %v", err)
+	}
+
+	wantRemoved := "acme/doctrine#282-type/seat"
+	if len(f.removedLabels) != 1 || f.removedLabels[0] != wantRemoved {
+		t.Fatalf("removedLabels = %v, want [%s]", f.removedLabels, wantRemoved)
+	}
+	wantAdded := "acme/doctrine#282+type/work"
+	if len(f.addedLabels) != 1 || f.addedLabels[0] != wantAdded {
+		t.Fatalf("addedLabels = %v, want [%s]", f.addedLabels, wantAdded)
+	}
+
+	got := out.String()
+	for _, want := range []string{"rung label removed: type/seat", "level recorded: type/work"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output does not print %q:\n%s", want, got)
+		}
+	}
+}
+
+// The negative control the issue names: move a node, move it back, and the
+// label set must be BYTE-IDENTICAL to where it started -- not carrying a
+// residue from the trip. It fails today because recordLevel only ever adds.
+func TestTreeWireMoveThenRevertLeavesTheLabelSetUnchanged(t *testing.T) {
+	withRouting(t, labelledFourLevelStructure)
+	f := wireFake()
+	f.issues["acme/doctrine#282"] = issueWith("seat: c1-structure", "complexity/3", "type/seat")
+	f.issues["acme/lab#75"] = issueWith("some future work", "type/block") // orphaned block
+	var out bytes.Buffer
+
+	before := append([]string(nil), f.issues["acme/doctrine#282"].LabelNames()...)
+
+	if err := runTreeWire(&out, f, iref("acme", "doctrine", 282), iref("acme", "lab", 75)); err != nil {
+		t.Fatalf("wire (move): %v", err)
+	}
+	if err := runTreeWire(&out, f, iref("acme", "doctrine", 282), iref("acme", "lab", 46)); err != nil {
+		t.Fatalf("wire (revert): %v", err)
+	}
+
+	after := f.issues["acme/doctrine#282"].LabelNames()
+	if strings.Join(before, ",") != strings.Join(after, ",") {
+		t.Errorf("label set after a move and its revert = %v, want it identical to the start %v", after, before)
+	}
+}
+
+// A node that already carries labels for two different levels is a
+// pre-existing defect this wire did not create. It must not guess which one
+// to strip -- that would destroy the evidence of which write caused it -- so
+// it says so and leaves both alone.
+func TestTreeWireRefusesToGuessWhichOfTwoStaleRungLabelsToDrop(t *testing.T) {
+	withRouting(t, labelledFourLevelStructure)
+	f := wireFake()
+	f.issues["acme/doctrine#282"] = issueWith("seat: c1-structure", "type/seat", "type/work")
+	f.issues["acme/lab#75"] = issueWith("some future work", "type/block") // orphaned block
+	var out bytes.Buffer
+
+	if err := runTreeWire(&out, f, iref("acme", "doctrine", 282), iref("acme", "lab", 75)); err != nil {
+		t.Fatalf("wire: %v", err)
+	}
+	if len(f.removedLabels) != 0 {
+		t.Errorf("removedLabels = %v, want none: an ambiguous prior state must not be guessed at", f.removedLabels)
+	}
+	if !strings.Contains(out.String(), "already carries labels for more than one level") {
+		t.Errorf("output does not explain the refusal to touch the stale label:\n%s", out.String())
 	}
 }
 
