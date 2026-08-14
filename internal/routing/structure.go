@@ -174,6 +174,24 @@ type LevelMatch struct {
 	// The narrowing must name a level the rung's children could already
 	// occupy; validate refuses anything else, so this can only ever remove a
 	// candidate and never introduce one.
+	//
+	// !! REMOVING IT IS SAFE ONLY IF THE RUNG IT NAMED CONSTRAINS ITSELF. !!
+	// Dropping this field restores the full candidate set, which is exactly
+	// what it is for -- a lone piece of work no longer needs a wrapper node
+	// invented around it to satisfy the schema. But [Level.accepts] admits
+	// ANYTHING when a level declares no Accepts, and AssignWithin takes the
+	// SHALLOWEST match, so an unconstrained OPTIONAL rung absorbs everything
+	// that belongs to the rung below it -- see Assign's own note.
+	//
+	// Together those mean: drop this field while the named rung is
+	// unconstrained, and every child assigns to THAT rung instead of the one
+	// below. `tree wire` records a level by position, so each of them is then
+	// LABELLED as the skippable rung -- manufacturing a node at a grouping
+	// level with nothing under it, which is precisely what `tree doctor`'s
+	// childless check exists to report.
+	//
+	// So the two edits are coupled, and neither file says so on its own. Give
+	// the rung an Accepts before removing a narrowing that pointed at it.
 	ChildMustBe string `json:"childMustBe,omitempty"`
 }
 
