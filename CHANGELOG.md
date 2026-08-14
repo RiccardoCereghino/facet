@@ -271,6 +271,36 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`facet tree spans <owner/repo#n> [--json]` reports where the work below a
+  node LANDS.** Composing a set of groupings means knowing each one's repo span,
+  and nothing reported it — it was derived by hand every time, **and derived
+  from the wrong thing, reproducibly.** By hand it comes out as what the
+  grouping is ABOUT, because the subject matter is what the issue titles put in
+  front of you.
+
+  **A span is not "where the issues live", and that is the point.** Every child
+  of a grouping is routinely filed in one repository while its work touches
+  several, so the easy question gives a confidently wrong answer. The span is
+  every repository the descendants are filed in **plus every repository they
+  declare** — read through the same inference `facet spawn` uses to decide what
+  to clone, so it is *what a seat working this would be given* rather than a
+  second opinion invented for this verb.
+
+  It also **flags a node whose own repository is not in its span** — filed in
+  one place, working in another — which is invisible in every other view and is
+  where hand-derived spans go wrong.
+
+  **The third value is the one place this verb can be dangerous.** A span
+  computed from a partial read is worse than no span, because a **missing
+  repository reads as disjoint** — and disjoint is precisely the answer that
+  authorises putting two groupings in one slot. So `CURRENT` /
+  `PARTIAL` / `COULD NOT LOOK` are distinct, a degraded row says it is a lower
+  bound that must not be compared for disjointness, and the run exits **2**.
+
+  **It is not a slot checker.** Whether two spans may share a slot is doctrine,
+  and facet holds none.
+
+
 - **A grouping nobody is working can be placed in the tree, without inventing a
   node for a worker who does not exist.** Two rungs' worth of shapes may now
   share one rung and permit different things below them, via `childMustBe` on an

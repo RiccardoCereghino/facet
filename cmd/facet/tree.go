@@ -28,7 +28,8 @@ func newTreeCmd() *cobra.Command {
 			"is never reported.",
 	}
 	cmd.AddCommand(newTreeWireCmd(), newTreeShowCmd(), newTreeListCmd(),
-		newTreeStatusCmd(), newTreeDoctorCmd(), newTreeOrphansCmd(), newTreeLabelsCmd())
+		newTreeStatusCmd(), newTreeDoctorCmd(), newTreeOrphansCmd(), newTreeLabelsCmd(),
+		newTreeSpansCmd())
 	return cmd
 }
 
@@ -144,6 +145,54 @@ func newTreeLabelsCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&create, "create", false,
 		"define the missing labels, only ever from the set the structure declares")
 	tagCantLook(cmd, cobra.NoArgs)
+	return cmd
+}
+
+// newTreeSpansCmd reports where the work below a node LANDS.
+//
+// It exists because that figure was derived BY HAND, every time a set of
+// groupings was composed -- and derived from the WRONG THING, reproducibly. A
+// span done by hand comes out as what the grouping is ABOUT, because the
+// subject matter is what the issue titles put in front of you.
+func newTreeSpansCmd() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "spans <owner/repo#n> [--json]",
+		Short: "Which repositories the work below a node lands in",
+		Long: "Reports the REPO SPAN of a node: the set of repositories the work below\n" +
+			"it lands in. Over a node with children, one row per child; over a leaf,\n" +
+			"one row.\n\n" +
+			"A SPAN IS NOT \"WHERE THE ISSUES LIVE\", AND THAT IS THE POINT. Every child\n" +
+			"of a grouping is routinely filed in one repository while its work touches\n" +
+			"several, so the easy question gives a confidently wrong answer. The span\n" +
+			"is every repository the descendants are filed in PLUS every repository\n" +
+			"they declare -- read through the same inference `facet spawn` uses to\n" +
+			"decide what to clone, so it is \"what a seat working this would be given\"\n" +
+			"rather than a second opinion.\n\n" +
+			"It also flags a node whose OWN repository is not in its span, which is\n" +
+			"invisible in every other view and is where hand-derived spans go wrong.\n\n" +
+			"IT IS NOT A SLOT CHECKER. Whether two spans may share a slot is doctrine,\n" +
+			"and facet holds none: this reports the sets.\n\n" +
+			"EXIT CODES, and on this verb the third value is the whole point:\n" +
+			"  0  looked -- here are the spans\n" +
+			"  2  could NOT look, or could only look partly\n\n" +
+			"A SPAN COMPUTED FROM A PARTIAL READ IS WORSE THAN NO SPAN, because a\n" +
+			"MISSING repository reads as DISJOINT -- and disjoint is precisely the\n" +
+			"answer that authorises putting two groupings in one slot. So a partial\n" +
+			"read is exit 2 and the row is marked, rather than being handed over as a\n" +
+			"plausible list.\n\n" +
+			"--json, because the consumer is as likely to be a scheduled planner as a\n" +
+			"human.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ref, err := parseIssueRef(args[0])
+			if err != nil {
+				return withCode(exitCantLook, err)
+			}
+			return runTreeSpans(cmd.OutOrStdout(), gh, ref, asJSON)
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "emit JSON rather than lines")
+	tagCantLook(cmd, cobra.ExactArgs(1))
 	return cmd
 }
 
